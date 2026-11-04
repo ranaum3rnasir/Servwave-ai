@@ -1,0 +1,58 @@
+<title>{{SHORT NAME}} Proof</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* Layout: one narrow column, the video first, then the checks it proves. */
+:root {
+  --bg: #f6f8f9; --surface: #ffffff; --fg: #14202a; --muted: #52606b; --line: #dfe5e9;
+  --accent: #0e7490; --pass: #0f7a43;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0f171d; --surface: #16212a; --fg: #e5edf2; --muted: #9aaab5; --line: #2a3742;
+  --accent: #5cc3dc; --pass: #4cc584; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #0f171d; --surface: #16212a; --fg: #e5edf2; --muted: #9aaab5; --line: #2a3742;
+  --accent: #5cc3dc; --pass: #4cc584; color-scheme: dark }
+body { background: var(--bg); color: var(--fg); font: 15px/1.55 var(--font-body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+main { max-width: 960px; margin: 0 auto; padding-block: 28px 48px; display: flex; flex-direction: column; gap: 22px; }
+header { display: flex; flex-direction: column; gap: 6px; }
+.eyebrow { font: 600 12px/1 var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+h1 { margin: 0; font-size: 26px; line-height: 1.2; text-wrap: balance; }
+.meta { margin: 0; color: var(--muted); font-size: 14px; }
+.player { background: #000; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); }
+video { display: block; width: 100%; max-width: 100%; aspect-ratio: 1440 / 900; background: #000; }
+h2 { margin: 0 0 8px; font-size: 16px; }
+.checks { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.checks li { display: grid; grid-template-columns: 56px 64px 1fr; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--line); align-items: baseline; }
+.checks li:first-child { border-top: 0; }
+.result { font: 600 12px/1 var(--font-mono); color: var(--pass); }
+.ticket { font: 500 13px/1 var(--font-mono); color: var(--muted); }
+.what { min-width: 0; }
+.notes { margin: 0; padding-left: 18px; color: var(--muted); font-size: 14px; display: flex; flex-direction: column; gap: 4px; }
+@media (max-width: 520px) { .checks li { grid-template-columns: 48px 1fr; } .ticket { grid-column: 2; } .what { grid-column: 1 / -1; } }
+</style>
+<!-- Template for pr-video-proof. Replace every {{...}}; keep one <li> per check. Publish with capabilities {"assets": {}}. -->
+<main>
+  <header>
+    <span class="eyebrow">PR #{{PR}} · {{SHORT NAME}}</span>
+    <h1>{{WHAT WORKS, e.g. "B7 working on staging"}}</h1>
+    <p class="meta">One unedited run, recorded {{DATE TIME UTC}}, on {{staging | preview URL}} in the ServWave Test company. {{DURATION}}. {{N}} of {{N}} checks passed.</p>
+  </header>
+  <div class="player">
+    <video id="proof" controls preload="metadata" playsinline src="{{/_blob/ASSET_ID from the asset upload}}"></video>
+  </div>
+  <section>
+    <h2>What the run checked</h2>
+    <ul class="checks">
+      <li><span class="result">PASS</span><span class="ticket">#{{TICKET}}</span><span class="what">{{What a person sees}}</span></li>
+    </ul>
+  </section>
+  <section>
+    <h2>Not covered by this recording</h2>
+    <ul class="notes">
+      <li>{{e.g. permission checks across companies: covered by the tests named in the PR body}}</li>
+    </ul>
+  </section>
+</main>

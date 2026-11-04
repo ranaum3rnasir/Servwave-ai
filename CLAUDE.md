@@ -101,6 +101,14 @@ Before running test suites, typechecks, builds or verifier runs, read the vault 
 
 ## Agent skills
 
+### Every PR carries a video proof
+
+Ran reviews a PR by watching it work, not by reading the diff. Every PR that changes something a person can see
+or do in the app gets a recorded run of the change in the real app, with a check per scenario, posted as a PR
+comment: see the `pr-video-proof` skill. Record only on a deploy of the PR's own code, so today that means
+staging right after the merge (the PR body says the video follows the merge). The promotion PR to `main` links
+each change's video. A PR with nothing to show says "No video: <reason>" in its body.
+
 ### Issue tracker
 
 GitHub issues on `ranro1/ALPHA_CRM`, via the `gh` CLI; every issue gets one priority and one module label. Feature ideas stay in Linear. See `docs/agents/issue-tracker.md`.

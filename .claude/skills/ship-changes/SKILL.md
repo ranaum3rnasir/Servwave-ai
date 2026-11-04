@@ -73,6 +73,8 @@ staging              feat/thing               staging               main
    gh pr create --base staging --title "feat: <description>" --body "..."
    ```
    Vercel will auto-post a preview URL in the PR. Click it and verify before merging.
+   The body says where the video proof will come from (`pr-video-proof` skill): `Video: posted here after
+   merge to staging`, or `No video: <reason>` for a change with nothing to show.
 
 4. **Merge the PR.** Staging auto-deploys. Confirm:
    - Vercel staging build succeeded
@@ -80,6 +82,8 @@ staging              feat/thing               staging               main
    - Any Prisma migrations applied cleanly
 
 5. **QA on staging.** Real URLs, real Supabase staging DB. If QA reports a bug, fix on another branch off the gate's base and repeat from step 1.
+   Record the change working on staging and post the video on the merged PR (`pr-video-proof` skill). That
+   video is the QA evidence Ran reviews before he asks for the promotion.
 
 6. **Offer the promotion - do not open it.** Once the staging PR is merged and verified, tell Ran the
    change is ready to promote and **wait for him to ask**. Promotion to `main` happens only on his
@@ -92,6 +96,8 @@ staging              feat/thing               staging               main
    git -C ../alpha_crm-worktrees/<slug> cherry-pick -x <merged-staging-sha>
    gh pr create --base main --head promote/<slug> --title "<same conventional-commit line>"
    ```
+   The promotion PR's body links the change's video proof from its staging PR (`pr-video-proof` skill),
+   or says why there is none.
    Do **not** open `--head staging --base main`; that is the bulk-release shape the per-change flow
    replaced. Before assuming the change stands alone, check what the target files actually contain on
    `main` - promoting a fix whose dependency is still only on `staging` lands broken code on prod.

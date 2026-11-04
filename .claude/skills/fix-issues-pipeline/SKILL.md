@@ -135,9 +135,11 @@ per approved fix:
   git push -u origin fix/issue-<n>
   gh pr create -R ranro1/ALPHA_CRM --base staging --head fix/issue-<n> \
     --title "fix: <summary> (#<n>)" \
-    --body "Refs #<n>. Automated fix; CI gates the merge; integrated by the nightly merge-train."
+    --body "Refs #<n>. Automated fix; CI gates the merge; integrated by the nightly merge-train. Video: posted here after merge to staging (or No video: <reason>)."
   gh issue edit <n> -R ranro1/ALPHA_CRM --remove-label ready-for-agent --add-label pr-pending
   ```
+  In **Mode A** (direct merge, no PR), once staging redeploys, record the fix working and post the video as
+  a comment on the issue (`pr-video-proof` skill).
   Use **`Refs #<n>`, never `Fixes #<n>`** — the issue must stay OPEN through QA review (a `Fixes`
   keyword would auto-close it at the eventual `main` merge, bypassing the sheet's promote step). The
   `fix/issue-<n>` branch name + the `pr-pending` issue label are how the merge-train finds workflow

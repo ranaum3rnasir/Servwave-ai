@@ -23,7 +23,8 @@ only the **QA-approved** subset to prod, instead of wholesale-promoting all of `
   to delete that row. Idempotent.
 - **Phase B — build:** the `approved` rows whose issue is still **OPEN** are candidates. Look each up
   in the ledger, cherry-pick the subset onto a fresh branch off `main`, and open ONE PR to `main`
-  whose body lists `Fixes #N` per issue (so merge auto-closes them).
+  whose body lists `Fixes #N` per issue (so merge auto-closes them), each with a link to its video proof
+  from staging (`pr-video-proof` skill) or "No video: <reason>".
 - **BLOCK-ON-CONFLICT:** if any approved fix can't cherry-pick cleanly (it shares files with a
   still-unapproved fix on `staging`), build nothing and report the blocker + the sibling that must be
   approved first. No partial PR.

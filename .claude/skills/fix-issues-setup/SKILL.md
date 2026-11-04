@@ -243,6 +243,9 @@ PHASE 6: COMMIT + PUSH + PR
 
   ## Test
   - Backend: <pass/skip> | Frontend tsc: <pass/skip>
+
+  ## Video
+  Posted here after merge to staging (pr-video-proof skill). | No video: <reason, e.g. no visible change>
   PRBODY
   ```
 - Open PR against staging:

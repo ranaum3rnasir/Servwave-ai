@@ -124,7 +124,10 @@ BE="${STAGING_HEALTH_URL:-https://alpha-crm-test-env.onrender.com/health}"
 FE="${STAGING_FE_URL:-https://servwave-demo.vercel.app}"
 # poll up to ~15 min: BE /health is 200 AND its sha matches TARGET (not a stale deploy), FE is 200
 ```
-- **Healthy** (BE 200 + `sha`≈`TARGET`, FE 200) → log success with the merged count + SHA.
+- **Healthy** (BE 200 + `sha`≈`TARGET`, FE 200) → log success with the merged count + SHA. Then, for each
+  merged PR whose body promised a video, record it on staging and post it on that PR (`pr-video-proof`
+  skill). Note: `/health` currently returns no `sha`; prove the deploy from the live build instead, as that
+  skill's step 2 says.
 - **Unhealthy after timeout** → open ONE incident (do NOT auto-revert — each PR passed CI, so a
   deploy-only failure is environmental and needs eyes):
   ```bash

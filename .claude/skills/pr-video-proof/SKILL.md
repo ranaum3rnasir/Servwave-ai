@@ -1,0 +1,98 @@
+---
+name: pr-video-proof
+description: Record a video of a PR's change working in the real app, check each scenario while recording, host the video privately and post it on the PR as a comment, so Ran reviews what the change does instead of reading the diff. Use for every PR that changes something a person can see or do in the app, after the change is deployed (staging after merge, or a preview that runs the PR's frontend AND backend). Triggers on "record a video", "video proof", "show it working", "validate on staging", or any PR that is about to be opened, merged or promoted.
+---
+
+# PR video proof
+
+Every PR that changes what a person sees or does in the app gets a recorded run of that change in the
+real app, posted on the PR. The video is the evidence Ran reviews; the diff is the detail behind it.
+
+The first one, and the model for the rest: PR #3055 (B7, lead notes), recorded on staging,
+`https://claude.ai/artifact/7dQ1Y3ThTFiUhy7PFnnCvn`.
+
+## When, and on what
+
+A video is only proof of the code it ran on. Record only once the PR's code is deployed:
+
+| Situation | Record on | Post on |
+|---|---|---|
+| The PR has a preview that runs ITS frontend and ITS backend | that preview, before merge | the open PR |
+| Anything else (today: every PR - Vercel skips PR previews, and a preview would still call the staging backend) | staging, right after the PR merges and staging redeploys | the merged PR, then link it in the promotion PR to `main` |
+| The PR changes nothing a person can see or do (CI, docs, tooling, a refactor with no behaviour change) | no video | say "No video: <reason>" in the PR body |
+
+When the video can only come after merge, the PR body says so: `Video: posted here after merge to staging.`
+A backend-only change still gets a video when its effect shows in the app (a refusal, a saved value, a list).
+
+**What a video does not replace.** It shows the scenarios that were played. It does not show a permission
+leak, another company's data, a race or a migration. For changes to permissions, payments, accounting or data
+access, the reviews and tests in the PR body still carry the weight; say that in the comment.
+
+## Staging facts
+
+- Frontend: `https://servwave-demo.vercel.app` (company: "ServWave Test"). Backend: `https://alpha-crm-test-env.onrender.com`.
+- Sign-in: `STAGING_TEST_EMAIL` and `STAGING_TEST_PASSWORD` from the environment. Never print them, never write them
+  to a file in the repo, never type them on camera. Fail when they are unset.
+- `/health` does NOT report the running commit (it returns status, db and timestamp only).
+
+## Steps
+
+1. **Write the scenarios from the tickets, not from the code.** One scenario per acceptance criterion a person can
+   see, each with a check that can fail. Name the ticket number in each.
+2. **Prove the deployed build has the change before recording.** Download the live build and search it for code only
+   this PR adds (a new route string, a new label). For the backend, the recording's checks must include a behaviour only
+   the new backend has (for B7: an edit saved through the new notes route survived a reload). No match: wait for the
+   deploy; never record old code.
+3. **Explore without the camera, once.** Screenshot each screen, list the real field ids and button names. Reuse ONE
+   exploration record; do not create a new one per attempt.
+4. **Record** with `record-kit.js` (beside this file): copy it and `example-b7.js` to the scratchpad, write the PR's
+   scenarios in the example's shape, run it with Node (`playwright` is preinstalled in cloud sessions; locally use the
+   frontend's). It signs in once off camera, records at 1440x900, captions each step at the top, and prints PASS/FAIL per check.
+5. **Watch it before sending.** Make a contact sheet (`ffmpeg -i in.webm -vf "fps=1/5,scale=640:-1,tile=4x4" -frames:v 1 sheet.png`)
+   and look: each caption sits over the screen it describes, the evidence is in frame, nothing private shows.
+   Convert: `ffmpeg -i in.webm -c:v libx264 -pix_fmt yuv420p -movflags +faststart -crf 23 proof.mp4`.
+6. **Host it.** GitHub's API cannot attach a video to a comment, so the comment links a private claude.ai page:
+   copy `proof-page.html`, fill it in, publish it with the Artifact tool and `capabilities: {"assets": {}}`,
+   upload the MP4 to that artifact with `asset: true`, then republish with the `/_blob/<id>` url in the `<video>`.
+   The page is private to its owner: anyone else Ran wants to review it needs it shared from the page's Share menu.
+7. **Post on the PR** (Ran asked for this on every PR, 2026-11-04; that is the standing go-ahead for this comment):
+   ```
+   ## Video proof: <what changed>
+   <artifact link> - one unedited run, <duration>, recorded <date time UTC> on <staging | preview URL>.
+
+   | Check | Ticket | Result |
+   |---|---|---|
+   | <what a person sees> | #<n> | PASS |
+
+   Test records created: <ids>, in the ServWave Test company. <Not covered by the video: ...>
+
+   ---
+   _Generated by [Claude Code](https://claude.ai/code)_
+   ```
+8. **Clean up.** List every record the runs created (leads, customers, visits) in the comment. Delete them only when
+   Ran asks. Delete the saved sign-in state and local recordings when the comment is up.
+
+## Mistakes already made (fix them before they happen again)
+
+From the first recording (B7, PR #3055). The kit already handles 1-6; 7-11 are on you.
+
+1. **Captions covered the evidence.** At the bottom they hid card text and Save buttons. Captions go at the top,
+   under the app header.
+2. **A caption outlived its screen.** It stayed up after the tab changed, describing a screen no longer shown.
+   Clear the caption on every tab or page change (`openTab` does).
+3. **The last shot cut off the proof.** The cards were below the fold under the final caption. Scroll the evidence
+   into view and hold it 3-4 s before the closing caption.
+4. **A check ran before the page drew.** It read zero tabs and failed. Wait for the element, never a fixed sleep alone.
+5. **Typed text vanished.** The page re-rendered while typing, so the note was empty and Add did nothing. Click,
+   type, then confirm the field's value before pressing submit (`typeAndConfirm`).
+6. **Signed in on camera.** Sign in in an unrecorded browser context and pass its saved state to the recorded one.
+7. **The same customer twice.** A second run hit "Possible Duplicate Customer". Make every test record unique per
+   run (a timestamp in the email and name).
+8. **Assumed a prefilled field.** "Book Another Visit" starts with no performer for an Admin, so Book Visit stayed
+   disabled. Fill every field the step needs, explicitly.
+9. **Too many sign-ins.** About ten in an hour; then a session ended mid-run (a booking was lost) and sign-in
+   stopped answering. Sign in once per session, reuse the saved state across attempts, and stop after 3 failed takes.
+10. **Retakes littered staging.** Six test leads for one video. Explore on one record, fix the script against
+    screenshots, and record when the script is right.
+11. **Claim only what a check proved.** A caption says what the screen shows; the PASS list is the record. If a
+    scenario was not checked, it does not go in the table.
