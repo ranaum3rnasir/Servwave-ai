@@ -16,6 +16,13 @@ export default defineConfig({
     environment: 'node',
     setupFiles: ['./src/__tests__/setup.ts'],
     ...(maxWorkers ? { maxWorkers: Number(maxWorkers), minWorkers: 1 } : {}),
+    // Every test worker gets a 4 GB heap ceiling, wherever it runs. tx-pool-static-scan.test.ts loads the backend
+    // into the TypeScript compiler and needs ~1.5 GB; Node's default ceiling is ~2 GB on the CI runners and lower on
+    // smaller machines. When the scan crossed it the worker died of "JavaScript heap out of memory", the file was never
+    // reported, and the Backend check went red with every test green (#2963, nine runs from 2026-10-30 to 11-05).
+    // Set here and not in a workflow env so the same ceiling holds in CI, locally and in the authorization config,
+    // which spreads this one. It is a ceiling, not a reservation: the other workers stay near their real use.
+    execArgv: ['--max-old-space-size=4096'],
     // De-flake load-dependent failures. The suite is controller-integration
     // style (supertest + a fully-mocked prisma), so tests are CPU-bound with no
     // real I/O. When the CI runner is under contention, a normally-sub-second

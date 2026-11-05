@@ -51,9 +51,14 @@ function scan() {
   const configPath = path.join(BACKEND, 'tsconfig.json');
   const config = ts.getParsedCommandLineOfConfigFile(configPath, {}, { ...ts.sys, onUnRecoverableConfigFileDiagnostic: () => undefined });
   if (!config) throw new Error('tsconfig.json could not be read');
-  const program = ts.createProgram(config.fileNames, config.options);
-  const checker = program.getTypeChecker();
   const isProject = (f: string) => f.startsWith(SRC) && !/__tests__|\.test\.ts$/.test(f) && !f.endsWith('.d.ts');
+  // Only the app's own source goes in as roots. tsconfig.json also includes every test file (about two thirds of
+  // src/), which the scan never looks at; loading them anyway put this file at ~2 GB of heap, Node's default limit on
+  // the CI runner, and its worker died of it now and then with every test green (#2963). The `.d.ts` files stay in for
+  // the ambient types they declare. Whatever a root imports is still loaded, so nothing the scan follows is lost.
+  const roots = config.fileNames.filter((f) => isProject(f) || f.endsWith('.d.ts'));
+  const program = ts.createProgram(roots, config.options);
+  const checker = program.getTypeChecker();
   const rel = (f: string) => path.relative(BACKEND, f);
 
   const resolveAlias = (symbol: ts.Symbol | undefined) => {

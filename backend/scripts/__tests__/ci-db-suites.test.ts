@@ -20,6 +20,18 @@ const BACKEND = path.resolve(__dirname, '../..');
 const SCRIPT = path.join(BACKEND, 'scripts/ci-db-suites.sh');
 const CI_FILE = path.resolve(BACKEND, '../.github/workflows/ci.yml');
 
+/**
+ * A shard step's time limits in minutes: a plain `timeout-minutes: N`, or the runner-dependent
+ * `timeout-minutes: ${{ runner.environment == 'github-hosted' && H || S }}` (H on a GitHub-hosted VM, S on the Mac mini).
+ * Anything else answers undefined, so a limit the checks below cannot read fails them instead of passing as NaN.
+ */
+function shardLimit(step: string): { selfHosted: number; hosted: number } | undefined {
+  const plain = /^ {8}timeout-minutes: (\d+)\s*$/m.exec(step);
+  if (plain) return { selfHosted: Number(plain[1]), hosted: Number(plain[1]) };
+  const byRunner = /^ {8}timeout-minutes: \$\{\{ runner\.environment == 'github-hosted' && (\d+) \|\| (\d+) \}\}\s*$/m.exec(step);
+  return byRunner ? { selfHosted: Number(byRunner[2]), hosted: Number(byRunner[1]) } : undefined;
+}
+
 /** The names ci.yml gives the shards as the suites to leave out, read from the workflow so the two cannot differ. */
 function skippedByCi(): string[] {
   const found = [...readFileSync(CI_FILE, 'utf8').matchAll(/DB_SUITES_SKIP: '([^']+)'/g)].map((m) => m[1]!);
@@ -88,7 +100,7 @@ describe('ci.yml runs every shard, of one shard count', () => {
   it('gives every shard step a time limit, so a hung database is still caught early', () => {
     const steps = readFileSync(CI_FILE, 'utf8').split(/\n {6}- name: /).filter((s) => /run: bash scripts\/ci-db-suites\.sh/.test(s));
     expect(steps.length).toBeGreaterThan(0);
-    for (const step of steps) expect(step).toMatch(/timeout-minutes: \d+/);
+    for (const step of steps) expect(shardLimit(step), step.split('\n')[0]).toBeDefined();
   });
 });
 
@@ -174,10 +186,13 @@ describe('ci.yml: the lock wait fits the longest legitimate hold', () => {
   const jobLimit = num(/^ {4}timeout-minutes: (\d+)$/m, 'the job timeout-minutes');
   const waitSeconds = num(/"\$WAITED" -gt (\d+)/, 'the lock wait');
   const staleSeconds = num(/"\$AGE" -gt (\d+)/, 'the stale-lock age');
-  const shardLimits = job
+  const limits = job
     .split(/\n {6}- name: /)
     .filter((s) => /run: bash scripts\/ci-db-suites\.sh/.test(s))
-    .map((s) => Number(/timeout-minutes: (\d+)/.exec(s)?.[1]));
+    .map((s) => shardLimit(s));
+  // The lock is taken on the Mac mini only (a hosted VM has its own Postgres), so the lock arithmetic uses its limits.
+  const shardLimits = limits.map((l) => l?.selfHosted ?? NaN);
+  const hostedLimits = limits.map((l) => l?.hosted ?? NaN);
   const holdMinutes = OTHER_HELD_STEPS_MINUTES + shardLimits.reduce((a, b) => a + b, 0);
   const waitMinutes = waitSeconds / 60;
 
@@ -192,6 +207,11 @@ describe('ci.yml: the lock wait fits the longest legitimate hold', () => {
 
   it('lets the job run for the setup, the full wait and the full hold', () => {
     expect(jobLimit).toBeGreaterThanOrEqual(SETUP_MINUTES + waitMinutes + holdMinutes);
+  });
+
+  it('lets the job run every shard to its hosted limit on a GitHub-hosted VM, which takes no lock', () => {
+    for (const limit of hostedLimits) expect(Number.isFinite(limit)).toBe(true);
+    expect(jobLimit).toBeGreaterThanOrEqual(SETUP_MINUTES + OTHER_HELD_STEPS_MINUTES + hostedLimits.reduce((a, b) => a + b, 0));
   });
 
   it('reaps a lock only when it is older than the job limit, so a live holder is never reaped', () => {
