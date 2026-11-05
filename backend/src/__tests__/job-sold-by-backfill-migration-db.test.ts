@@ -139,6 +139,8 @@ suite('job Sold By backfill migration (real database)', () => {
           id, organization_id: org, customer_id: customer, lead_id: leadId, created_by: ownerA,
           estimate_number: `E-${tag}-${++n}`, subtotal: 100, tax_amount: 0, total_amount: 100,
         },
+        // Narrow: this database sits at an older migration, so the live client must not read back columns added since.
+        select: { id: true },
       });
       return id;
     };

@@ -82,7 +82,6 @@ const SENDERS: Record<string, Audience> = {
   sendBankPaymentProcessingEmail: 'customer',
   sendBankPaymentFailedEmail: 'customer', // also what "contact the customer" sends them
   sendDepositPaidAlert: 'staff-money-removed', // the estimate's creator
-  sendPaymentMethodSelectedAlert: 'staff-money-removed', // the estimate's creator
   sendPaymentsActionNeededEmail: 'staff-no-money',
   sendOwnerPaymentNoticeEmail: 'staff-money-removed', // the people who handle billing, via notifyOwners
   sendJobScheduledEmail: 'customer',
@@ -189,22 +188,19 @@ suite('M4: the emails to the company\'s people name no amount (real dispatcher, 
     return fx.addUser(orgId, `m4s${sequence}`, 'TECHNICIAN', { customRoleId: role.id });
   }
 
-  it('the deposit received alert and the payment-method-selected alert (the estimate\'s creator) name no amount', async () => {
+  // #2980 (Ran 2026-11-04): a deposit method pick or change is an in-app alert now, not an email; its
+  // no-amount rule is pinned in deposit-method-words-guard.test.ts.
+  it('the deposit received alert (the estimate\'s creator) names no amount', async () => {
     const w = await org();
     const email = await import('../lib/email.js');
     const everyMoneyArgument = { depositAmount: SENTINEL, amount: SENTINEL, total: SENTINEL, totalCharged: SENTINEL, price: SENTINEL, balance: SENTINEL };
     const common = { organizationId: w.org, estimateNumber: 'E-1', customerName: 'Pat Payer', paymentMethod: 'CARD' };
     await email.sendDepositPaidAlert({ ...common, ...everyMoneyArgument, to: 'creator-a@example.test' } as never);
-    await email.sendPaymentMethodSelectedAlert({ ...common, ...everyMoneyArgument, to: 'creator-b@example.test' } as never);
     const a = sentTo('creator-a@example.test');
-    const b = sentTo('creator-b@example.test');
     expect(a).toHaveLength(1);
-    expect(b).toHaveLength(1);
     noFigure(a[0]!, 'deposit received');
-    noFigure(b[0]!, 'payment method selected');
     // Complete sentences, nothing left dangling, the method and the estimate still named.
     expect(a[0]!.text).toBe('Deposit received for E-1 from Pat Payer via Card. You can now create a job.');
-    expect(b[0]!.text).toBe('Customer selected Card for the deposit on E-1. Watch for incoming payment.');
   });
 
   it.each(BILLING_ALERT_VERBS.map((v) => [v] as const))('%s: the owner payment email and the bell, sent through notifyOwners, name no amount', async (verb) => {

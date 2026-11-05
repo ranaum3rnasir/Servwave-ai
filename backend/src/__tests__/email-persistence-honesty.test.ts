@@ -222,7 +222,7 @@ describe('BUG C - outside-party sends leave a record', () => {
 
 // ─── Deliberately NOT persisted: the internal staff alerts ──
 //
-// sendDepositPaidAlert, sendPaymentMethodSelectedAlert and sendPaymentsActionNeededEmail are ServWave or the app talking TO the
+// sendDepositPaidAlert and sendPaymentsActionNeededEmail are ServWave or the app talking TO the
 // contractor, not correspondence with a customer, so they do not belong on a
 // customer timeline. One is asserted here as a representative, rather than
 // merely omitted, so a future "persist every sender" sweep has to argue with a

@@ -877,6 +877,11 @@ model Estimate {
   signature_at           DateTime?
   terms_accepted         Boolean                   @default(false) // #21 — server-enforced T&C acknowledgment
   terms_accepted_at      DateTime? // #21 — set together with terms_accepted
+  // #2980 - the customer's current deposit method and when it was picked: set at signing and on
+  // every later pick (the approval retry, or card/bank through the deposit's own checkout). Null on
+  // rows that predate it and on estimates no method was ever picked for.
+  deposit_method         PaymentMethod?
+  deposit_method_at      DateTime?
   valid_until            DateTime?
   snapshot_terms         String?                   @db.Text
   snapshot_notes         String?                   @db.Text

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState, useEffect, useRef, useCallback, useId } from 'react';
+import { lazy, Suspense, useState, useEffect, useRef, useCallback, useId, type ReactNode } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import {
   CheckCircle2,
@@ -46,6 +46,7 @@ import {
   PublicPage,
   PublicUnavailable,
 } from './components/publicShell';
+import { publicActionFailure } from './components/publicActionFailure';
 import { SignaturePad, type SignaturePadHandle } from './components/signaturePad';
 import { usePublicLostReasons } from '@/lib/api/publicLostReasons';
 import { runAfterSettle } from '@/lib/platform/runAfterSettle';
@@ -161,6 +162,8 @@ interface PublicEstimate {
   invoices?: PublicInvoice[];
   terms_accepted?: boolean | null;
   terms_accepted_at?: string | null;
+  /** #2980 - the customer's current deposit method (null until one is picked). */
+  deposit_method?: string | null;
   send_config?: {
     deposit_required: boolean;
     deposit_percentage?: number;
@@ -324,7 +327,7 @@ export default function PublicEstimatePage() {
   const [error, setError] = useState('');
   const [actionLoading, setActionLoading] = useState(false);
   // `id` remounts the alert on every failure, so a repeated failure is announced and focused again.
-  const [actionError, setActionError] = useState<{ at: ActionSlot; message: string; id: number } | null>(null);
+  const [actionError, setActionError] = useState<{ at: ActionSlot; message: ReactNode; id: number } | null>(null);
   // Which card the decline dialog was opened from, so a failed decline is reported there.
   const [declineFrom, setDeclineFrom] = useState<ActionSlot>('approve');
 
@@ -335,6 +338,8 @@ export default function PublicEstimatePage() {
   const [depositState, setDepositState] = useState<DepositState | null>(null);
   const [depositPolicy, setDepositPolicy] = useState<string>('REQUIRED_BEFORE_APPROVAL');
   const [selectedMethod, setSelectedMethod] = useState<string | null>(null);
+  // #2980 - "Pay another way" opens the method list over a stored manual choice.
+  const [payAnotherWay, setPayAnotherWay] = useState(false);
   const [confirmDecline, setConfirmDecline] = useState(false);
   // True from the first time the dialog is opened. It then stays mounted, so closing it plays
   // the dialog's own exit instead of vanishing, and reopening is instant.
@@ -469,7 +474,7 @@ export default function PublicEstimatePage() {
 
   /* --- Actions --- */
 
-  const failAt = (at: ActionSlot, message: string) =>
+  const failAt = (at: ActionSlot, message: ReactNode) =>
     setActionError((prev) => ({ at, message, id: (prev?.id ?? 0) + 1 }));
 
   /** The failure for one card, rendered inside that card next to its controls. */
@@ -513,6 +518,11 @@ export default function PublicEstimatePage() {
           failAt(at, data.error);
           return;
         }
+        const refused = publicActionFailure(res.status, estimate?.organization, data);
+        if (refused) {
+          failAt(at, refused);
+          return;
+        }
         throw new Error(data.error || 'Action failed');
       }
       const data = await res.json();
@@ -526,6 +536,7 @@ export default function PublicEstimatePage() {
 
       setEstimate((prev) => ({ ...data.estimate, organization: prev?.organization ?? null }));
       setSelectedMethod(null);
+      setPayAnotherWay(false);
       // Slice 27 - the approval answer carries the estimate only; the deposit's state (open beside
       // a pay-later approval, or waiting on a manual payment) comes from the page read.
       void fetchEstimate();
@@ -551,7 +562,7 @@ export default function PublicEstimatePage() {
    * failed) through the deposit's own checkout. The estimate's approval is already done; this opens
    * only the payment. `expected_amount` makes the door refuse, not charge, if the figure moved.
    */
-  const handlePayDeposit = async (method: 'card' | 'bank') => {
+  const handlePayDeposit = async (method: 'card' | 'bank', at: ActionSlot = 'depositdue') => {
     if (!depositInvoice?.public_token) return;
     setActionError(null);
     setActionLoading(true);
@@ -567,8 +578,13 @@ export default function PublicEstimatePage() {
       const data = await res.json();
       if (!res.ok) {
         if (HOMEOWNER_MESSAGE_CODES.has(data.code) && typeof data.error === 'string') {
-          failAt('depositdue', data.error);
+          failAt(at, data.error);
           void fetchEstimate();
+          return;
+        }
+        const refused = publicActionFailure(res.status, estimate?.organization, data);
+        if (refused) {
+          failAt(at, refused);
           return;
         }
         throw new Error(data.error || 'Action failed');
@@ -580,7 +596,7 @@ export default function PublicEstimatePage() {
       }
       void fetchEstimate();
     } catch {
-      failAt('depositdue', 'Something went wrong starting your payment. Please try again or contact us.');
+      failAt(at, 'Something went wrong starting your payment. Please try again or contact us.');
     } finally {
       setActionLoading(false);
     }
@@ -708,6 +724,11 @@ export default function PublicEstimatePage() {
       );
       if (!res.ok) {
         const data = await res.json();
+        const refused = publicActionFailure(res.status, estimate?.organization, data);
+        if (refused) {
+          failAt(declineFrom, refused);
+          return;
+        }
         throw new Error(data.error || 'Action failed');
       }
       const data = await res.json();
@@ -739,6 +760,57 @@ export default function PublicEstimatePage() {
 
   /* --- Render helpers --- */
 
+  /**
+   * One row of the "Select Payment Method" list: the method, its icon and the amount it pays. The
+   * signing list and the signed-not-paid list draw the same rows (#2979: the page does not change
+   * its offer after the customer signs).
+   */
+  const renderMethodRow = (method: string, amount: number, onClick: () => void) => {
+    const Icon = METHOD_ICONS[method] || Wallet;
+    const isCard = method === 'CARD' || method === 'EXTERNAL_CARD';
+    return (
+      <Button
+        key={method}
+        variant="outline"
+        // Wraps at 320 rather than clipping the label or the price (mobile slice 28).
+        className="h-auto w-full justify-between whitespace-normal py-3 text-left"
+        disabled={actionLoading}
+        onClick={onClick}
+      >
+        <span className="flex min-w-0 items-center gap-2">
+          <Icon />
+          <span className="min-w-0">
+            Pay {isCard ? 'with' : 'by'} {formatMethodLabel(method)}
+            {method === 'ACH' && (
+              <span className="text-subtle-foreground block text-xs font-normal">Takes a few business days to clear</span>
+            )}
+          </span>
+        </span>
+        <span className="shrink-0 text-right">
+          <span className="block font-semibold">{formatCurrency(amount)}</span>
+        </span>
+      </Button>
+    );
+  };
+
+  /**
+   * The instructions for a manual method: the call-us block for card by phone, else the company's
+   * own instructions for that method (check, bank transfer, cash), when it has written any.
+   */
+  const renderManualInstructions = (method: string) =>
+    method === 'EXTERNAL_CARD' ? (
+      <div className="bg-muted rounded-lg border p-3 text-sm">
+        To pay by credit card, please call our office
+        {org?.phone ? ` at ${orgPhoneDisplay(org)}` : ''}.
+      </div>
+    ) : (
+      paymentInstructions[INSTRUCTION_KEYS[method] || ''] && (
+        <div className="bg-muted whitespace-pre-wrap rounded-lg border p-3 text-sm">
+          {paymentInstructions[INSTRUCTION_KEYS[method] || '']}
+        </div>
+      )
+    );
+
   const renderPaymentMethodButtons = () => (
     <PublicCard>
       {selectedMethod ? (
@@ -759,18 +831,7 @@ export default function PublicEstimatePage() {
           {/* EXTERNAL_CARD shows the call-us block, matching the
               CHECK/BANK_TRANSFER instructions pattern. CARD never reaches this
               branch (handlePaymentMethodSelect short-circuits to Stripe). */}
-          {selectedMethod === 'EXTERNAL_CARD' ? (
-            <div className="bg-muted rounded-lg border p-3 text-sm">
-              To pay by credit card, please call our office
-              {org?.phone ? ` at ${orgPhoneDisplay(org)}` : ''}.
-            </div>
-          ) : (
-            paymentInstructions[INSTRUCTION_KEYS[selectedMethod] || ''] && (
-              <div className="bg-muted whitespace-pre-wrap rounded-lg border p-3 text-sm">
-                {paymentInstructions[INSTRUCTION_KEYS[selectedMethod] || '']}
-              </div>
-            )
-          )}
+          {renderManualInstructions(selectedMethod)}
           <Button className="w-full" size="lg" isLoading={actionLoading} onClick={handleConfirmNonStripe}>
             <CheckCircle2 />
             Confirm &amp; Approve
@@ -794,34 +855,9 @@ export default function PublicEstimatePage() {
               complete your approval.
             </p>
           )}
-          {!depositHeld && collapseCardMethods(availableMethods).map((method) => {
-            const Icon = METHOD_ICONS[method] || Wallet;
-            const isCard = method === 'CARD' || method === 'EXTERNAL_CARD';
-            return (
-              <Button
-                key={method}
-                variant="outline"
-                // Wraps at 320 rather than clipping the label or the price (mobile slice 28).
-                className="h-auto w-full justify-between whitespace-normal py-3 text-left"
-                disabled={actionLoading}
-                // eslint-disable-next-line react-hooks/refs -- this only PASSES the handler; the signature-canvas ref inside it is read at click time, not during render
-                onClick={() => handlePaymentMethodSelect(method)}
-              >
-                <span className="flex min-w-0 items-center gap-2">
-                  <Icon />
-                  <span className="min-w-0">
-                    Pay {isCard ? 'with' : 'by'} {formatMethodLabel(method)}
-                    {method === 'ACH' && (
-                      <span className="text-subtle-foreground block text-xs font-normal">Takes a few business days to clear</span>
-                    )}
-                  </span>
-                </span>
-                <span className="shrink-0 text-right">
-                  <span className="block font-semibold">{formatCurrency(depositAmount)}</span>
-                </span>
-              </Button>
-            );
-          })}
+          {!depositHeld && collapseCardMethods(availableMethods).map((method) =>
+            renderMethodRow(method, depositAmount, () => handlePaymentMethodSelect(method)),
+          )}
           <Button
             variant="outline"
             className="w-full"
@@ -837,6 +873,98 @@ export default function PublicEstimatePage() {
       )}
     </PublicCard>
   );
+
+  /**
+   * #2979/#2980 - the payment panel for "signed, deposit not paid" (PENDING): back from the payment
+   * page without paying, or any later visit. The signing list without Decline: every method the
+   * estimate was sent with, card by phone folded into card as at signing.
+   *
+   * - Card and bank open the deposit's OWN checkout with the expected amount (the door refuses,
+   *   never charges, a figure that moved) and never re-run the approval. The reconciler wins the
+   *   estimate when the deposit is paid.
+   * - A manual method (check, Zelle, bank transfer, card by phone...) shows its instructions and
+   *   "Confirm", which stores the choice through the approval door's retry.
+   * - A customer whose stored method is manual is shown "You chose to pay by ...", its
+   *   instructions and "Pay another way", which opens the list (ruling Q2: they may switch until
+   *   the deposit is paid).
+   *
+   * Not drawn while the deposit is held (the status says why), processing or paid, on the return
+   * from a payment that went through (it may not be booked yet), or on a PENDING estimate that was
+   * never signed (set by hand): paying would win it with no consent on file.
+   */
+  const renderSignedUnpaidPanel = () => {
+    if (!isPending || !depositRequired || !depositPayable || depositHeld) return null;
+    if (!estimate.signature_data && !estimate.signature_at) return null;
+    if (paymentBanner?.type === 'success') return null;
+    // Card and bank need the deposit's own link; the manual methods do not.
+    const methods = collapseCardMethods(availableMethods).filter(
+      (m) => (m !== 'CARD' && m !== 'ACH') || !!depositInvoice?.public_token,
+    );
+    if (methods.length === 0) return null;
+    const amount = depositState?.payable_now ?? depositAmount;
+    const stored = estimate.deposit_method ?? null;
+    const storedManual = !!stored && stored !== 'CARD' && stored !== 'ACH';
+
+    if (selectedMethod) {
+      return (
+        <PublicCard>
+          <div className="flex flex-col gap-4">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="w-fit gap-1 px-0"
+              onClick={() => setSelectedMethod(null)}
+            >
+              <ChevronLeft /> Back to payment methods
+            </Button>
+            <PublicCardTitle>
+              Pay by {formatMethodLabel(selectedMethod)} - {formatCurrency(amount)}
+            </PublicCardTitle>
+            {renderManualInstructions(selectedMethod)}
+            <Button className="w-full" size="lg" isLoading={actionLoading} onClick={() => handleApprove(selectedMethod, 'pending')}>
+              <CheckCircle2 />
+              Confirm
+            </Button>
+            {errorAt('pending')}
+          </div>
+        </PublicCard>
+      );
+    }
+
+    if (storedManual && !payAnotherWay) {
+      return (
+        <PublicCard>
+          <div className="flex flex-col gap-4">
+            <PublicCardTitle>
+              You chose to pay by {formatMethodLabel(stored)} - {formatCurrency(amount)}
+            </PublicCardTitle>
+            {renderManualInstructions(stored)}
+            <Button variant="outline" className="w-full" size="lg" disabled={actionLoading} onClick={() => setPayAnotherWay(true)}>
+              Pay another way
+            </Button>
+            {errorAt('pending')}
+          </div>
+        </PublicCard>
+      );
+    }
+
+    return (
+      <PublicCard>
+        <div className="flex flex-col gap-3">
+          <PublicCardTitle>Select Payment Method</PublicCardTitle>
+          {methods.map((method) =>
+            renderMethodRow(method, amount, () =>
+              method === 'CARD' || method === 'ACH'
+                ? handlePayDeposit(method === 'ACH' ? 'bank' : 'card', 'pending')
+                : setSelectedMethod(method),
+            ),
+          )}
+          {errorAt('pending')}
+        </div>
+      </PublicCard>
+    );
+  };
 
   const renderDepositDue = () => {
     if (!isApproved || !depositRequired || !depositState) return null;
@@ -891,19 +1019,27 @@ export default function PublicEstimatePage() {
     );
   };
 
+  /**
+   * The payment-return banner. #2979: a return WITHOUT payment (the warning) is drawn ABOVE the
+   * status area, never instead of it, so "You can try again below" has the payment list below it.
+   * A return WITH payment still stands in for the status: the payment may not be booked yet, and the
+   * status would read "Deposit Pending" beside "Payment received".
+   */
+  const renderReturnBanner = () => {
+    if (!paymentBanner) return null;
+    const isSuccess = paymentBanner.type === 'success';
+    return (
+      <PublicNotice
+        tone={isSuccess ? 'success' : 'warning'}
+        icon={isSuccess ? <CheckCircle2 /> : <AlertTriangle />}
+      >
+        <p className="font-medium">{paymentBanner.message}</p>
+      </PublicNotice>
+    );
+  };
+
   const renderStatusBanner = () => {
-    // Payment return banners take priority
-    if (paymentBanner) {
-      const isSuccess = paymentBanner.type === 'success';
-      return (
-        <PublicNotice
-          tone={isSuccess ? 'success' : 'warning'}
-          icon={isSuccess ? <CheckCircle2 /> : <AlertTriangle />}
-        >
-          <p className="font-medium">{paymentBanner.message}</p>
-        </PublicNotice>
-      );
-    }
+    if (paymentBanner?.type === 'success') return null;
 
     if (isExpired) {
       return (
@@ -969,34 +1105,8 @@ export default function PublicEstimatePage() {
             <p>Deposit amount: {formatCurrency(depositAmount)}</p>
           </div>
           <p className="mt-2 text-xs">Once we receive your deposit, we&apos;ll schedule your job.</p>
-          {/* Card lane: the customer may have closed the checkout tab before
-              paying. Without this they would be stranded - the estimate is no
-              longer SENT, so the sign-and-pay form is gone. Re-running approve
-              on a PENDING estimate re-opens checkout and leaves the stored
-              signature untouched. */}
+          {/* A held deposit says why here; the payment list below is not drawn (#2979). */}
           {depositHeld && <p className="mt-2 text-xs">{depositHoldMessage(depositState?.hold_reason ?? null)}</p>}
-          {!depositHeld && availableMethods.includes('CARD') && (
-            <Button
-              className="mt-3"
-              size="sm"
-              disabled={actionLoading}
-              onClick={() => handleApprove('CARD', 'pending')}
-            >
-              {actionLoading ? 'Opening checkout…' : 'Complete deposit payment'}
-            </Button>
-          )}
-          {!depositHeld && availableMethods.includes('ACH') && (
-            <Button
-              className="mt-3 ml-2"
-              size="sm"
-              variant="outline"
-              disabled={actionLoading}
-              onClick={() => handleApprove('ACH', 'pending')}
-            >
-              Pay the deposit by bank
-            </Button>
-          )}
-          {actionError?.at === 'pending' && <div className="mt-3">{errorAt('pending')}</div>}
         </PublicNotice>
       );
     }
@@ -1104,8 +1214,14 @@ export default function PublicEstimatePage() {
           </PublicNotice>
         )}
 
+        {/* Payment return banner, above the status (#2979) */}
+        {renderReturnBanner()}
+
         {/* Status banner */}
         {renderStatusBanner()}
+
+        {/* #2979 - signed, deposit not paid: the payment list right under the status. */}
+        {renderSignedUnpaidPanel()}
 
         {/* Slice 27 - an approved estimate's open deposit (pay later, or a bank debit that failed),
             its bank payment clearing, or a deposit held for a reason. */}
@@ -1223,6 +1339,7 @@ export default function PublicEstimatePage() {
         )}
 
         {/* SENT, deposit required, signature done */}
+        {/* eslint-disable-next-line react-hooks/refs -- the rows only PASS the handler; the signature-canvas ref inside it is read at click time, not during render */}
         {isActionable && needsPayment && renderPaymentMethodButtons()}
 
         {/* Deposit required but not yet signed */}

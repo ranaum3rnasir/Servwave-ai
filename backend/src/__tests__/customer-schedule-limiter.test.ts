@@ -14,7 +14,8 @@ vi.mock('../middleware/rate-limit', () => {
     generalLimiter: marker('general'),
     expensiveLimiter: marker('expensive'),
     publicReadLimiter: marker('publicRead'),
-    publicActionLimiter: marker('publicAction'),
+    publicDocumentActionLimiter: marker('publicDocumentAction'),
+    publicDeclineLimiter: marker('publicDecline'),
     publicSelectionLimiter: marker('publicSelection'),
     authLimiter: marker('auth'),
   };

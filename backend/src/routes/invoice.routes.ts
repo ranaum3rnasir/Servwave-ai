@@ -7,7 +7,7 @@ import { validate } from '../middleware/validate';
 import { requireUuidParam } from '../middleware/requireUuidParam';
 import { refuseInvoicePriceEditOnDoneJob } from '../lib/permissions/jobLock';
 import { featureDisabled } from '../middleware/featureDisabled';
-import { publicReadLimiter, publicActionLimiter, expensiveLimiter } from '../middleware/rate-limit';
+import { publicReadLimiter, publicDocumentActionLimiter, expensiveLimiter } from '../middleware/rate-limit';
 import { unscopedRequest } from '../middleware/unscopedRequest';
 import * as invoiceController from '../controllers/invoice.controller';
 import * as invoiceLines from '../controllers/invoice-lines.controller';
@@ -19,7 +19,7 @@ const router = Router();
 // Public routes (no auth) — unscopedRequest marks them cross-tenant for RLS.
 router.get('/:id/public/pdf', unscopedRequest, publicReadLimiter, invoiceController.getPublicPdf);
 router.get('/:id/public', unscopedRequest, publicReadLimiter, invoiceController.getPublic);
-router.post('/:id/public/checkout', unscopedRequest, publicActionLimiter, invoiceController.createPublicCheckout);
+router.post('/:id/public/checkout', unscopedRequest, publicDocumentActionLimiter, invoiceController.createPublicCheckout);
 
 router.use(authenticate, attachAbility, attachCustomerScope);
 

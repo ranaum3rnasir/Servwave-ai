@@ -176,6 +176,7 @@ describe('VERB_RULES', () => {
       'communication.call_missed',
       'communication.sms_inbound',
       'communication.email_inbound',
+      'estimate.deposit_method_selected',
     ];
     for (const verb of alwaysActorless) {
       expect(VERB_RULES[verb].timing, `${verb} is emitted at a call site, not by a sweep`).toBe('event');

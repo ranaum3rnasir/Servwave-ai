@@ -83,7 +83,7 @@ function dedupe(raw: RecipientSpec[], actorId: string | null): RecipientSpec[] {
 export const VERBS_WITHOUT_ROLE_LISTS: ReadonlySet<string> = new Set([
   'lead.assigned', 'lead.reassigned_away', 'lead.unassigned_created', 'lead.walkthrough_scheduled',
   'estimate.approved', 'estimate.deposit_paid', 'estimate.declined', 'estimate.cancelled',
-  'estimate.deposit_waived', 'estimate.approval_voided', 'estimate.status_corrected',
+  'estimate.deposit_waived', 'estimate.approval_voided', 'estimate.status_corrected', 'estimate.deposit_method_selected',
   'dispatch.job_created', 'dispatch.job_assigned', 'dispatch.job_unassigned', 'dispatch.job_rescheduled',
   'job.started', 'job.reopened', 'job.cancelled', 'job.completed', 'job.ready_to_close', 'job.review_attention', 'job.visit_finished',
   'inventory.staging_ready', 'inventory.stock_approval_requested', 'inventory.low_stock', 'inventory.backorder',
@@ -183,7 +183,8 @@ export function resolveRecipients(ctx: ResolveContext): RecipientSpec[] {
     case 'estimate.cancelled':
     case 'estimate.deposit_waived':
     case 'estimate.approval_voided':
-    case 'estimate.status_corrected': {
+    case 'estimate.status_corrected':
+    case 'estimate.deposit_method_selected': {
       chainIds().forEach(id => raw.push(spec(id, FEED)));
       break;
     }

@@ -2134,49 +2134,6 @@ export async function sendDepositPaidAlert(params: {
   }
 }
 
-export async function sendPaymentMethodSelectedAlert(params: {
-  organizationId: string;
-  to: string;
-  estimateNumber: string;
-  customerName: string;
-  paymentMethod: string;
-}): Promise<void> {
-  // A staff email names no amount (Roles & Permissions M4, Ran 2026-10-28), as the deposit alert above.
-  const methodLabels: Record<string, string> = {
-    CARD: 'Card',
-    BANK_TRANSFER: 'Bank Transfer',
-    CHECK: 'Check',
-    CASH: 'Cash',
-    // R5b (2026-07-22) — D3.
-    ZELLE: 'Zelle',
-    VENMO: 'Venmo',
-    CASH_APP: 'Cash App',
-    OTHER: 'Other',
-  };
-  const methodLabel = methodLabels[params.paymentMethod] ?? params.paymentMethod;
-  const html = wrapHtml(h`
-    <h2 style="margin:0 0 8px;font-size:22px;color:#111827;">Customer Selected Payment Method</h2>
-    <p style="margin:0 0 16px;font-size:15px;color:#374151;">
-      <strong>${params.customerName}</strong> selected <strong>${methodLabel}</strong> for the
-      deposit on estimate <strong>${params.estimateNumber}</strong>.
-    </p>
-    <p style="margin:0;font-size:15px;color:#374151;">
-      Watch for incoming payment before marking the deposit as received.
-    </p>
-  `);
-  try {
-    await dispatchEmail(params.organizationId, {
-      to: params.to,
-      subject: `Payment Method Selected - ${params.estimateNumber}`,
-      text: `Customer selected ${methodLabel} for the deposit on ${params.estimateNumber}. Watch for incoming payment.`,
-      html,
-    });
-    logger.info(`Payment method selected alert sent to ${params.to} for ${params.estimateNumber}`);
-  } catch (err) {
-    logger.error(`Failed to send payment method selected alert for ${params.estimateNumber}:`, err);
-  }
-}
-
 // ─── ServWave Payments — action-needed email (Task 1.9 / §6.6-§6.8) ──────────
 //
 // The in-app notification service (services/notifications/) has no email

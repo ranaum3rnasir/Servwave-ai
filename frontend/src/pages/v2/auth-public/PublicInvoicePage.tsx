@@ -59,6 +59,7 @@ import {
   PublicPage,
   PublicUnavailable,
 } from './components/publicShell';
+import { publicActionFailure } from './components/publicActionFailure';
 
 /* --- Types --- */
 
@@ -327,7 +328,7 @@ export default function PublicInvoicePage() {
   // The method whose checkout is opening, so only that button spins.
   const [checkoutLoading, setCheckoutLoading] = useState<CheckoutMethod | null>(null);
   // `id` remounts the alert on every failure, so a repeated failure is announced and focused again.
-  const [checkoutError, setCheckoutError] = useState<{ message: string; id: number } | null>(null);
+  const [checkoutError, setCheckoutError] = useState<{ message: ReactNode; id: number } | null>(null);
   // Below sm the line items are stacked rows, not a four-column table (mobile slice 28). A hook,
   // not CSS, so only one of the two structures is in the DOM for assistive technology.
   const stackLines = useMediaQuery('(max-width: 639px)');
@@ -520,7 +521,7 @@ export default function PublicInvoicePage() {
         setReloadKey((k) => k + 1);
         return;
       }
-      const message = refusalMessage(data, organization?.name ?? 'This business');
+      const message = publicActionFailure(res.status, organization, data) ?? refusalMessage(data, organization?.name ?? 'This business');
       setCheckoutError((prev) => ({ message, id: (prev?.id ?? 0) + 1 }));
     } catch {
       const message = refusalMessage({}, organization?.name ?? 'This business');

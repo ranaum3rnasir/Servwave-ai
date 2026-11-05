@@ -319,7 +319,6 @@ vi.mock('../lib/email', () => ({
   sendBankPaymentProcessingEmail: vi.fn().mockResolvedValue(undefined),
   sendBankPaymentFailedEmail: vi.fn().mockResolvedValue({ status: 'sent', providerMessageId: null, fromAddress: 'noreply@example.test', fromName: null }),
   sendDepositPaidAlert: vi.fn().mockResolvedValue(undefined),
-  sendPaymentMethodSelectedAlert: vi.fn().mockResolvedValue(undefined),
   sendInvoiceEmail: vi.fn().mockResolvedValue({ status: 'sent' }),
   // SRVW-243 - the customer "your visit is booked / has moved" senders, restored
   // as a DIRECT action behind notify_customer. They resolve to an

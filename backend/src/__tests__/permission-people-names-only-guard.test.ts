@@ -208,7 +208,6 @@ const ALLOWED: Record<string, string | [string, number]> = {
   'controllers/comm-calls.controller.ts › createCall: phone,phone_ext': OWN,
   'controllers/comm-threads.controller.ts › resolveSmsDestination: phone': MAIL,
   'controllers/comm-whatsapp-email.controller.ts › assignEmailThread: is_admin': CHECK,
-  'controllers/estimate.controller.ts › approvePublic: email': MAIL,
   'controllers/inv-assets.controller.ts › loadTargetUser: <whole row>': CHECK,
   'controllers/inv-po.controller.ts › PO_INCLUDE: email': ON_RECORD,
   'controllers/inv-techs-jobs.controller.ts › listTechs: <whole row>': PICKUP_TICKET,

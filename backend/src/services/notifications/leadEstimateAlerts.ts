@@ -116,7 +116,8 @@ export type EstimateAlertVerb =
   | 'estimate.cancelled'
   | 'estimate.deposit_waived'
   | 'estimate.approval_voided'
-  | 'estimate.status_corrected';
+  | 'estimate.status_corrected'
+  | 'estimate.deposit_method_selected';
 
 /**
  * What each estimate verb is called in a log line, and its step. Won and Deposit paid are "schedule the job": the holders of
@@ -131,6 +132,8 @@ const ESTIMATE_ROWS: Record<EstimateAlertVerb, { alert: string; schedulesTheJob:
   'estimate.deposit_waived': { alert: 'deposit waived alert', schedulesTheJob: false, copySwitch: 'alert_every_estimate' },
   'estimate.approval_voided': { alert: 'approval voided alert', schedulesTheJob: false, copySwitch: 'alert_every_estimate' },
   'estimate.status_corrected': { alert: 'estimate status corrected alert', schedulesTheJob: false, copySwitch: 'alert_every_estimate' },
+  // #2980 - the customer picked or changed the deposit method (Ran 2026-11-04: in-app, never an email).
+  'estimate.deposit_method_selected': { alert: 'deposit method alert', schedulesTheJob: false, copySwitch: 'alert_every_estimate' },
 };
 
 export interface EstimateAlertArgs {

@@ -140,6 +140,9 @@ export function buildStatusChangeData(
           signature_at: null,
           terms_accepted: false,
           terms_accepted_at: null,
+          // #2980 - the deposit method was picked with the signature voided here.
+          deposit_method: null,
+          deposit_method_at: null,
           modified_after_send: false,
         }
       : {}),

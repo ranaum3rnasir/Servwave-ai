@@ -25,6 +25,7 @@
 
 import { NotificationCategory, NotificationPriority } from '@prisma/client';
 import { UNMATCHED_REPLY_MESSAGE } from './whyLines';
+import { depositMethodActivityLine, isOnlineDepositMethod, WATCH_FOR_PAYMENT_LINE } from '../../lib/deposit-method-labels';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -339,6 +340,18 @@ const registry = {
     title: 'Deposit waived for ' + s(data, 'object_label', 'estimate')
       + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
     body: s(data, 'fallback_reason') || undefined,
+  }),
+
+  // #2980 (Ran 2026-11-04) - the customer picked or changed the deposit method: the History words, never a
+  // method code and never an amount. A method paid by hand adds the line telling the office to watch for it.
+  'estimate.deposit_method_selected': (data) => ({
+    category: 'ESTIMATE',
+    object_type: 'ESTIMATE',
+    priority: 'FEED',
+    action_type: null,
+    needs_action: false,
+    title: depositMethodActivityLine(s(data, 'previous_method') || null, s(data, 'method'), s(data, 'object_label', 'the estimate')),
+    body: withWhy(data, isOnlineDepositMethod(s(data, 'method')) ? undefined : WATCH_FOR_PAYMENT_LINE),
   }),
 
   // R4 (2026-07-21) — D13 guarded unwind (port-plan §3.2).
@@ -1280,6 +1293,12 @@ export const VERB_RULES: Record<KnownVerb, VerbRule> = {
   'estimate.deposit_waived': { family: 'involvement', timing: 'event' },
   'estimate.approval_voided': { family: 'involvement', timing: 'event' },
   'estimate.status_corrected': { family: 'involvement', timing: 'event' },
+  'estimate.deposit_method_selected': {
+    family: 'involvement',
+    timing: 'event',
+    exception: 'No actor-bearing path: only the customer picks a deposit method, on the public estimate or deposit page, '
+      + 'so every emit site passes null.',
+  },
 
   // ── DISPATCH ───────────────────────────────────────────────────────────────
   'dispatch.job_assigned': { family: 'involvement', timing: 'event' },

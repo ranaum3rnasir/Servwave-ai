@@ -7,7 +7,7 @@ import { getClientIp } from '../lib/audit';
 import { env } from '../config/env';
 import { logger } from '../lib/logger';
 import { reportSecuritySignal } from '../lib/security-signal';
-import { markReadsNoRecord } from '../lib/ids/canonicalId';
+import { markReadsNoRecord, isCanonicalId } from '../lib/ids/canonicalId';
 
 const isDev = process.env.NODE_ENV !== 'production';
 const isTest = process.env.NODE_ENV === 'test';
@@ -328,12 +328,48 @@ export function adminPasswordResetUserLimiter(limiter: ConsumableLimiter) {
   });
 }
 
+/** Signing and paying tries one connection may make on ONE estimate or invoice per 15 minutes (#2981). */
+export const PUBLIC_DOCUMENT_ACTIONS_PER_CONNECTION = 20;
+/** Declines one connection may make per 15 minutes. Declining happens once; payment tries never use this. */
+export const PUBLIC_DECLINES_PER_CONNECTION = 5;
+
+/**
+ * The bucket for a signing or paying try: the connection plus the record the route acts on (the estimate
+ * for approval, the invoice for checkout), so a try on another document never counts against this one.
+ * It runs AFTER the canonical-id guard (which answers 404 for any other spelling of a uuid before this
+ * step), and still reads only the canonical lower-case spelling: anything else shares one `-` bucket and
+ * can never name a document, so varying the spelling buys no fresh allowance.
+ */
+export function publicDocumentKey(req: Request): string {
+  const id = req.params?.id;
+  return `${clientIp(req)}|${isCanonicalId(id) ? id : '-'}`;
+}
+
+/** Approval and checkout on a public link: 20 per 15 minutes per connection per document. */
+export function publicDocumentActionUserLimiter(limiter: ConsumableLimiter) {
+  return makeLimiterMiddleware(limiter, {
+    name: 'publicDocumentAction',
+    limit: PUBLIC_DOCUMENT_ACTIONS_PER_CONNECTION,
+    keyFn: publicDocumentKey,
+  });
+}
+
+/** Decline on a public estimate link: 5 per 15 minutes per connection, its own bucket. */
+export function publicDeclineConnectionLimiter(limiter: ConsumableLimiter) {
+  return makeLimiterMiddleware(limiter, {
+    name: 'publicDecline',
+    limit: PUBLIC_DECLINES_PER_CONNECTION,
+    keyFn: clientIp,
+  });
+}
+
 const passthrough = (_req: Request, _res: Response, next: NextFunction): void => next();
 
 let generalLimiterImpl: ReturnType<typeof makeLimiterMiddleware> | typeof passthrough = passthrough;
 let expensiveLimiterImpl: ReturnType<typeof makeLimiterMiddleware> | typeof passthrough = passthrough;
 let publicReadLimiterImpl: ReturnType<typeof makeLimiterMiddleware> | typeof passthrough = passthrough;
-let publicActionLimiterImpl: ReturnType<typeof makeLimiterMiddleware> | typeof passthrough = passthrough;
+let publicDocumentActionLimiterImpl: ReturnType<typeof makeLimiterMiddleware> | typeof passthrough = passthrough;
+let publicDeclineLimiterImpl: ReturnType<typeof makeLimiterMiddleware> | typeof passthrough = passthrough;
 let publicSelectionLimiterImpl: ReturnType<typeof makeLimiterMiddleware> | typeof passthrough = passthrough;
 let authLimiterGated: ReturnType<typeof authLimiterImpl> | typeof passthrough = passthrough;
 let passwordChangeLimiterGated: ReturnType<typeof authLimiterImpl> | typeof passthrough = passthrough;
@@ -354,8 +390,11 @@ if (ON) {
   const generalRL = mk('rl:general', 100, 60);
   const expensiveRL = mk('rl:expensive', 15, 60);
   const publicReadRL = mk('rl:publicread', 20, 60);
-  const publicActionRL = mk('rl:publicaction', 5, 900);
-  // #2090 - approve/decline happen ONCE, so 5 per 15 minutes is right for them. Ticking option
+  // #2981 - signing and paying are counted per connection AND document (20 per 15 minutes): a customer
+  // whose card is declined retries. Decline keeps today's allowance, in its own bucket.
+  const publicDocumentActionRL = mk('rl:publicdocaction', PUBLIC_DOCUMENT_ACTIONS_PER_CONNECTION, 900);
+  const publicDeclineRL = mk('rl:publicdecline', PUBLIC_DECLINES_PER_CONNECTION, 900);
+  // #2090 - decline happens ONCE, so 5 per 15 minutes is right for it. Ticking option
   // boxes is a decision session: a customer weighing three add-ons writes on every change and
   // would be locked out mid-decision at that ceiling. 30 is generous for a real session and still
   // bounded for an unauthenticated write door.
@@ -371,7 +410,8 @@ if (ON) {
   });
   expensiveLimiterImpl = makeLimiterMiddleware(expensiveRL, { name: 'expensive', limit: 15, keyFn: rateLimitKey });
   publicReadLimiterImpl = makeLimiterMiddleware(publicReadRL, { name: 'publicRead', limit: 20, keyFn: clientIp });
-  publicActionLimiterImpl = makeLimiterMiddleware(publicActionRL, { name: 'publicAction', limit: 5, keyFn: clientIp });
+  publicDocumentActionLimiterImpl = publicDocumentActionUserLimiter(publicDocumentActionRL);
+  publicDeclineLimiterImpl = publicDeclineConnectionLimiter(publicDeclineRL);
   publicSelectionLimiterImpl = makeLimiterMiddleware(publicSelectionRL, { name: 'publicSelection', limit: 30, keyFn: clientIp });
   authLimiterGated = authLimiterImpl(authEmailRL, authIpRL);
   // Same 5 failures / 15 min as login, but per signed-in user (wrong current passwords count,
@@ -393,8 +433,10 @@ export const generalLimiter = generalLimiterImpl;
 export const expensiveLimiter = markReadsNoRecord(expensiveLimiterImpl);
 /** Per-IP limiter for public read endpoints (token-based public pages). */
 export const publicReadLimiter = publicReadLimiterImpl;
-/** Per-IP limiter for public action endpoints (approve/decline/checkout). */
-export const publicActionLimiter = publicActionLimiterImpl;
+/** Public approve and invoice checkout: 20 per 15 minutes per connection per document (#2981). */
+export const publicDocumentActionLimiter = publicDocumentActionLimiterImpl;
+/** Public decline: 5 per 15 minutes per connection, apart from the payment tries (#2981). */
+export const publicDeclineLimiter = publicDeclineLimiterImpl;
 /** Per-IP limiter for the public per-tick selection write (#2090) - 30 per 15 minutes. */
 export const publicSelectionLimiter = publicSelectionLimiterImpl;
 /** Dual-bucket (email + IP) limiter for the auth endpoints. */

@@ -58,6 +58,7 @@ import { transitionLeadStatus } from '../services/lead-stage.service';
 import { closeOpenCheckoutLinks } from '../lib/invoice-checkout-expiry';
 import { dispatchAutomationEvent } from '../services/automations/dispatch';
 import { logAudit } from '../lib/audit';
+import { storeDepositMethodPick } from '../lib/estimates/deposit-method';
 import { isInvoiceEditable, isSentInvoice } from '../lib/invoice-editable';
 import { getOrgTimezone, getRequestOrgTimezone, DEFAULT_TIMEZONE } from '../lib/timezone';
 import { orgTodayStart } from '../lib/orgDayRange';
@@ -2886,6 +2887,24 @@ export async function recordPayment(req: Request, res: Response) {
 
 // --- Public Handlers (no auth) ---
 
+/**
+ * #2979 - the method list a public invoice offers, before capabilities. An estimate's deposit offers
+ * the methods the estimate was SENT with: sending writes no invoice override, so the override and
+ * the org default would disagree with the estimate page the customer signed on. Any other invoice
+ * (and a deposit whose estimate kept no sent list) offers its own override, else the org default.
+ */
+function documentMethodsFor(invoice: {
+  kind: string;
+  payment_methods_override: unknown;
+  estimate?: { send_config?: { payment_methods: unknown } | null } | null;
+}): PaymentMethod[] | null {
+  if (invoice.kind === 'DEPOSIT') {
+    const sent = storedMethodsOverride(invoice.estimate?.send_config?.payment_methods);
+    if (sent) return sent;
+  }
+  return storedMethodsOverride(invoice.payment_methods_override);
+}
+
 // Payments go-live slice 19 - getPublic and createPublicCheckout both read what a public invoice
 // offers through lib/payment-options.ts (paymentOptionsFor), so the page and the money door can
 // never disagree. That module now owns the chain that used to live here (org accepted methods ->
@@ -2923,7 +2942,8 @@ export async function getPublic(req: Request, res: Response) {
         // flag, plus the inputs the deposit figure is calculated from (F4 — the flag alone cannot
         // tell a moved figure from an unmoved one). Stripped out of the echoed invoice below: this
         // is internal state, not part of what the customer is shown.
-        estimate: { select: { status: true, modified_after_send: true, deposit_type: true, deposit_value: true, total_amount: true } },
+        // #2979 - send_config: the methods the estimate was sent with (the deposit's offer).
+        estimate: { select: { status: true, modified_after_send: true, deposit_type: true, deposit_value: true, total_amount: true, send_config: { select: { payment_methods: true } } } },
         // Top-level customer for job-less (deposit/orphan) invoices; job.customer fallback below.
         // F-55: email/phone withheld from the public (token) payload — display name only. The
         // public invoice page renders the customer's name, not their contact details.
@@ -3011,7 +3031,7 @@ export async function getPublic(req: Request, res: Response) {
     // invoice (org defaults x its overrides x what the account can take); the checkout door
     // asks the same resolver, so the two cannot disagree.
     const options = paymentOptionsFor(org, {
-      methods: storedMethodsOverride(invoice.payment_methods_override),
+      methods: documentMethodsFor(invoice),
       // A deposit is always paid in full, whatever the stored flag says.
       allow_partial: invoice.kind === 'DEPOSIT' ? false : invoice.allow_partial_payment,
     });
@@ -3342,7 +3362,9 @@ export async function createPublicCheckout(req: Request, res: Response) {
         // the figure that agreement is tested against (F4).
         kind: true,
         total_amount: true,
-        estimate: { select: { id: true, public_token: true, status: true, modified_after_send: true, deposit_type: true, deposit_value: true, total_amount: true } },
+        // #2979 - send_config: an estimate's deposit offers the methods the estimate was sent with.
+        // #2980 - deposit_method / estimate_number: this door stores the customer's pick of card or bank.
+        estimate: { select: { id: true, public_token: true, status: true, modified_after_send: true, deposit_type: true, deposit_value: true, total_amount: true, estimate_number: true, deposit_method: true, send_config: { select: { payment_methods: true } } } },
         customer: { select: { first_name: true, last_name: true, company_name: true } },
         job: {
           select: {
@@ -3403,7 +3425,7 @@ export async function createPublicCheckout(req: Request, res: Response) {
     // whose methods override leaves card out (made bank-only, say) takes no card checkout, and one
     // that leaves bank out takes no bank checkout.
     const options = paymentOptionsFor(invoice.organization, {
-      methods: storedMethodsOverride(invoice.payment_methods_override),
+      methods: documentMethodsFor(invoice),
       // A deposit is always paid in full, whatever the stored flag says.
       allow_partial: invoice.kind === 'DEPOSIT' ? false : invoice.allow_partial_payment,
     });
@@ -3465,13 +3487,17 @@ export async function createPublicCheckout(req: Request, res: Response) {
     const ctx = getStripeForOrg(invoice.organization);
     // Slice 27 - back to the estimate page when it asked, and its own link is still alive.
     const backToEstimate = parsedBody.data.return_to === 'estimate' && invoice.kind === 'DEPOSIT' && !!invoice.estimate?.id && !!invoice.estimate.public_token;
+    // #2979 - a signed estimate (PENDING) is won by this payment, so it comes back exactly as the
+    // signing checkout does ("your estimate has been approved"); `deposit=1` is the return of an
+    // estimate that was already won and is only paying its open deposit.
+    const depositReturn = invoice.estimate?.status === 'PENDING' ? '' : '&deposit=1';
     const session = await createCheckoutSession({
       pricing,
       method,
       // Slice 25 - the method rides the return, so the page confirms a card payment as received
       // and a bank payment as processing.
       successUrl: backToEstimate
-        ? `${baseUrl}/p/estimates/${invoice.estimate!.id}?token=${invoice.estimate!.public_token}&payment=success&method=${method}&deposit=1`
+        ? `${baseUrl}/p/estimates/${invoice.estimate!.id}?token=${invoice.estimate!.public_token}&payment=success&method=${method}${depositReturn}`
         : `${baseUrl}/p/invoices/${invoice.id}?token=${token}&payment=success&method=${method}`,
       cancelUrl: backToEstimate
         ? `${baseUrl}/p/estimates/${invoice.estimate!.id}?token=${invoice.estimate!.public_token}&payment=cancelled`
@@ -3519,6 +3545,34 @@ export async function createPublicCheckout(req: Request, res: Response) {
     // tab and a bank tab, a reload) are closed now that this one is handed out. Fail-soft.
     if (invoice.kind === 'DEPOSIT') {
       await expireOpenCheckoutSessionsForInvoice(invoice.id, ctx, { exceptSessionId: session.id, createdBefore: session.created });
+    }
+
+    // #2979 - the estimate's History reads "Customer started deposit checkout" whichever door
+    // opened the deposit's checkout (approval at signing, or this one afterwards), as approval
+    // writes it. actorId null: the public door has no signed-in user.
+    if (invoice.kind === 'DEPOSIT' && invoice.estimate?.id) {
+      void logAudit({ req, orgId: invoice.organization.id, actorId: null, action: 'estimate.deposit_checkout_started', resourceType: 'Estimate', resourceId: invoice.estimate.id, metadata: { via: 'deposit_checkout', invoice_id: invoice.id, method } });
+      // #2980 - card or bank picked through this door is the customer's deposit method now, as a
+      // pick through the approval door is: stored on the estimate, and a change from the method on
+      // file (a check the customer had chosen, say) tells the office and History once.
+      // Fail-soft: the checkout is already handed out, so a failed save is logged, never a refusal.
+      // A pick that was not stored is announced to no one (code review cr1): the row still holds
+      // the old method, and the next click would announce the same change again.
+      const estimateId = invoice.estimate.id;
+      try {
+        const pick = await storeDepositMethodPick({
+          previous: invoice.estimate.deposit_method,
+          next: method === 'bank' ? 'ACH' : 'CARD',
+          store: async (columns) => {
+            if (columns.deposit_method) await prisma.estimate.update({ where: { id: estimateId }, data: columns });
+          },
+        });
+        void pick.announce({
+          req, organizationId: invoice.organization.id, estimateId, estimateNumber: invoice.estimate.estimate_number, via: 'deposit_checkout',
+        });
+      } catch (err) {
+        logger.error(`Failed to store the deposit method on ${invoice.estimate.estimate_number}:`, err);
+      }
     }
 
     res.json({ checkout_url: session.url });

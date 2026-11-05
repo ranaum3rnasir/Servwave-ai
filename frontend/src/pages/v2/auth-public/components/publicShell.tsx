@@ -79,7 +79,7 @@ export function PublicNotice({
  * into view. The page remounts it (a new `key`) on every failure, so a second failure with the
  * same words is announced and focused again.
  */
-export function PublicActionError({ message }: { message: string }) {
+export function PublicActionError({ message }: { message: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     ref.current?.focus();
@@ -98,6 +98,22 @@ export function PublicActionError({ message }: { message: string }) {
       <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
       <p className="min-w-0 flex-1 [overflow-wrap:anywhere]">{message}</p>
     </div>
+  );
+}
+
+/**
+ * The business's number as a bare call link, for a sentence that says "call us at ..." (#2981). The
+ * customer has no ServWave dialer, so this is a plain `tel:` link, kept in this file with the other
+ * public call link. The extension is shown beside the number and never dialled into it.
+ */
+export function PublicCallLink({ phone, phoneExt }: { phone: string; phoneExt?: string | null }) {
+  const dial = phone.replace(/[^\d+]/g, '');
+  if (!dial) return null;
+  return (
+    <>
+      <ActionLink href={`tel:${dial}`}>{formatPhone(phone)}</ActionLink>
+      {phoneExt ? ` ext. ${phoneExt}` : ''}
+    </>
   );
 }
 

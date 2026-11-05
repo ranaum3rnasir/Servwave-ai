@@ -37,7 +37,6 @@ const NOT_A_CUSTOMER_SEND: Record<string, string> = {
   sendComposedEmail: 'hand-written by a person from the Email page, which stores its own conversation and rows',
   sendStagePickupEmail: 'a pickup ticket to a technician or pickup contacts, not a customer; it names the job and stays a job-linked system email',
   sendDepositPaidAlert: 'a teammate alert (the estimate\'s creator); names no record',
-  sendPaymentMethodSelectedAlert: 'a teammate alert (the estimate\'s creator); names no record',
   sendPaymentsActionNeededEmail: 'the platform voice to the company (no-reply); names no record',
   sendOwnerPaymentNoticeEmail: 'the platform voice to the company (no-reply); names no record',
   sendSalesContactEmail: 'the platform voice, a contractor writing to ServWave; names no record',

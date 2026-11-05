@@ -9031,6 +9031,9 @@ describe('POST /api/estimates/:id/approve', () => {
         deposit: { update: vi.fn().mockResolvedValue({}) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         estimateSendConfig: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+        // #2980 - the signed copy's claim: the row lock and the "already sent?" read find nothing, so it is written.
+        $queryRaw: vi.fn().mockResolvedValue([]),
+        auditLog: { create: vi.fn().mockResolvedValue({}) },
       };
       return fn(tx);
     });

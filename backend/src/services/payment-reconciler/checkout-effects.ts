@@ -22,6 +22,7 @@ import {
   sendBankPaymentProcessingEmail, sendBankPaymentFailedEmail,
 } from '../../lib/email';
 import { loadOptionSummary, optionSummaryData } from '../../lib/estimates/optionSummary';
+import { claimSignedCopy } from '../../lib/estimates/deposit-method';
 import { alertSwitchHolders } from '../notifications/noRecordAlerts';
 import { alertEstimate } from '../notifications/leadEstimateAlerts';
 import { alertInvoice } from '../notifications/invoiceBillingAlerts';
@@ -59,6 +60,8 @@ export const CHECKOUT_INVOICE_SELECT = {
     select: {
       id: true, lead_id: true, estimate_number: true, total_amount: true, status: true, public_token: true,
       modified_after_send: true, deposit_type: true, deposit_value: true,
+      // #2980 - which signing this payment completes: its signed copy may already have gone.
+      signature_at: true,
       creator: { select: { email: true } },
       organization: { select: { name: true, logo_url: true, brand_color: true } },
       customer: { select: { id: true, first_name: true, last_name: true, company_name: true, email: true } },
@@ -535,6 +538,10 @@ async function announceApproval(est: DepositEstimate, invoice: CheckoutInvoice, 
     action: 'estimate.approved', resourceType: 'Estimate', resourceId: est.id, orgId: invoice.organization_id,
     actorId: null, metadata: { estimate_number: est.estimate_number, via },
   });
+  // #2980 (ruling Q17) - the customer's signed copy goes once per signing. A customer who signed
+  // with a manual method (Check, Zelle...), or picked one after a card signing, got it then; paying
+  // by card or bank later sends no second. The claim is awaited: it is the record of the send.
+  if (!(await claimSignedCopy({ organizationId: invoice.organization_id, estimateId: est.id, signatureAt: est.signature_at }))) return;
   const { customer, customerName, record } = depositCustomer(est, invoice);
   if (est.organization && customer?.email && record) {
     sendEstimateApprovedNotification({

@@ -12,6 +12,7 @@ import {
   type EstimateActivityEvent,
   type EstimateVersionSummary,
 } from '../lib/estimateHistoryTimeline';
+import { depositMethodEventLabel } from '../lib/depositMethodHistory';
 
 // action -> a short, human sentence. Falls back to a generic label (never the raw dotted key)
 // for anything unlisted — see `FALLBACK_ACTION_LABEL` below. Coverage against every
@@ -171,7 +172,7 @@ export function HistoryPanel({ open, onClose, estimateId }: { open: boolean; onC
                       // shows up in a hover title, and only when there is no plain-English label.
                       title={ACTION_LABELS[entry.event.action] ? undefined : entry.event.action}
                     >
-                      {ACTION_LABELS[entry.event.action] ?? FALLBACK_ACTION_LABEL}
+                      {depositMethodEventLabel(entry.event) ?? ACTION_LABELS[entry.event.action] ?? FALLBACK_ACTION_LABEL}
                     </p>
                     <p className="text-xs text-text-secondary">
                       {whenLabel(entry.event.created_at)}

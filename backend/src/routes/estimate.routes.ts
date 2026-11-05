@@ -6,7 +6,7 @@ import { attachCustomerScope } from '../lib/permissions/customerScope';
 import { canDo } from '../middleware/canGuard';
 import { validate } from '../middleware/validate';
 import { requireUuidParam } from '../middleware/requireUuidParam';
-import { publicReadLimiter, publicActionLimiter, publicSelectionLimiter, expensiveLimiter } from '../middleware/rate-limit';
+import { publicReadLimiter, publicDocumentActionLimiter, publicDeclineLimiter, publicSelectionLimiter, expensiveLimiter } from '../middleware/rate-limit';
 import { unscopedRequest } from '../middleware/unscopedRequest';
 import { withOrgContext } from '../middleware/withOrgContext';
 import * as estimateController from '../controllers/estimate.controller';
@@ -37,14 +37,14 @@ const photoMulterErrors = multerErrorHandler({
 router.get('/:id/public/pdf', unscopedRequest, publicReadLimiter, estimateController.getPublicPdf);
 router.get('/:id/public', unscopedRequest, publicReadLimiter, estimateController.getPublic);
 // #2090 - the customer's own option ticks, written on change and before the lock. Its own
-// limiter, NOT publicActionLimiter: approve and decline happen once, a decision session does not.
+// limiter, NOT the approval or decline one: approve and decline happen once, a decision session does not.
 router.patch('/:id/public/selections', unscopedRequest, publicSelectionLimiter, validate(estimateController.publicSelectionsSchema, estimateController.PUBLIC_SELECTIONS_STRUCTURE), estimateController.updatePublicSelections);
-router.post('/:id/approve', unscopedRequest, publicActionLimiter, estimateController.approvePublic);
+router.post('/:id/approve', unscopedRequest, publicDocumentActionLimiter, estimateController.approvePublic);
 // Slice C / D6 — the words the decline dialog offers, fetched when it opens. A READ limiter,
 // not the action one: opening the dialog is a read, and it must not spend the budget the
 // decline itself needs a moment later.
 router.get('/:id/decline-reasons', unscopedRequest, publicReadLimiter, estimateController.getPublicDeclineReasons);
-router.post('/:id/decline', unscopedRequest, publicActionLimiter, validate(estimateController.declinePublicSchema), estimateController.declinePublic);
+router.post('/:id/decline', unscopedRequest, publicDeclineLimiter, validate(estimateController.declinePublicSchema), estimateController.declinePublic);
 
 // ─── Auth-gated routes ────────────────────────────────
 router.use(authenticate, attachAbility, attachCustomerScope);

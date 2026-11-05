@@ -13,7 +13,7 @@ import { applyFilters } from '../lib/query/filterEngine';
 import { estimateFacets } from '../lib/query/registries/estimate.filters';
 import { env } from '../config/env';
 import { ADDRESS_NEEDED_REFUSAL, handSenderOrRefusal, type HandSender } from '../lib/mailbox/hand-sender';
-import { sendEstimateEmail, sendEstimateWithDepositEmail, sendEstimateApprovedNotification, sendDepositReceivedConfirmation, sendDepositPaidAlert, sendPaymentMethodSelectedAlert } from '../lib/email';
+import { sendEstimateEmail, sendEstimateWithDepositEmail, sendEstimateApprovedNotification, sendDepositReceivedConfirmation } from '../lib/email';
 import type { EmailDispatchResult } from '../lib/email';
 import { createCheckoutSession, getStripeForOrg, isStripeConfigured, expireOpenCheckoutSessionsForInvoice } from '../lib/stripe';
 import { exceedsPayableNow, handPaymentAboveBalanceMessage, payableNowCents, priceCheckout, processingBlocksHandPaymentMessage, type CheckoutMethod } from '../lib/checkout-pricing';
@@ -40,6 +40,7 @@ import { queueEstimateAlert, type EstimateAlertVerb } from '../services/notifica
 import { dispatchAutomationEvent } from '../services/automations/dispatch';
 import { addOrFilter } from '../lib/permissions/whereCompose';
 import { logAudit } from '../lib/audit';
+import { claimSignedCopy, storeDepositMethodPick } from '../lib/estimates/deposit-method';
 import { computeRenumber, applyRenumber, type RenumberComputation } from '../lib/record-renumber';
 import { generateReply, isBrainNotConfigured } from '../services/copilot/brain';
 import { asScopeArray, toScopeForTotals, toEstimateScopeForTotals, stripDocumentCost, stripScopeSendSnapshot, withOptionalDefaults, type ScopeOfWork } from '../lib/scopes';
@@ -413,6 +414,9 @@ export const estimatePublicSelect = {
   },
   terms_accepted: true,        // #21
   terms_accepted_at: true,     // #21
+  // #2980 - the customer's current deposit method: a returning customer who picked check, Zelle,
+  // bank transfer or card by phone is shown that method's instructions again.
+  deposit_method: true,
   // Payments go-live slice 19: the deposit-policy override the public page's options resolve from.
   deposit_policy: true,
   // signature_ip intentionally excluded — internal only
@@ -772,9 +776,10 @@ export function materialChangeGuardrail(version: number): { version: number; mod
 export function pendingRevertOnMaterialChange(
   isMaterialChange: boolean,
   status: string,
-): { status: typeof ESTIMATE_STATUS.SENT; signature_data: null; signature_at: null } | Record<string, never> {
+): { status: typeof ESTIMATE_STATUS.SENT; signature_data: null; signature_at: null; deposit_method: null; deposit_method_at: null } | Record<string, never> {
   if (isMaterialChange && status === ESTIMATE_STATUS.PENDING) {
-    return { status: ESTIMATE_STATUS.SENT, signature_data: null, signature_at: null };
+    // #2980 - the deposit method was picked with the signature this voids; the next signing picks again.
+    return { status: ESTIMATE_STATUS.SENT, signature_data: null, signature_at: null, deposit_method: null, deposit_method_at: null };
   }
   return {};
 }
@@ -6073,7 +6078,7 @@ async function applyCustomerSelections(
  *
  * The customer's own tick, persisted on change and before the lock. Unauthenticated: the token in
  * the URL is the only credential, compared exactly as `getPublic` compares it (no token → 400,
- * wrong token → 404). Rate-limited by `publicSelectionLimiter` rather than `publicActionLimiter`:
+ * wrong token → 404). Rate-limited by `publicSelectionLimiter` rather than the approval or decline limiter:
  * approve happens once, a decision session does not.
  *
  * The response is built by `presentPublicEstimate`, the same presenter `getPublic` uses, so it
@@ -6171,7 +6176,11 @@ export async function approvePublic(req: Request, res: Response) {
         id: true, status: true, estimate_number: true, lead_id: true,
         organization_id: true,
         total_amount: true, valid_until: true, signature_data: true,
+        // #2980 - the signing a later pick belongs to: its signed copy is claimed against this time.
+        signature_at: true,
         snapshot_terms: true,   // #21 — authoritative "did THIS estimate present terms"
+        // #2980 - the deposit method on file: a pick against it is a first pick, a change or the same.
+        deposit_method: true,
         // Slice 15 - the deposit hold asks whether the deposit figure still agrees with the estimate.
         modified_after_send: true, deposit_type: true, deposit_value: true,
         // Slice 27 - the estimate's own deposit-policy override (null = follow the org default).
@@ -6230,7 +6239,10 @@ export async function approvePublic(req: Request, res: Response) {
     // #21 — T&C gate. Consent is evaluated against the terms PRESENTED at send time
     // (snapshot_terms, captured in send() at line ~1042), so a post-send edit/blank of
     // the org's live terms cannot let an in-flight estimate approve against the wrong terms.
-    if (existing.snapshot_terms && existing.snapshot_terms.trim() !== '' && terms_accepted !== true) {
+    // #2980 - skipped on a payment retry, like the signature and expiry checks above: the terms
+    // were accepted with the signature on file, and the signed page shows no terms box to tick
+    // again (every retry used to be refused here). A first approval still needs the flag.
+    if (!isPaymentRetry && existing.snapshot_terms && existing.snapshot_terms.trim() !== '' && terms_accepted !== true) {
       res.status(400).json({ error: 'Terms acceptance is required' });
       return;
     }
@@ -6506,17 +6518,24 @@ export async function approvePublic(req: Request, res: Response) {
       // document stayed editable. The webhook moves PENDING → WON on payment.
       // On a payment retry the signature is already recorded — preserve it rather than
       // re-stamping signature_at, so the consent record reflects the original acceptance.
-      await prisma.estimate.update({
-        where: { id: existing.id },
-        data: {
-          status: 'PENDING',
-          ...(isPaymentRetry ? {} : {
-            signature_data,
-            signature_ip: signatureIp,
-            signature_at: new Date(),
-          }),
-          ...(termsApplied && !isPaymentRetry ? { terms_accepted: true, terms_accepted_at: new Date() } : {}),
-        },
+      // #2980 - the customer's deposit method, as picked here, stored with the signing. Its
+      // announcement exists only once this write succeeded (code review cr1).
+      const methodPick = await storeDepositMethodPick({
+        previous: existing.deposit_method,
+        next: payment_method,
+        store: (depositMethodColumns) => prisma.estimate.update({
+          where: { id: existing.id },
+          data: {
+            status: 'PENDING',
+            ...(isPaymentRetry ? {} : {
+              signature_data,
+              signature_ip: signatureIp,
+              signature_at: new Date(),
+            }),
+            ...(termsApplied && !isPaymentRetry ? { terms_accepted: true, terms_accepted_at: new Date() } : {}),
+            ...depositMethodColumns,
+          },
+        }),
       });
 
       // The kind=DEPOSIT Invoice is the deposit document. The webhook resolves this checkout via
@@ -6572,69 +6591,62 @@ export async function approvePublic(req: Request, res: Response) {
       });
 
       void logAudit({ req, orgId: existing.organization_id, actorId: null, action: 'estimate.deposit_checkout_started', resourceType: 'Estimate', resourceId: existing.id, metadata: { via: 'stripe_checkout' } });
+      // #2980 - a change to card or bank on file (a first card or bank pick at signing tells no one).
+      void methodPick.announce({
+        req, organizationId: existing.organization_id, estimateId: existing.id, estimateNumber: existing.estimate_number, via: 'stripe_checkout',
+      });
       res.json({ estimate: await presentPublicEstimate(estimate), checkout_url: session.url });
       return;
     }
 
     // ── Branch 3: Deposit required + non-Stripe method ──
-    const estimate = await prisma.$transaction(async (tx) => {
-      const est = await tx.estimate.update({
-        where: { id: existing.id },
-        data: {
-          status: 'PENDING',
-          // Preserve the original consent record on a payment retry (see Branch 2).
-          ...(isPaymentRetry ? {} : {
-            signature_data,
-            signature_ip: signatureIp,
-            signature_at: new Date(),
-          }),
-          ...(termsApplied && !isPaymentRetry ? { terms_accepted: true, terms_accepted_at: new Date() } : {}),
-        },
-        select: estimatePublicSelect,
-      });
+    // #2980 - at signing this is the customer's first pick: a method still on the row belongs to a
+    // signing that was voided.
+    const signedAt = new Date();
+    const methodOnFile = isPaymentRetry ? existing.deposit_method : null;
+    // #2980 - the customer's deposit method, as picked here (at signing, or a later change). Its
+    // announcement exists only once this write succeeded (code review cr1).
+    const { stored: estimate, announce: announceMethodPick } = await storeDepositMethodPick({
+      previous: methodOnFile,
+      next: payment_method!,
+      store: (depositMethodColumns) => prisma.$transaction(async (tx) => {
+        const est = await tx.estimate.update({
+          where: { id: existing.id },
+          data: {
+            status: 'PENDING',
+            // Preserve the original consent record on a payment retry (see Branch 2).
+            ...(isPaymentRetry ? {} : {
+              signature_data,
+              signature_ip: signatureIp,
+              signature_at: signedAt,
+            }),
+            ...(termsApplied && !isPaymentRetry ? { terms_accepted: true, terms_accepted_at: new Date() } : {}),
+            ...depositMethodColumns,
+          },
+          select: estimatePublicSelect,
+        });
 
-      // The kind=DEPOSIT Invoice has no method-pre-selection field; the customer's chosen method
-      // is captured when the deposit payment is actually recorded. Keep the audit timeline event.
-      await tx.timelineEvent.create({
-        data: {
-          organization_id: existing.organization_id,
-          entity_type: 'ESTIMATE',
-          entity_id: existing.id,
-          event_type: 'DEPOSIT_PAYMENT_METHOD_SELECTED',
-          description: `Customer selected ${payment_method} as deposit payment method for ${existing.estimate_number}`,
-        },
-      });
-
-      return est;
+        return est;
+      }),
     });
 
-    void logAudit({ req, orgId: existing.organization_id, actorId: null, action: 'estimate.deposit_method_selected', resourceType: 'Estimate', resourceId: existing.id, metadata: { via: 'manual_method' } });
     res.json({ estimate: await presentPublicEstimate(estimate) });
 
-    // Fire-and-forget: notify estimate creator of payment method selection
-    prisma.estimate.findUnique({
-      where: { id: existing.id },
-      select: {
-        estimate_number: true,
-        invoices: { where: { kind: 'DEPOSIT' as const }, select: { total_amount: true }, take: 1 },
-        creator: { select: { email: true } },
-        // SERV10X-61 - direct anchor (R6) so a lead-less estimate names its customer in the
-        // method-selected alert; falls back through the lead for lead-anchored rows.
-        customer: { select: { first_name: true, last_name: true, company_name: true } },
-        lead: { select: { customer: { select: { first_name: true, last_name: true, company_name: true } } } },
-      },
-    }).then((est) => {
-      if (!est?.creator?.email) return;
-      const cust = est.lead?.customer ?? est.customer;
-      const custName = [cust?.first_name, cust?.last_name].filter(Boolean).join(' ') || cust?.company_name || 'Customer';
-      sendPaymentMethodSelectedAlert({
-        organizationId: existing.organization_id,
-        to: est.creator.email,
-        estimateNumber: est.estimate_number,
-        customerName: custName,
-        paymentMethod: payment_method!,
-      });
-    }).catch(() => {});
+    // #2980 - History, the activity line and the office email, once per change of method: a first
+    // manual pick keeps today's "Payment Method Selected" email, a change sends "Payment Method
+    // Changed", the same method again sends nothing. The kind=DEPOSIT Invoice keeps no method of
+    // its own; the method a payment arrived by is captured when it is recorded.
+    void announceMethodPick({
+      req, organizationId: existing.organization_id, estimateId: existing.id, estimateNumber: existing.estimate_number, via: 'manual_method',
+    });
+
+    // #2980 (Ran 2026-11-04) - the customer's signed-estimate email goes exactly once per signing:
+    // here at a manual signing, or at a later manual pick when the signing was by card or bank and
+    // its checkout was never paid (nothing was sent yet). The claim decides, so a second pick, or
+    // the payment that completes the deposit later, sends no second copy.
+    if (!(await claimSignedCopy({
+      organizationId: existing.organization_id, estimateId: existing.id, signatureAt: isPaymentRetry ? existing.signature_at : signedAt,
+    }))) return;
 
     // Fire-and-forget: send post-signature PDF notification (Branch 3 = non-CARD method)
     prisma.estimate.findUnique({
