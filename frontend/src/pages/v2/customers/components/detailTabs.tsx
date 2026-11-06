@@ -292,6 +292,7 @@ export function LeadsTab({ view, timeZone, onNavigate }: {
               aside: <StatusChip domain="lead" status={lead.status} />,
               onOpen: () => onNavigate(lead.id),
               fields: [
+                { label: 'Lead #', value: <MutedMono>{lead.lead_number ?? DASH}</MutedMono> },
                 { label: 'Walkthrough', value: <div data-testid="lead-walkthrough"><WalkthroughCell lead={lead} timeZone={timeZone} /></div> },
                 { label: 'Estimates', value: estCount > 0 ? <Badge variant="softBlue" size="pill">{estCount}</Badge> : DASH },
                 ...(showPrices ? [{ label: 'Est. Value', value: <Muted>{estValue > 0 ? formatCurrency(estValue) : '-'}</Muted> }] : []),
@@ -312,6 +313,7 @@ export function LeadsTab({ view, timeZone, onNavigate }: {
       <Table scrollMarker="record-list">
         <TableHeader>
           <TableRow className="hover:bg-transparent">
+            <TableHead>Lead #</TableHead>
             <TableHead>Status</TableHead>
             <TableHead>Service Request</TableHead>
             <TableHead>Walkthrough</TableHead>
@@ -327,6 +329,7 @@ export function LeadsTab({ view, timeZone, onNavigate }: {
             const estValue = (lead.estimates ?? []).reduce((sum, e) => sum + parseFloat(String(e.total_amount)), 0);
             return (
               <TableRow key={lead.id} className="cursor-pointer" onClick={() => onNavigate(lead.id)}>
+                <TableCell><Mono>{lead.lead_number ?? DASH}</Mono></TableCell>
                 <TableCell><StatusChip domain="lead" status={lead.status} /></TableCell>
                 <TableCell><span className="block truncate">{truncate(lead.service_request)}</span></TableCell>
                 <TableCell>
