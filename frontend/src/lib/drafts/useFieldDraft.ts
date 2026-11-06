@@ -59,8 +59,11 @@ export interface FieldDraft {
   /**
    * The text on screen has just been saved: delete the draft and make that text the new baseline,
    * leaving it in the field. For a field that stays on screen after saving (clear would blank it).
+   * Pass `sent` (the text the save request carried) when the field stays editable while saving:
+   * if the person typed on after sending, `sent` becomes the baseline and the longer text stays
+   * as an unsent draft, in the field and in storage.
    */
-  markSaved: () => void;
+  markSaved: (sent?: string) => void;
   /** True when the text on screen came back from storage on mount. */
   restored: boolean;
 }
@@ -146,12 +149,19 @@ export function useFieldDraft({
     setSlot((prev) => ({ ...prev, value: prev.baseline, restored: false }));
   }, []);
 
-  const markSaved = useCallback(() => {
+  const markSaved = useCallback((sent?: string) => {
     if (timerRef.current) {
       clearTimeout(timerRef.current);
       timerRef.current = null;
     }
     pendingRef.current = false;
+    // Typed on after the text was sent: what was sent is saved, the rest is still an unsent draft.
+    if (sent !== undefined && sent !== valueRef.current) {
+      baselineRef.current = sent;
+      if (keyRef.current) writeDraft(keyRef.current, valueRef.current);
+      setSlot((prev) => ({ ...prev, baseline: sent, restored: false }));
+      return;
+    }
     baselineRef.current = valueRef.current;
     if (keyRef.current) removeDraft(keyRef.current);
     setSlot((prev) => ({ ...prev, baseline: prev.value, restored: false }));

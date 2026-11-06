@@ -12,6 +12,7 @@ import { EmptyState } from '@/components/ui/empty-state';
 import { DraftRestoredNote } from '@/ui-kit/components/ui/draftRestoredNote';
 import { useFieldDraft } from '@/lib/drafts/useFieldDraft';
 import { NoteDeleteButton } from '@/components/notes/NoteDeleteButton';
+import { NoteEditedMark, type NoteEditMarks } from '@/components/notes/NoteEditedMark';
 import { useDeleteNote } from '@/lib/notes/useDeleteNote';
 import type { NoteDeleteAnswer } from '@/lib/notes/noteChange';
 import { TextLengthCounter } from '@/components/form';
@@ -24,7 +25,7 @@ interface ActivityPanelProps {
   entityId: string;
 }
 
-interface NoteItem extends NoteDeleteAnswer {
+interface NoteItem extends NoteDeleteAnswer, NoteEditMarks {
   id: string;
   content: string;
   created_at: string;
@@ -59,6 +60,18 @@ function scheduleMeta(ev: TimelineItem): { from: string | null; to: string } | n
   // now always send `from`, but the rows already stored do not.
   if (from !== undefined && typeof from !== 'string' && from !== null) return null;
   return { from: typeof from === 'string' ? from : null, to };
+}
+
+/**
+ * An edit to a lead's general note (#3104, NOTE_EDITED): the text before and after, off the entry's metadata. Anything
+ * malformed is null, and the row falls back to the entry's plain description.
+ */
+function noteEditMeta(ev: TimelineItem): { from: string; to: string } | null {
+  if (ev.event_type !== 'NOTE_EDITED') return null;
+  const meta = ev.metadata;
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return null;
+  const { from, to } = meta as { from?: unknown; to?: unknown };
+  return typeof from === 'string' && typeof to === 'string' ? { from, to } : null;
 }
 
 /**
@@ -266,6 +279,7 @@ export function ActivityPanel({ entityType, entityId }: ActivityPanelProps) {
                 addSuffix: true,
               });
               const sched = !isNote ? scheduleMeta(timelineData!) : null;
+              const noteEdit = !isNote ? noteEditMeta(timelineData!) : null;
 
               return (
                 <div
@@ -277,27 +291,53 @@ export function ActivityPanel({ entityType, entityId }: ActivityPanelProps) {
                       {initials}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-medium text-text-primary truncate">
-                          {name}
-                        </span>
-                        <span className="text-[10px] text-text-secondary whitespace-nowrap">
-                          {timeAgo}
-                        </span>
-                        {noteData && (
-                          <span className="ms-auto">
-                            <NoteDeleteButton
-                              note={noteData}
-                              authorName={name}
-                              pending={deleteNote.isDeleting}
-                              onDelete={() => deleteNote.requestDelete(noteData.id)}
-                            />
+                      {noteEdit ? (
+                        // Only the name truncates; "edited the note" never does. It used to sit inside the name's
+                        // truncating span, which clipped it in the narrow panel, and because that span is a scroll
+                        // container, bringing the hidden words into view scrolled it sideways and cut the name's
+                        // first letters off too. The time sits at the right and drops under only when it cannot fit.
+                        <div className="flex flex-wrap items-center gap-x-2">
+                          <span className="flex min-w-0 text-xs text-text-primary">
+                            <span className="font-medium truncate">{name}</span>
+                            <span className="shrink-0 whitespace-pre"> edited the note</span>
                           </span>
-                        )}
-                      </div>
-                      <p className="text-xs text-text-secondary mt-0.5 whitespace-pre-wrap break-words">
-                        {isNote ? content : humanizeInstants(content, tz)}
-                      </p>
+                          <span className="ms-auto text-[10px] text-text-secondary whitespace-nowrap">
+                            {timeAgo}
+                          </span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-medium text-text-primary truncate">
+                            {name}
+                          </span>
+                          <span className="text-[10px] text-text-secondary whitespace-nowrap">
+                            {timeAgo}
+                          </span>
+                          {noteData && (
+                            <span className="ms-auto">
+                              <NoteDeleteButton
+                                note={noteData}
+                                authorName={name}
+                                pending={deleteNote.isDeleting}
+                                onDelete={() => deleteNote.requestDelete(noteData.id)}
+                              />
+                            </span>
+                          )}
+                        </div>
+                      )}
+                      {noteEdit ? (
+                        <dl className="mt-1 grid grid-cols-[auto_minmax(0,1fr)] gap-x-2.5 gap-y-1 text-xs">
+                          <dt className="text-text-secondary">Before</dt>
+                          <dd className="text-text-secondary whitespace-pre-wrap break-words">{noteEdit.from}</dd>
+                          <dt className="text-text-secondary">After</dt>
+                          <dd className="text-text-primary whitespace-pre-wrap break-words">{noteEdit.to}</dd>
+                        </dl>
+                      ) : (
+                        <p className="text-xs text-text-secondary mt-0.5 whitespace-pre-wrap break-words">
+                          {isNote ? content : humanizeInstants(content, tz)}
+                        </p>
+                      )}
+                      {noteData && <NoteEditedMark note={noteData} />}
                       {sched && (
                         <p className="text-[11px] text-text-secondary mt-0.5">
                           {sched.from

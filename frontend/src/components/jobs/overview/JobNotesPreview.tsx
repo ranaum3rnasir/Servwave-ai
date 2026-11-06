@@ -12,12 +12,13 @@ import { canAutoFocus } from '@/ui-kit/lib/autoFocus';
 import { DraftRestoredNote } from '@/ui-kit/components/ui/draftRestoredNote';
 import { useFieldDraft } from '@/lib/drafts/useFieldDraft';
 import { NoteDeleteButton } from '@/components/notes/NoteDeleteButton';
+import { NoteEditedMark, type NoteEditMarks } from '@/components/notes/NoteEditedMark';
 import { useDeleteNote } from '@/lib/notes/useDeleteNote';
 import type { NoteDeleteAnswer } from '@/lib/notes/noteChange';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
-export interface JobNote extends NoteDeleteAnswer {
+export interface JobNote extends NoteDeleteAnswer, NoteEditMarks {
   id: string;
   content: string;
   created_at: string;
@@ -227,6 +228,8 @@ export function JobNotesPreview({
               <p className="text-xs text-text-secondary whitespace-pre-wrap break-words">
                 {note.content}
               </p>
+              {/* A lead's general note edited from Edit lead (#3104): the same mark as the Notes tab. */}
+              <NoteEditedMark note={note} />
             </div>
           ))}
         </div>

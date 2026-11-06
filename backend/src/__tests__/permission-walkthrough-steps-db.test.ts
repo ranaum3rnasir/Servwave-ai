@@ -151,8 +151,9 @@ suite('walkthrough steps follow the crew of the walkthrough acted on (real datab
     });
   });
 
+  const notesOf = (api: Api, leadId: string, text: string) => api.post(`/api/leads/${leadId}/walkthrough`, { walkthrough_notes: text });
+
   describe('noting a walkthrough', () => {
-    const notesOf = (api: Api, leadId: string, text: string) => api.post(`/api/leads/${leadId}/walkthrough`, { walkthrough_notes: text });
 
     it('refuses an Owner who is not on the crew and writes nothing; the crew member is let in', async () => {
       const { org, customer } = await fx.newOrg();
@@ -191,6 +192,170 @@ suite('walkthrough steps follow the crew of the walkthrough acted on (real datab
       const dispatcher = await personWith(org, { ...performs, update_any_visit_status: true, leads_scope: 'all' });
       expect((await notesOf(await dispatcher.api(), lead.id, 'Office note')).status).toBe(200);
       expect((await visitRow(lead.walkthroughId!)).notes).toBe('Office note');
+    });
+  });
+
+  describe("noting one named walkthrough (the Notes tab's cards)", () => {
+    const visitNotes = (api: Api, leadId: string, visitId: string, text: string) =>
+      api.patch(`/api/leads/${leadId}/visits/${visitId}/notes`, { notes: text });
+
+    /** A lead with three walkthroughs: 1 cancelled (me), 2 finished (me), 3 coming (a colleague). */
+    async function threeWalkthroughs() {
+      const { org, customer } = await fx.newOrg();
+      const me = await personWith(org, performs);
+      const other = await colleague(org);
+      const lead = await scheduledLead(org, customer, { owner: me.id });
+      const first = await fx.addVisit(org, { leadId: lead.id, purpose: 'WALKTHROUGH', crew: [me.id], daysFromNow: 1, seq: 1 });
+      await db.visit.update({ where: { id: first }, data: { status: 'CANCELLED', cancelled_at: new Date(), cancelled_reason: 'Customer not home', notes: 'Nobody home' } });
+      const second = await fx.addVisit(org, { leadId: lead.id, purpose: 'WALKTHROUGH', crew: [me.id], daysFromNow: -3, seq: 2 });
+      const third = await fx.addVisit(org, { leadId: lead.id, purpose: 'WALKTHROUGH', crew: [other.id], daysFromNow: 2, seq: 3 });
+      return { org, customer, me, other, lead, visits: { first, second, third } };
+    }
+
+    it("writes a cancelled and a finished walkthrough's notes for the crew member, and any walkthrough's for Update any visit's status", async () => {
+      const { org, me, lead, visits } = await threeWalkthroughs();
+      const dispatcher = await personWith(org, { ...performs, update_any_visit_status: true, leads_scope: 'all' });
+      const mine = await me.api();
+      expect((await visitNotes(mine, lead.id, visits.first, 'Called ahead')).status).toBe(200);
+      expect((await visitRow(visits.first)).notes).toBe('Called ahead');
+      expect((await visitNotes(mine, lead.id, visits.second, 'Measured')).status).toBe(200);
+      expect((await visitRow(visits.second)).notes).toBe('Measured');
+      // Clearing the box (empty, or only spaces) stores no notes, as a booking with blank notes does.
+      for (const blank of ['', '   ', ' \n\t ']) {
+        expect((await visitNotes(mine, lead.id, visits.second, 'Measured')).status).toBe(200);
+        expect((await visitNotes(mine, lead.id, visits.second, blank)).status, JSON.stringify(blank)).toBe(200);
+        expect((await visitRow(visits.second)).notes, JSON.stringify(blank)).toBeNull();
+      }
+      // Non-blank text is stored exactly as sent, spaces included.
+      expect((await visitNotes(mine, lead.id, visits.second, '  Measured  ')).status).toBe(200);
+      expect((await visitRow(visits.second)).notes).toBe('  Measured  ');
+
+      const office = await dispatcher.api();
+      expect((await visitNotes(office, lead.id, visits.third, 'Phoned in')).status).toBe(200);
+      expect((await visitRow(visits.third)).notes).toBe('Phoned in');
+    });
+
+    it('refuses a person off that walkthrough crew with 403 and writes nothing; the current-walkthrough door keeps working', async () => {
+      const { me, lead, visits } = await threeWalkthroughs();
+      const res = await visitNotes(await me.api(), lead.id, visits.third, 'Not mine');
+      expect(res.status).toBe(403);
+      expect((await visitRow(visits.third)).notes).toBeNull();
+      // The old door still writes the current walkthrough (the coming one, a colleague's) by the same rule.
+      expect((await notesOf(await me.api(), lead.id, 'x')).status).toBe(403);
+    });
+
+    it('answers 404 for a walkthrough on another lead or a malformed id, and writes nothing', async () => {
+      const { org, customer, me, lead, visits } = await threeWalkthroughs();
+      const elsewhere = await scheduledLead(org, customer, { walkthroughCrew: [me.id] });
+      const api = await me.api();
+      const res = await visitNotes(api, lead.id, elsewhere.walkthroughId!, 'Wrong lead');
+      expect(res.status).toBe(404);
+      expect((await visitRow(elsewhere.walkthroughId!)).notes).toBeNull();
+      expect((await visitNotes(api, lead.id, 'not-a-uuid', 'x')).status).toBe(404);
+      expect((await visitNotes(api, lead.id, randomUUID(), 'x')).status).toBe(404);
+      expect((await visitRow(visits.first)).notes).toBe('Nobody home');
+    });
+
+    it('refuses a lead out of reach exactly as the lead other walkthrough door does, in the same company and across companies', async () => {
+      const { org, customer, lead, visits } = await threeWalkthroughs();
+      // Same company, Leads scope Attached, not attached and not on any crew.
+      const stranger = await personWith(org, performs);
+      const strangerApi = await stranger.api();
+      const old = await notesOf(strangerApi, lead.id, 'x');
+      const door = await visitNotes(strangerApi, lead.id, visits.first, 'Sneaking');
+      expect([403, 404]).toContain(old.status);
+      expect(door.status).toBe(old.status);
+      expect(door.body).toEqual(old.body);
+      expect((await visitRow(visits.first)).notes).toBe('Nobody home');
+      // ...and the detail hands them no walkthrough notes.
+      const detail = await strangerApi.get(`/api/leads/${lead.id}`);
+      expect(detail.status).toBeGreaterThanOrEqual(403);
+      expect(JSON.stringify(detail.body)).not.toContain('Nobody home');
+      const list = await strangerApi.get(`/api/leads/${lead.id}/visits`);
+      expect(list.status).toBeGreaterThanOrEqual(403);
+      expect(JSON.stringify(list.body)).not.toContain('Nobody home');
+
+      // A second company: the lead does not exist for them.
+      const second = await fx.newOrg();
+      const outsider = await personWith(second.org, { ...performs, leads_scope: 'all' });
+      const outsiderApi = await outsider.api();
+      const oldOther = await notesOf(outsiderApi, lead.id, 'x');
+      const doorOther = await visitNotes(outsiderApi, lead.id, visits.first, 'Cross-company');
+      expect(oldOther.status).toBe(404);
+      expect(doorOther.status).toBe(oldOther.status);
+      expect(doorOther.body).toEqual(oldOther.body);
+      expect((await outsiderApi.get(`/api/leads/${lead.id}`)).status).toBe(404);
+      expect((await outsiderApi.get(`/api/leads/${lead.id}/visits`)).status).toBe(404);
+      expect((await visitRow(visits.first)).notes).toBe('Nobody home');
+      void customer;
+    });
+
+    it('lists notes and an honest may-write answer on every row: for each person and walkthrough the answer equals the door', async () => {
+      const { org, me, other, lead, visits } = await threeWalkthroughs();
+      const dispatcher = await personWith(org, { ...performs, update_any_visit_status: true, leads_scope: 'all' });
+      const offCrew = await personWith(org, { ...performs, leads_scope: 'all' });
+      const noPerform = await personWith(org, { perform_walkthroughs: false, update_any_visit_status: true, leads_scope: 'all' });
+      const otherCrew = Object.assign(await db.user.findUniqueOrThrow({ where: { id: other.id } }), {});
+      void otherCrew;
+      const people: [string, Who][] = [['crew', me], ['dispatcher', dispatcher], ['off crew', offCrew], ['no perform', noPerform]];
+      const ids = [visits.first, visits.second, visits.third];
+
+      for (const [label, who] of people) {
+        const api = await who.api();
+        const detail = await api.get(`/api/leads/${lead.id}`);
+        expect(detail.status, label).toBe(200);
+        const rows = detail.body.lead.walkthrough_history as { id: string; notes: string | null; can_write_notes: boolean }[];
+        expect(rows.map((r) => r.id).sort(), label).toEqual([...ids].sort());
+        const listed = (await api.get(`/api/leads/${lead.id}/visits`)).body.visits as { id: string; can_write_notes: boolean }[];
+        for (const id of ids) {
+          const before = (await visitRow(id)).notes;
+          const attempt = await visitNotes(api, lead.id, id, `by ${label}`);
+          const wrote = attempt.status === 200;
+          expect([200, 403], `${label} ${id}`).toContain(attempt.status);
+          expect(rows.find((r) => r.id === id)!.can_write_notes, `${label} detail ${id}`).toBe(wrote);
+          expect(listed.find((r) => r.id === id)!.can_write_notes, `${label} list ${id}`).toBe(wrote);
+          expect((await visitRow(id)).notes, `${label} stored ${id}`).toBe(wrote ? `by ${label}` : before);
+        }
+      }
+      // Rows carry their notes and performers, cancelled ones included.
+      const detail = await (await me.api()).get(`/api/leads/${lead.id}`);
+      const cancelled = (detail.body.lead.walkthrough_history as { id: string; status: string; notes: string; cancelled_reason: string; performers: { id: string }[] }[]).find((r) => r.id === visits.first)!;
+      expect(cancelled.status).toBe('CANCELLED');
+      expect(cancelled.cancelled_reason).toBe('Customer not home');
+      expect(cancelled.performers.map((p) => p.id)).toEqual([me.id]);
+      expect(typeof cancelled.notes).toBe('string');
+    });
+  });
+
+  describe('the job and estimate details keep the base walkthrough history (notes are for people who can open the lead)', () => {
+    // The keys a history row carried before the Notes tab's cards: nothing about notes, crew or may-write.
+    const BASE_ROW_KEYS = ['cancelled_at', 'cancelled_reason', 'completed_at', 'created_at', 'duration_minutes', 'id', 'scheduled_at', 'status', 'visit_seq'];
+
+    it('GET /api/jobs/:id and GET /api/estimates/:id carry no per-row notes, performers or may-write for a person who cannot open the lead', async () => {
+      const { org, customer } = await fx.newOrg();
+      const crew = await personWith(org, { ...performs, view_estimates: true });
+      const colleagueId = (await colleague(org)).id;
+      const lead = await scheduledLead(org, customer, { owner: colleagueId });
+      const first = await fx.addVisit(org, { leadId: lead.id, purpose: 'WALKTHROUGH', crew: [colleagueId], daysFromNow: 1, seq: 1 });
+      await db.visit.update({ where: { id: first }, data: { status: 'CANCELLED', cancelled_at: new Date(), cancelled_reason: 'Customer not home', notes: 'Secret earlier note' } });
+      await fx.addVisit(org, { leadId: lead.id, purpose: 'WALKTHROUGH', crew: [colleagueId], daysFromNow: 2, seq: 2 });
+      const job = await fx.addJob(org, customer, { crew: [crew.id], fromLead: lead.id });
+
+      const api = await crew.api();
+      // The premise: this person cannot open the lead.
+      expect((await api.get(`/api/leads/${lead.id}`)).status).toBe(404);
+
+      const reads: [string, string][] = [['job', `/api/jobs/${job.id}`], ['estimate', `/api/estimates/${job.estimateId}`]];
+      for (const [label, url] of reads) {
+        const res = await api.get(url);
+        expect(res.status, label).toBe(200);
+        const history = (label === 'job' ? res.body.job.estimate.lead : res.body.estimate.lead).walkthrough_history as Record<string, unknown>[];
+        expect(history.length, label).toBe(2);
+        for (const row of history) {
+          expect(Object.keys(row).filter((k) => !k.startsWith('location')).sort(), label).toEqual(BASE_ROW_KEYS);
+        }
+        expect(JSON.stringify(res.body), label).not.toContain('Secret earlier note');
+      }
     });
   });
 

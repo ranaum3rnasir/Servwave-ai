@@ -353,7 +353,8 @@ export function switchFixture(db: PrismaClient, loadApp: () => Promise<Parameter
       await quietly(db.$executeRawUnsafe(`DELETE FROM payments WHERE invoice_id IN (SELECT id FROM invoices WHERE organization_id IN (${inOrgs}))`));
       for (const table of [
         'permission_change_log', 'permission_user_switches', 'permission_role_switches',
-        'timeline_events', 'notifications', 'invoices', 'jobs',
+        // Notes hold their author (and editor) by a foreign key: they go before the people.
+        'notes', 'timeline_events', 'notifications', 'invoices', 'jobs',
         'service_plans',
         'estimates', 'leads',
       ]) {

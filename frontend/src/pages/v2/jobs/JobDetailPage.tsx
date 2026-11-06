@@ -1,11 +1,10 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { formatDistanceToNow } from 'date-fns';
 import {
   AlertTriangle, ArrowUpRight, CalendarDays, CalendarPlus, CheckCircle2,
   ClipboardList, ClipboardX, Copy, FileText, Mail, MapPin, Pencil, Phone, PlusCircle, Receipt,
-  Lock, RotateCcw, StickyNote, Trash2, User, Wrench, XCircle,
+  Lock, RotateCcw, Trash2, User, Wrench, XCircle,
 } from 'lucide-react';
 
 import api from '@/lib/axios';
@@ -13,8 +12,6 @@ import { useJobVisits } from '@/lib/useJobVisits';
 import { refreshAfterVisitWrite } from '@/lib/refreshAfterVisitWrite';
 import { useVisitLifecycle } from '@/lib/useVisitLifecycle';
 import { formatInstant, orgDayDiff, useScheduleTimezone } from '@/lib/schedule-tz';
-import { TextLengthCounter } from '@/components/form';
-import { LONG_TEXT_MAX, tooLongMessage } from '@/lib/textLimits';
 
 /**
  * The Completed / Cancelled stamps. These two used to be a bare `toLocaleString()` with no
@@ -38,7 +35,7 @@ import { canOnJob, canSeePricing as canSeePricingAbility, canSeePrices as canSee
 import { PriceFreeLines } from '@/components/money/PriceFreeLines';
 import { useTasksStore } from '@/stores/tasksStore';
 import { customerDisplayName } from '@/lib/customer-name';
-import { extractApiError, formatCurrency, getInitials } from '@/lib/utils';
+import { extractApiError, formatCurrency } from '@/lib/utils';
 import { useOrganization } from '@/lib/api/organization';
 import {
   createEstimateFromJobItems, getJobFinancials, getJobTaskSummary, listJobLines,
@@ -93,9 +90,7 @@ import { RecordPaymentDialog } from '@/components/invoices/RecordPaymentDialog';
 import { AttachmentsTabBody } from '@/components/jobs/AttachmentsTabBody';
 import type { FileChangeAnswer } from '@/lib/attachments/fileChange';
 import { JOB_LOCKED_REASON } from '@/lib/jobLocked';
-import { NoteDeleteButton } from '@/components/notes/NoteDeleteButton';
-import { useDeleteNote } from '@/lib/notes/useDeleteNote';
-import type { NoteDeleteAnswer } from '@/lib/notes/noteChange';
+import { RecordNotesTab, type RecordNoteItem } from '@/components/notes/RecordNotesTab';
 
 import { EmptyState } from '@/ui-kit/components/data/emptyState';
 import { DetailHeader, DetailDock, type DetailHeaderAction } from '@/components/detail/DetailHeader';
@@ -112,9 +107,6 @@ import { Separator } from '@/ui-kit/components/ui/separator';
 import { SelectField } from '@/ui-kit/components/form/selectField';
 import { ChoiceMenu } from '@/ui-kit/components/ui/choiceMenu';
 import { Skeleton } from '@/ui-kit/components/ui/skeleton';
-import { Textarea } from '@/ui-kit/components/ui/textarea';
-import { DraftRestoredNote } from '@/ui-kit/components/ui/draftRestoredNote';
-import { useFieldDraft } from '@/lib/drafts/useFieldDraft';
 import { toast } from '@/ui-kit/components/ui/sonner';
 import { cn } from '@/ui-kit/lib/utils';
 
@@ -288,14 +280,6 @@ interface JobDetail {
   overhead_value?: number | string | null;
 }
 
-interface NoteItem extends NoteDeleteAnswer {
-  id: string;
-  content: string;
-  created_at: string;
-  creator: { id: string; first_name: string; last_name: string };
-  source?: string | null;
-}
-
 // --- Helpers (the legacy page's, verbatim) -----------------------------------
 
 /**
@@ -437,148 +421,8 @@ function Caption({ children }: { children: React.ReactNode }) {
   );
 }
 
-// --- Notes tab ---------------------------------------------------------------
+// --- Notes tab: the shared RecordNotesTab (components/notes) ---
 
-/**
- * The notes composer and feed.
- *
- * Re-authored on kit primitives rather than imported, unlike the attachments
- * body: its only raw element was a `<textarea>`, which the kit's Textarea
- * replaces one-for-one. The mutation, its invalidation pair, the Cmd/Ctrl+Enter
- * submit and the newest-first sort are the legacy component's, unchanged.
- */
-function NotesTabBody({
-  jobId,
-  notes,
-  canAddNotes,
-}: {
-  jobId: string;
-  notes: NoteItem[] | undefined;
-  /** `update Job` - the API gate on POST /api/jobs/:id/notes. Without it the tab is
-   *  read-only rather than absent: the history still reads, and no composer is offered
-   *  whose submit the API is guaranteed to reject. */
-  canAddNotes: boolean;
-}) {
-  const queryClient = useQueryClient();
-  // Mobile slice 57: switching tabs unmounts this panel, and a camera, rotation or locked screen
-  // can unload the page. The note is kept on the device until it is added.
-  const draft = useFieldDraft({ recordType: 'JOB', recordId: jobId, field: 'notes-tab-note', enabled: canAddNotes });
-  const noteContent = draft.value;
-  const setNoteContent = draft.setValue;
-
-  const addNoteMutation = useMutation({
-    mutationFn: async (content: string) => {
-      const { data } = await api.post(`/api/jobs/${jobId}/notes`, { content });
-      return data.note;
-    },
-    onSuccess: () => {
-      draft.clear();
-      queryClient.invalidateQueries({ queryKey: ['job-notes-wt', jobId] });
-      queryClient.invalidateQueries({ queryKey: ['notes', 'JOB', jobId] });
-    },
-  });
-
-  // The delete control on each note follows the server's per-note answer (S04.25).
-  const deleteNote = useDeleteNote('JOB', jobId);
-
-  const allNotes = [...(notes ?? [])].sort(
-    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
-  );
-
-  return (
-    <div className="flex flex-col gap-4 p-5">
-      {/* Composer - only for users the API will actually accept a note from. */}
-      {canAddNotes && (
-      <Card>
-        <CardHeader>
-          <CardTitle>Add note</CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-2">
-          <Textarea
-            value={noteContent}
-            onChange={(e) => setNoteContent(e.target.value)}
-            onKeyDown={(e) => {
-              if (
-                (e.metaKey || e.ctrlKey) &&
-                e.key === 'Enter' &&
-                noteContent.trim() &&
-                noteContent.trim().length <= LONG_TEXT_MAX &&
-                !addNoteMutation.isPending
-              ) {
-                e.preventDefault();
-                addNoteMutation.mutate(noteContent.trim());
-              }
-            }}
-            placeholder="Write a note..."
-            rows={3}
-            aria-label="Note"
-          />
-          <TextLengthCounter length={noteContent.trim().length} max={LONG_TEXT_MAX} />
-          {noteContent.trim().length > LONG_TEXT_MAX && <p className="text-destructive text-xs">{tooLongMessage(LONG_TEXT_MAX)}</p>}
-          <DraftRestoredNote restored={draft.restored} onDiscard={draft.clear} />
-          <div className="flex items-center justify-between">
-            <span className="text-muted-foreground text-[11px] touch:!hidden">Cmd + Enter to add</span>
-            {/* ms-auto: the hint is hidden on touch, so the button keeps the right edge on its own. */}
-            <Button
-              size="sm"
-              className="ms-auto"
-              disabled={!noteContent.trim() || noteContent.trim().length > LONG_TEXT_MAX || addNoteMutation.isPending}
-              onClick={() => addNoteMutation.mutate(noteContent.trim())}
-            >
-              {addNoteMutation.isPending ? 'Adding...' : 'Add Note'}
-            </Button>
-          </div>
-          {addNoteMutation.error && <p className="text-destructive text-xs">Failed to add note</p>}
-        </CardContent>
-      </Card>
-      )}
-
-      <Card>
-        <CardHeader>
-          <CardTitle>
-            Notes <span className="text-muted-foreground font-normal">({allNotes.length})</span>
-          </CardTitle>
-        </CardHeader>
-        {allNotes.length === 0 ? (
-          <EmptyState icon={<StickyNote />} title="No notes yet" />
-        ) : (
-          <div className="divide-y border-t">
-            {allNotes.map((note) => (
-              <div key={note.id} className="flex gap-3 px-5 py-4">
-                <span className="bg-brand-subtle text-brand-emphasis mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full text-[11px] font-bold">
-                  {getInitials(`${note.creator.first_name} ${note.creator.last_name}`)}
-                </span>
-                <div className="min-w-0 flex-1">
-                  <div className="mb-1 flex items-center gap-2">
-                    <span className="text-[13px] font-semibold">
-                      {note.creator.first_name} {note.creator.last_name}
-                    </span>
-                    {note.source === 'LEAD' && (
-                      <Badge variant="softBlue" size="pill">From Lead</Badge>
-                    )}
-                    <span className="text-muted-foreground ms-auto whitespace-nowrap text-[11px]">
-                      {formatDistanceToNow(new Date(note.created_at), { addSuffix: true })}
-                    </span>
-                    <NoteDeleteButton
-                      note={note}
-                      authorName={`${note.creator.first_name} ${note.creator.last_name}`}
-                      pending={deleteNote.isDeleting}
-                      onDelete={() => deleteNote.requestDelete(note.id)}
-                    />
-                  </div>
-                  <p className="whitespace-pre-wrap break-words text-[13px] leading-relaxed">
-                    {note.content}
-                  </p>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </Card>
-      {deleteNote.confirmDialog}
-    </div>
-  );
-}
 
 // --- Page --------------------------------------------------------------------
 
@@ -796,7 +640,7 @@ export default function JobDetailPage() {
     queryFn: () =>
       api
         .get(`/api/jobs/${id}/notes?include_lead=true`)
-        .then((r) => r.data.notes as NoteItem[]),
+        .then((r) => r.data.notes as RecordNoteItem[]),
     enabled: !!id && jobOpened,
   });
 
@@ -2131,7 +1975,7 @@ export default function JobDetailPage() {
 
           {/* --- Notes ------------------------------------------------- */}
           <TabPanel value="notes" activeValue={activeTab}>
-            <NotesTabBody jobId={id!} notes={notesData} canAddNotes={actions.canAddNotes} />
+            <RecordNotesTab recordType="JOB" recordId={id!} notes={notesData} canAddNotes={actions.canAddNotes} />
           </TabPanel>
 
           {/* --- Payments ---------------------------------------------- */}

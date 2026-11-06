@@ -33,6 +33,7 @@ import { whyNotSlot } from '../lib/permissions/slotEligibility';
 import { creatorPrefill, creatorCanBeOnCrew, recordLeadCreationPeople } from '../lib/permissions/creatorPrefill';
 import { scopeWhereForReq, canAccessRow, canActOnRow } from '../lib/permissions/enforce';
 import { leadActionsFor } from '../lib/permissions/leadEdit';
+import { NOTE_ROW_SELECT, saveGeneralNoteFromEditForm, writeGeneralNoteOnCreate, type GeneralNoteEdit } from '../lib/lead-general-note';
 import { scheduleWalkthroughFeed, feedWalkthroughVisitWhere, feedWalkthroughs, type WalkthroughFeed } from '../lib/permissions/scheduleFeed';
 import { mayStepWalkthrough } from '../lib/permissions/walkthroughSteps';
 import { isCustomerReadableRow, CUSTOMER_PROOF_SELECT } from '../lib/permissions/customerScope';
@@ -206,7 +207,7 @@ const leadDetailSelect = {
   visits: { select: { ...walkthroughSnapshotSelect, ...visitLocationSelect, assignees: { select: { user_id: true, user: { select: { id: true, first_name: true, last_name: true, email: true } } } } } },
   contacted_at: true,
   contacted_note: true,
-  notes: true,
+  // Not the lead's own `notes` column: nothing writes it any more (#3104). The general note is answered by getById.
   lost_at: true,
   lost_reason: true,
   cancelled_at: true,
@@ -349,7 +350,12 @@ export const createLeadSchema = z
     walkthrough_performer_ids: z.array(z.string().uuid()).max(50).optional(),
     // Book the walkthrough even though a performer is already booked over that slot (the form's "schedule anyway").
     walkthrough_force: z.boolean().optional(),
+    // What was said while booking: written on the walkthrough this request creates, timed or "To be scheduled".
+    // Not the lead's `notes` below (the lead's general note).
+    walkthrough_notes: z.string().max(LONG_TEXT_MAX).optional(),
     service_request: z.string().min(1).max(LONG_TEXT_MAX),
+    // The form's Notes box: written as the lead's general note, in the lead's own transaction, when the creator may add
+    // a lead note (lib/lead-general-note). Never the lead's own `notes` column.
     notes: z.string().max(LONG_TEXT_MAX).optional(),
     ...leadExtraFields,
   })
@@ -374,6 +380,8 @@ export function refuseCancelledLeadStatus(req: Request, res: Response, next: Nex
 
 export const updateLeadSchema = z.object({
   service_request: z.string().min(1).max(LONG_TEXT_MAX).optional(),
+  // The Edit lead form's Notes box: edits the lead's general note in place (lib/lead-general-note), never the lead's own
+  // `notes` column. Empty or null removes the general note.
   notes: z.string().max(LONG_TEXT_MAX).optional().nullable(),
   status: z.nativeEnum(LeadStatus).optional(),
   // Rides with a move to Lost and nothing else: the typed reason Mark lost asks for, checked in the handler so a missing or
@@ -410,6 +418,11 @@ export const walkthroughSchema = z.object({
   walkthrough_duration_minutes: z.number().int().min(15).max(480).optional().nullable(),
 });
 
+// One named walkthrough's notes box. Same ceiling as the current-walkthrough step above; an empty string clears the box.
+export const visitNotesSchema = z.object({
+  notes: z.string().max(LONG_TEXT_MAX),
+});
+
 export const markLostSchema = z.object({
   lost_reason: z.string().min(1).max(LONG_TEXT_MAX),
 });
@@ -442,6 +455,9 @@ export const scheduleWalkthroughSchema = z.object({
   walkthrough_scheduled_at: z.string().datetime(),
   performer_ids: z.array(z.string().uuid()),
   walkthrough_duration_minutes: z.number().int().min(15).max(480).default(60),
+  // Typed while booking: written on the walkthrough this request CREATES (a lead with no live walkthrough). Booking
+  // over an existing walkthrough (a reschedule, either door) ignores it - that walkthrough's notes are not touched.
+  notes: z.string().max(LONG_TEXT_MAX).optional(),
   send_email: z.boolean().optional().default(true),
   force: z.boolean().optional().default(false),
   // SRVW-243 - "tell the customer", as a direct action. Deliberately SEPARATE
@@ -565,12 +581,27 @@ function requestsLocationChange(body: {
 // `visit_assignees` back to `walkthrough_performers` (#1637), while keeping the response field
 // NAMES unchanged. withTags always carries a leadDetailSelect-shaped row
 // (full field set); withTagsMany is list()'s leadListSelect-shaped rows (narrower set).
+/**
+ * Adds `can_write_notes` to every row of the detail's walkthrough list: the per-walkthrough rule (mayStepWalkthrough) asked
+ * of that row's own crew for THIS person, the very function the per-walkthrough notes door asks. No list, no change.
+ */
+function withWalkthroughNotesAnswer<P>(req: Request, lead: { visits?: unknown }, projected: P): P {
+  const history = (projected as { walkthrough_history?: { id: string }[] }).walkthrough_history;
+  if (!Array.isArray(history)) return projected;
+  const visits = (lead.visits ?? []) as { id: string; assignees?: { user_id: string }[] | null }[];
+  const byId = new Map(visits.map((v) => [v.id, v]));
+  return {
+    ...projected,
+    walkthrough_history: history.map((row) => ({ ...row, can_write_notes: mayStepWalkthrough(req, byId.get(row.id)) })),
+  };
+}
+
 async function withTags<T extends { id: string; visits?: WalkthroughSnapshotRow[]; visit_assignees?: unknown }>(
   req: Request,
   lead: T,
 ): Promise<Omit<T, 'visits' | 'visit_assignees'> & { tags: TagSummary[] }> {
   const tags = await loadTagsForEntity(req, 'LEAD', lead.id);
-  const projected = projectLeadWalkthroughFields(projectLeadVisitCrew(lead), { full: true });
+  const projected = withWalkthroughNotesAnswer(req, lead, projectLeadWalkthroughFields(projectLeadVisitCrew(lead), { full: true, walkthroughNotes: true }));
   // S05.2: the customer on a lead detail carries its full contact set as `phones` and `emails`, for anyone who
   // can open the lead (View customers plays no part). Only a row that read the customer has one to fold.
   const customer = (projected as { customer?: unknown }).customer;
@@ -966,6 +997,8 @@ type CreationWalkthrough = {
   timing: { scheduledStart: Date; scheduledEnd: Date; durationMinutes: number } | null;
   performerIds: string[];
   performers: PerformerMember[];
+  /** Typed while booking; written on the walkthrough this booking creates. */
+  notes: string | null;
 };
 
 /** An hour unless the form gave an end after the start; the same 15 minute to 8 hour bounds as the lead page. */
@@ -977,14 +1010,20 @@ function creationWalkthroughMinutes(start: Date, end: Date | null): number {
 
 async function prepareCreationWalkthrough(
   req: Request,
-  body: { scheduled_start?: string | null; scheduled_end?: string | null; walkthrough_performer_ids?: string[]; walkthrough_force?: boolean },
+  body: { scheduled_start?: string | null; scheduled_end?: string | null; walkthrough_performer_ids?: string[]; walkthrough_force?: boolean; walkthrough_notes?: string },
 ): Promise<{ ok: true; booking: CreationWalkthrough | null } | { ok: false; status: number; body: Record<string, unknown> }> {
   const performerIds = [...new Set(body.walkthrough_performer_ids ?? [])];
+  const notes = body.walkthrough_notes?.trim() ? body.walkthrough_notes : null;
+  // Notes typed while booking need Book walkthroughs, as on the lead page. Creating the lead with a walkthrough
+  // needs only Create leads, so this is checked here, before anything is saved. Blank notes count as none.
+  if (notes && req.ability?.can('schedule_walkthrough', 'Lead') !== true) {
+    return { ok: false, status: 403, body: { error: 'You do not have permission to add walkthrough notes.' } };
+  }
   // Neither a time nor performers: no walkthrough.
   if (!body.scheduled_start && performerIds.length === 0) return { ok: true, booking: null };
   const performers = await validatePerformers(req, performerIds);
   if (!performers.ok) return { ok: false, status: performers.status, body: { error: performers.error } };
-  if (!body.scheduled_start) return { ok: true, booking: { timing: null, performerIds, performers: performers.users } };
+  if (!body.scheduled_start) return { ok: true, booking: { timing: null, performerIds, performers: performers.users, notes } };
 
   const scheduledStart = new Date(body.scheduled_start);
   const durationMinutes = creationWalkthroughMinutes(scheduledStart, body.scheduled_end ? new Date(body.scheduled_end) : null);
@@ -993,7 +1032,7 @@ async function prepareCreationWalkthrough(
     const conflicts = await detectPerformerConflicts(req, { leadId: null, userIds: performerIds, schedStart: scheduledStart, schedEnd: scheduledEnd });
     if (conflicts.length > 0) return { ok: false, status: 409, body: { error: 'Schedule conflict detected', conflicts } };
   }
-  return { ok: true, booking: { timing: { scheduledStart, scheduledEnd, durationMinutes }, performerIds, performers: performers.users } };
+  return { ok: true, booking: { timing: { scheduledStart, scheduledEnd, durationMinutes }, performerIds, performers: performers.users, notes } };
 }
 
 /** Books the creation walkthrough on the lead just made, inside the create transaction, and re-reads the lead as it now stands. */
@@ -1019,12 +1058,14 @@ async function bookCreationWalkthrough(
         sendEmail,
         // Nothing said about where: the walkthrough is at the lead's service address.
         locationData: {},
+        notes: booking.notes,
       })
     : await writeToBeScheduledWalkthrough(tx, {
         leadId,
         orgId,
         actorId: req.user!.id,
         performers: booking.performers,
+        notes: booking.notes,
       });
   const lead = await tx.lead.findUniqueOrThrow({ where: { id: leadId }, select: leadDetailSelect });
   return { lead, walkthroughId: booked.walkthroughId };
@@ -1211,7 +1252,6 @@ export async function create(req: Request, res: Response) {
             lead_number: leadNumber,
             customer_id: customer.id,
             service_request,
-            notes: notes || null,
             // Write the SINGLE owner into the M2M spine (commission_owner_id + one
             // lead_assignees row) so the Owned-scope key is correct from creation.
             ...(assigned_to ? { commission_owner_id: assigned_to, lead_assignees: { create: { user_id: assigned_to, organization_id: orgId } } } : {}),
@@ -1231,6 +1271,8 @@ export async function create(req: Request, res: Response) {
           },
           select: leadDetailSelect,
         });
+        // The form's Notes box, as the lead's general note: in this transaction, so no lead means no note.
+        await writeGeneralNoteOnCreate(tx, req, lead, notes);
 
         // Multi-visit D22a: a new lead no longer gets a placeholder visit row. The bucket used
         // to be "has a REQUESTED visit", so create() had to seed one; it is now "has no live
@@ -1386,7 +1428,6 @@ export async function create(req: Request, res: Response) {
             lead_number: leadNumber,
             customer_id: finalCustomerId,
             service_request,
-            notes: notes || null,
             // Write the SINGLE owner into the M2M spine (see new-customer path).
             ...(assigned_to ? { commission_owner_id: assigned_to, lead_assignees: { create: { user_id: assigned_to, organization_id: orgId } } } : {}),
             ...(dispatcher_id ? { dispatcher_id } : {}),
@@ -1398,6 +1439,8 @@ export async function create(req: Request, res: Response) {
           },
           select: leadDetailSelect,
         });
+        // The form's Notes box, as the lead's general note (see the new-customer path above).
+        await writeGeneralNoteOnCreate(tx, req, created, notes);
 
         // Multi-visit D22a: no placeholder visit row (see the new-customer path above).
         if (!booking) return created;
@@ -1511,7 +1554,13 @@ export async function getById(req: Request, res: Response) {
     // reads them, View customers off included; they never reach the customer record (PRD 5, S05.13).
     const contact_entries = await liveLeadEntries(prisma, req.user!.organization_id, lead.id);
 
-    res.json({ lead: { ...(await withTags(req, lead)), status_options, actions, contact_entries } });
+    // The lead's general note (#3104): what the Edit lead form's Notes box shows and edits. Null when there is none.
+    const general_note = await prisma.note.findFirst({
+      where: { entity_type: 'LEAD', entity_id: lead.id, is_general: true, ...tenantWhere(req) },
+      select: { id: true, content: true },
+    });
+
+    res.json({ lead: { ...(await withTags(req, lead)), status_options, actions, contact_entries, general_note } });
   } catch (err) {
     logger.error('Get lead error:', err);
     res.status(500).json({ error: 'Failed to get lead' });
@@ -1644,7 +1693,9 @@ export async function update(req: Request, res: Response) {
     // SRVW-114 slice 3 - custom_fields is pulled out of the generic spread on purpose. `rest`
     // flows straight into prisma.lead.update, so leaving it in would write an arbitrary
     // caller-supplied bag over the stored one: no validation, and every untouched key lost.
-    const { ad_source, service_location_id, new_location, custom_fields, lost_reason: _lostReason, ...rest } = data;
+    // `notes` is the Edit lead form's Notes box: it edits the lead's general note (#3104) and never reaches the lead row.
+    const { ad_source, service_location_id, new_location, custom_fields, lost_reason: _lostReason, notes: generalNote, ...rest } = data;
+    const editsGeneralNote = generalNote !== undefined;
     const leadData = { ...rest };
     // Removed from the generic spread so `transitionLeadStatus` is the ONLY writer of the column
     // (D6). Leaving it here as well would work — the values agree — but it would leave a second
@@ -1700,6 +1751,7 @@ export async function update(req: Request, res: Response) {
     // `undefined` (key absent) stays a no-op.
     const explicitLocationClear = service_location_id === null && !addressForResolve;
 
+    let generalNoteEdit: GeneralNoteEdit = 'unchanged';
     const runLeadUpdate = async (tx: typeof prisma) => {
       if (wantsLocationChange && explicitLocationChange && explicitLocationClear) {
         leadData.service_location_id = null;
@@ -1729,6 +1781,9 @@ export async function update(req: Request, res: Response) {
       // BEFORE the update below, so the row this returns already carries the new status and the
       // response needs no second read.
       await applyStatusChange(tx as unknown as Prisma.TransactionClient);
+      if (editsGeneralNote) {
+        generalNoteEdit = await saveGeneralNoteFromEditForm(tx as unknown as Prisma.TransactionClient, req, param(req, 'id'), generalNote);
+      }
       return tx.lead.update({
         where: { id: param(req, 'id') },
         data: leadData,
@@ -1747,9 +1802,10 @@ export async function update(req: Request, res: Response) {
           });
           return runLeadUpdate(tx as never);
         });
-      } else if (explicitLocationChange || statusChange) {
+      } else if (explicitLocationChange || statusChange || editsGeneralNote) {
         // Location resolution needs a tx (accretion is a create). So does a status change: the
-        // status write, the clock and the ledger entry are one fact and must not half-commit.
+        // status write, the clock and the ledger entry are one fact and must not half-commit. So
+        // does the general note: the note, its history entry and the lead edit commit together.
         lead = await prisma.$transaction(async (tx) => runLeadUpdate(tx as never));
       } else {
         lead = await prisma.lead.update({
@@ -1782,7 +1838,7 @@ export async function update(req: Request, res: Response) {
       action: 'lead.updated',
       resourceType: 'Lead',
       resourceId: param(req, 'id'),
-      metadata: { fields: [...Object.keys(leadData), ...(statusChange ? ['status'] : [])] },
+      metadata: { fields: [...Object.keys(leadData), ...(statusChange ? ['status'] : []), ...(generalNoteEdit !== 'unchanged' ? ['notes'] : [])] },
     });
     res.json(taxWarning ? { lead: payload, tax_warning: taxWarning } : { lead: payload });
   } catch (err) {
@@ -2136,6 +2192,47 @@ export async function updateWalkthrough(req: Request, res: Response) {
   }
 }
 
+/**
+ * Writes ONE named walkthrough's notes (the Notes tab's cards), cancelled and finished ones included. The lead is checked
+ * exactly as the current-walkthrough door above checks it (a missing or other-company lead 404s, a lead out of this
+ * person's reach 403s with the same words), then the walkthrough must be on THAT lead (404), then the same per-walkthrough
+ * rule the lead detail's `can_write_notes` is computed with (mayStepWalkthrough) decides (403).
+ */
+export async function updateVisitNotes(req: Request, res: Response) {
+  try {
+    const id = param(req, 'id');
+    const visitId = param(req, 'visitId');
+    const existing = await prisma.lead.findUnique({ where: { id, ...tenantWhere(req) }, select: { id: true } });
+    if (!existing) {
+      res.status(404).json({ error: 'Lead not found' });
+      return;
+    }
+    if (!(await canAccessRow(req, 'Lead', prisma.lead, id))) {
+      res.status(403).json({ error: 'Insufficient permissions' });
+      return;
+    }
+    const visit = await prisma.visit.findFirst({
+      where: { id: visitId, lead_id: id, ...tenantWhere(req) },
+      select: { id: true, assignees: { select: { user_id: true } } },
+    });
+    if (!visit) {
+      res.status(404).json({ error: 'Visit not found' });
+      return;
+    }
+    if (!mayStepWalkthrough(req, visit)) {
+      res.status(403).json({ error: 'Insufficient permissions' });
+      return;
+    }
+    const { notes } = req.body as { notes: string };
+    // Clearing the box stores no notes (null), as a booking with blank notes does; non-blank text is stored as sent.
+    const updated = await prisma.visit.update({ where: { id: visit.id }, data: { notes: notes.trim() ? notes : null }, select: { id: true, notes: true } });
+    res.json({ visit: { ...updated, can_write_notes: true } });
+  } catch (err) {
+    logger.error('Update visit notes error:', err);
+    res.status(500).json({ error: 'Failed to save notes' });
+  }
+}
+
 // contactLead removed (D6, PR-B2). See the note on contactLeadSchema above: the "inferred from
 // outbound activity" claim described an inference that was never built. Spec #1751 D5 owns both
 // halves of the repair - the automatic writers and the hand-correction door.
@@ -2338,6 +2435,8 @@ async function writeWalkthroughBooking(
     performerIds: string[];
     sendEmail: boolean | undefined;
     locationData: VisitLocationPatch;
+    /** Written only when this booking CREATES the walkthrough; a reschedule leaves the stored notes alone. */
+    notes?: string | null;
   },
 ): Promise<{ walkthroughId: string; isReschedule: boolean }> {
   const { walkthrough, isReschedule } = await scheduleActiveWalkthrough(tx, {
@@ -2359,6 +2458,7 @@ async function writeWalkthroughBooking(
     // follow the OUTCOME, not the intent.
     stampCustomerEmailSentAt: false,
     locationData: a.locationData,
+    notes: a.notes,
   });
   await replaceVisitCrew(tx, { visitId: walkthrough.id, orgId: a.orgId, userIds: a.performerIds });
 
@@ -2416,12 +2516,13 @@ async function writeWalkthroughBooking(
  */
 async function writeToBeScheduledWalkthrough(
   tx: Prisma.TransactionClient,
-  a: { leadId: string; orgId: string; actorId: string; performers: PerformerMember[] },
+  a: { leadId: string; orgId: string; actorId: string; performers: PerformerMember[]; notes: string | null },
 ): Promise<{ walkthroughId: string; isReschedule: boolean }> {
   const visit = await createUntimedLeadVisit(tx, {
     leadId: a.leadId,
     orgId: a.orgId,
     visitSeq: await nextVisitSeqForLead(tx, a.orgId, a.leadId),
+    notes: a.notes,
   });
   await replaceVisitCrew(tx, { visitId: visit.id, orgId: a.orgId, userIds: a.performers.map((p) => p.id) });
   await syncLeadWalkthroughStatus(tx, { leadId: a.leadId, orgId: a.orgId, actorId: a.actorId, via: 'walkthrough_scheduled' });
@@ -2520,8 +2621,9 @@ export async function scheduleWalkthrough(req: Request, res: Response) {
 
     const {
       walkthrough_scheduled_at, performer_ids, walkthrough_duration_minutes, send_email, force,
-      notify_customer, notify_recipient_email, notify_cc_emails, notify_message, location,
+      notify_customer, notify_recipient_email, notify_cc_emails, notify_message, location, notes,
     } = req.body as {
+      notes?: string;
       walkthrough_scheduled_at: string;
       performer_ids: string[];
       walkthrough_duration_minutes?: number;
@@ -2647,6 +2749,7 @@ export async function scheduleWalkthrough(req: Request, res: Response) {
         // update payload - writing nulls instead is precisely how a reschedule of the time would
         // send the customer back to their own house.
         locationData: locationWrite.data,
+        notes: activeWalkthrough ? null : (notes?.trim() ? notes : null),
       });
 
       // `data: {}` - the row is re-read for the response shape only; the writers above already
@@ -3174,12 +3277,7 @@ export async function getNotes(req: Request, res: Response) {
 
     const rows = await prisma.note.findMany({
       where: { entity_type: 'LEAD', entity_id: id, ...tenantWhere(req) },
-      select: {
-        id: true,
-        content: true,
-        created_at: true,
-        creator: { select: { id: true, first_name: true, last_name: true } },
-      },
+      select: NOTE_ROW_SELECT,
       orderBy: { created_at: 'desc' },
     });
 
@@ -3267,12 +3365,7 @@ export async function addNote(req: Request, res: Response) {
         created_by: req.user!.id,
         organization_id: req.user!.organization_id,
       },
-      select: {
-        id: true,
-        content: true,
-        created_at: true,
-        creator: { select: { id: true, first_name: true, last_name: true } },
-      },
+      select: NOTE_ROW_SELECT,
     });
 
     res.status(201).json({ note });
@@ -3678,7 +3771,9 @@ export async function listVisits(req: Request, res: Response) {
       res.status(403).json({ error: 'Insufficient permissions' });
       return;
     }
-    res.json({ visits: await listLeadVisits(req, id) });
+    // Each row says whether this person may write ITS notes, by the same rule the notes door asks.
+    const visits = await listLeadVisits(req, id);
+    res.json({ visits: visits.map((v) => ({ ...v, can_write_notes: mayStepWalkthrough(req, v) })) });
   } catch (err) {
     logger.error('List visits error:', err);
     res.status(500).json({ error: 'Failed to list visits' });

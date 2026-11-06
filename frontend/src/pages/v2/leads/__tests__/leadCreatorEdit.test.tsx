@@ -171,7 +171,7 @@ describe('the edit form, from the lead\'s action list', () => {
     serve(formLead({ actions: ['edit'] }));
     render();
     await save();
-    expect(mockApi.patch).toHaveBeenCalledWith(`/api/leads/${LEAD_FIXTURE.id}`, { service_request: 'Fix the door', notes: null, job_type: null });
+    expect(mockApi.patch).toHaveBeenCalledWith(`/api/leads/${LEAD_FIXTURE.id}`, { service_request: 'Fix the door', job_type: null });
   });
 
   it('saves a creator\'s edit even when the stored address on the lead is incomplete', async () => {
@@ -181,7 +181,7 @@ describe('the edit form, from the lead\'s action list', () => {
     }));
     render();
     await save();
-    expect(mockApi.patch).toHaveBeenCalledWith(`/api/leads/${LEAD_FIXTURE.id}`, { service_request: 'Fix the door', notes: null, job_type: null });
+    expect(mockApi.patch).toHaveBeenCalledWith(`/api/leads/${LEAD_FIXTURE.id}`, { service_request: 'Fix the door', job_type: null });
   });
 
   it('shows and sends everything to a person the list offers every field', async () => {

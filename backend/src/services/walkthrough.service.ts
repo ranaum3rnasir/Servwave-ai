@@ -134,7 +134,7 @@ export function projectLeadWalkthroughFields<
   T extends { visits?: WalkthroughSnapshotRow[]; visit_assignees?: unknown },
 >(
   lead: T,
-  opts: { full: boolean },
+  opts: { full: boolean; walkthroughNotes?: boolean },
 ): Omit<T, 'visits' | 'visit_assignees'> {
   // Independent of the `visits` rename below: a select may carry one relation and not the other,
   // and the early return for untouched callers must not swallow the performers.
@@ -385,7 +385,7 @@ function locationLabelOf(
 
 export function projectLegacyWalkthroughFields(
   visits: WalkthroughSnapshotRow[] | undefined,
-  opts: { full: boolean },
+  opts: { full: boolean; walkthroughNotes?: boolean },
 ): Record<string, unknown> {
   const list = visits ?? [];
   const current = resolveCurrentWalkthrough(list);
@@ -442,6 +442,15 @@ export function projectLegacyWalkthroughFields(
         cancelled_at: w.cancelled_at,
         cancelled_reason: w.cancelled_reason,
         created_at: w.created_at,
+        // The Notes tab's card for this walkthrough: its notes and who was on it. Opt-in, and only the LEAD detail opts in:
+        // its readers can open the lead. The job and estimate details embed this same history for people who cannot open
+        // the lead, and they keep the base shape. `can_write_notes` is added per row by the lead controller (needs the request).
+        ...(opts.walkthroughNotes
+          ? {
+              notes: w.notes,
+              performers: ((w as { assignees?: { user?: unknown }[] | null }).assignees ?? []).flatMap((a) => (a.user ? [a.user] : [])),
+            }
+          : {}),
       })),
   };
 }
@@ -870,7 +879,7 @@ export async function createLeadVisit(
  */
 export async function createUntimedLeadVisit(
   tx: Prisma.TransactionClient,
-  opts: { leadId: string; orgId: string; visitSeq: number },
+  opts: { leadId: string; orgId: string; visitSeq: number; notes?: string | null },
 ) {
   return tx.visit.create({
     data: {
@@ -879,6 +888,7 @@ export async function createUntimedLeadVisit(
       purpose: 'WALKTHROUGH',
       visit_seq: opts.visitSeq,
       status: 'SCHEDULED',
+      ...(opts.notes ? { notes: opts.notes } : {}),
     },
   });
 }
@@ -912,6 +922,8 @@ export async function scheduleActiveWalkthrough(
      * "unchanged" sentinel.
      */
     locationData?: VisitLocationPatch;
+    /** Written only when this call CREATES the row; a reschedule never touches the stored notes. */
+    notes?: string | null;
   },
 ) {
   const data = {
@@ -932,6 +944,7 @@ export async function scheduleActiveWalkthrough(
           lead_id: opts.leadId,
           purpose: 'WALKTHROUGH',
           visit_seq: opts.visitSeq,
+          ...(opts.notes ? { notes: opts.notes } : {}),
           ...data,
         },
       });

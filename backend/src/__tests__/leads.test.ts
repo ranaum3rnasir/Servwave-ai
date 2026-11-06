@@ -5022,6 +5022,8 @@ describe('PATCH /api/leads/:id (edit-freeze + tax-warning)', () => {
     mockPrisma.lead.findUnique.mockResolvedValue(LEAD_FIXTURE);
     (prisma.estimate.count as any).mockResolvedValue(1);
     mockPrisma.lead.update.mockResolvedValue({ ...LEAD_FIXTURE, service_request: 'Reworded scope' });
+    // The Notes box writes the lead's general note (#3104): the lock and the ON CONFLICT insert are raw queries.
+    (prisma.$queryRaw as any).mockResolvedValue([{ id: 'note-1' }]);
 
     const res = await request(app)
       .patch(`/api/leads/${LEAD_FIXTURE.id}`)

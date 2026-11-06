@@ -89,6 +89,9 @@ router.post('/:id/visits', canDo('schedule_walkthrough', 'Lead'), validate(leadC
 // letting Postgres' uuid cast 500 it; it sits after canDo so a caller without the grant still gets 403.
 router.patch('/:id/visits/:visitId', canDo('schedule_walkthrough', 'Lead'), requireUuidParam('visitId', 'Visit not found'), validate(leadController.scheduleWalkthroughSchema), leadController.scheduleWalkthrough);
 router.post('/:id/visits/:visitId/performers', canDo('schedule_walkthrough', 'Lead'), requireUuidParam('visitId', 'Visit not found'), validate(leadController.setPerformersSchema), leadController.setPerformers);
+// One named walkthrough's notes (the lead Notes tab's cards): same Perform walkthroughs gate as the current-walkthrough
+// door; the per-walkthrough rule (crew place or Update any visit's status) is checked in the handler.
+router.patch('/:id/visits/:visitId/notes', canDo('perform_walkthrough', 'Lead'), requireUuidParam('visitId', 'Visit not found'), validate(leadController.visitNotesSchema), leadController.updateVisitNotes);
 router.post('/:id/visits/:visitId/unschedule', canDo('schedule_walkthrough', 'Lead'), requireUuidParam('visitId', 'Visit not found'), leadController.unscheduleWalkthrough);
 
 // Tags on leads

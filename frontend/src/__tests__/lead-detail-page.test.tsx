@@ -685,7 +685,7 @@ describe('v2 LeadDetailPage - mark_lost gates on its own capability (#238)', () 
 describe('v2 LeadDetailPage - walkthrough recording gates on perform_walkthrough not update (Phase B)', () => {
   // Drive WalkthroughTabContent into its SCHEDULED branch so the Notes editor +
   // Finish walkthrough button render. A scheduled lead with no completed_at.
-  function mockScheduledWalkthroughLead() {
+  function mockScheduledWalkthroughLead(canWriteWalkthroughNotes = false) {
     mockApi.get.mockImplementation(async (url: string) => {
       if (url.includes('/notes')) return { data: { notes: NOTES_FIXTURE } };
       if (url.includes('/api/leads/')) {
@@ -701,6 +701,11 @@ describe('v2 LeadDetailPage - walkthrough recording gates on perform_walkthrough
               walkthrough_performers: [
                 { user: { id: '00000000-0000-0000-0000-000000000004', first_name: 'Test', last_name: 'Tech' } },
               ],
+              walkthrough_history: [{
+                id: 'w1', visit_seq: 1, status: 'SCHEDULED', scheduled_at: '2026-03-01T15:00:00.000Z', completed_at: null,
+                cancelled_at: null, cancelled_reason: null, created_at: '2026-02-01T12:00:00.000Z', notes: 'Saved walkthrough notes',
+                performers: [{ id: 'p1', first_name: 'Test', last_name: 'Tech' }], can_write_notes: canWriteWalkthroughNotes,
+              }],
             },
           },
         };
@@ -717,35 +722,37 @@ describe('v2 LeadDetailPage - walkthrough recording gates on perform_walkthrough
     { action: 'perform_walkthrough', subject: 'Lead' },
   ]);
 
-  it('lets a technician (perform_walkthrough, no update) open the Walkthrough tab and use record + complete controls', async () => {
+  it('lets a technician (perform_walkthrough, no update) open the Walkthrough tab, finish it, and write its notes on the Notes tab', async () => {
     const user = userEvent.setup();
-    mockScheduledWalkthroughLead();
+    // The server lists the technician's own walkthrough as writable (can_write_notes).
+    mockScheduledWalkthroughLead(true);
+    mockApi.patch.mockResolvedValue({ data: {} });
     renderWithProviders(<LeadDetailPage />, { ability: technicianAbility });
 
-    // The page renders for a read-only-ish lead ability...
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: /L00001\b.*John Doe/ })).toBeInTheDocument();
     });
-    // ...and the Walkthrough tab is reachable (not gated on update Lead).
-    const walkthroughTab = screen.getByRole('tab', { name: /Walkthrough/ });
-    await user.click(walkthroughTab);
-
-    // The Finish walkthrough step is shown (perform_walkthrough), even though the tech lacks
-    // `update Lead`. Named "Finish walkthrough" (S04.20).
+    // The Walkthrough tab is reachable (not gated on update Lead) and offers Finish walkthrough (S04.20).
+    await user.click(screen.getByRole('tab', { name: /Walkthrough/ }));
     await waitFor(() => {
       expect(screen.getByRole('button', { name: 'Finish walkthrough' })).toBeInTheDocument();
     });
+    // The tab no longer carries a notes box: the notes live on the Notes tab's walkthrough card.
+    expect(screen.queryByPlaceholderText('Walkthrough notes...')).toBeNull();
 
-    // The Notes editor is enabled, and typing a note reveals the Save Notes button.
-    const notes = screen.getByPlaceholderText('Walkthrough notes...');
+    await user.click(screen.getByRole('tab', { name: 'Notes' }));
+    const notes = await screen.findByRole('textbox', { name: 'Walkthrough 1 notes' });
     expect(notes).not.toBeDisabled();
-    await user.type(notes, 'Unit is on the roof; access via south stairwell.');
-    expect(await screen.findByRole('button', { name: /Save Notes/ })).toBeInTheDocument();
+    await user.type(notes, ' South stairwell.');
+    await user.click(await screen.findByRole('button', { name: /Save Notes/ }));
+    expect(mockApi.patch).toHaveBeenCalledWith('/api/leads/e0000000-0000-0000-0000-000000000001/visits/w1/notes', {
+      notes: 'Saved walkthrough notes South stairwell.',
+    });
   });
 
-  it('hides record + complete controls for a user with neither update nor perform_walkthrough', async () => {
+  it('hides record + complete controls for a user with neither update nor perform_walkthrough, and shows the notes read-only', async () => {
     const user = userEvent.setup();
-    mockScheduledWalkthroughLead();
+    mockScheduledWalkthroughLead(false);
     // read-only: can see the lead/tab, but cannot record or complete.
     const readOnly = buildAbility([{ action: 'read', subject: 'Lead' }]);
     renderWithProviders(<LeadDetailPage />, { ability: readOnly });
@@ -753,14 +760,16 @@ describe('v2 LeadDetailPage - walkthrough recording gates on perform_walkthrough
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: /L00001\b.*John Doe/ })).toBeInTheDocument();
     });
-    const walkthroughTab = screen.getByRole('tab', { name: /Walkthrough/ });
-    await user.click(walkthroughTab);
-
-    // The Notes editor renders read-only and the Finish walkthrough button is absent.
+    await user.click(screen.getByRole('tab', { name: /Walkthrough/ }));
     await waitFor(() => {
-      expect(screen.getByPlaceholderText('Walkthrough notes...')).toBeDisabled();
+      expect(screen.getByRole('tab', { name: /Walkthrough/ })).toHaveAttribute('aria-selected', 'true');
     });
     expect(screen.queryByRole('button', { name: 'Finish walkthrough' })).toBeNull();
+
+    // The card on the Notes tab reads as text: no box, no Save.
+    await user.click(screen.getByRole('tab', { name: 'Notes' }));
+    expect(await screen.findByText('Saved walkthrough notes')).toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: 'Walkthrough 1 notes' })).toBeNull();
     expect(screen.queryByRole('button', { name: /Save Notes/ })).toBeNull();
   });
 });

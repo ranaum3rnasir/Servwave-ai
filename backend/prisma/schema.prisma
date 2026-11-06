@@ -51,6 +51,7 @@ model User {
   cancelled_visits            Visit[]               @relation("VisitCancelledBy")
   visit_milestone_events      VisitMilestoneLog[]   @relation("VisitMilestoneLogActor")
   created_notes               Note[]                @relation("NoteCreatedBy")
+  edited_notes                Note[]                @relation("NoteEditedBy")
   collected_payments          Payment[]             @relation("PaymentCollectedBy")
   timeline_events             TimelineEvent[]       @relation("TimelineCreatedBy")
   refunded_invoices           Invoice[]             @relation("InvoiceRefundedBy")
@@ -2189,6 +2190,15 @@ model Note {
   created_by  String     @db.Uuid
   created_at  DateTime   @default(now())
   creator     User       @relation("NoteCreatedBy", fields: [created_by], references: [id])
+
+  // #3104: true marks a lead's GENERAL note, the one the new-lead form's Notes box writes and the Edit lead form edits in
+  // place; null on every other note. At most one per record: the partial unique index notes_one_general_per_record, which
+  // lives only in its migration (Prisma's schema cannot express a partial index).
+  is_general Boolean?
+  // Who last edited the note and when (#3104; only the general note is editable). Null on a note never edited.
+  edited_by  String?   @db.Uuid
+  edited_at  DateTime?
+  editor     User?     @relation("NoteEditedBy", fields: [edited_by], references: [id], onDelete: SetNull)
 
   organization_id String       @db.Uuid
   organization    Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)

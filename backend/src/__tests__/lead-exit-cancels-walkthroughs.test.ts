@@ -245,6 +245,8 @@ describe('the status menu needs the same verb as the dedicated door', () => {
     });
 
     it('can still edit the lead when the status is not part of the request', async () => {
+      // The Notes box writes the lead's general note (#3104): the lock and the ON CONFLICT insert are raw queries.
+      mockPrisma.$queryRaw.mockResolvedValue([{ id: 'note-1' }]);
       const res = await patch({ notes: 'Called back, wants a quote' });
 
       expect(res.status).toBe(200);

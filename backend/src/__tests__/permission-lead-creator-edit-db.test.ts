@@ -177,7 +177,7 @@ suite("a creator's own lead: edit with field limits (real database)", () => {
       expect(preset('change_lead_status_by_hand')).toBe(true);
       // Reopen lead (S05.19) comes from its own switch, which the Dispatcher preset also holds.
       expect(preset('reopen_leads')).toBe(true);
-      expect(res.body.lead.actions).toEqual(['edit', 'edit_address', 'edit_source', 'edit_schedule', 'change_status', 'reopen']);
+      expect(res.body.lead.actions).toEqual(['edit', 'edit_address', 'edit_source', 'edit_schedule', 'change_status', 'add_note', 'reopen']);
     });
 
     it('drops the status when Change lead status by hand is off', async () => {
@@ -192,17 +192,19 @@ suite("a creator's own lead: edit with field limits (real database)", () => {
       const lead = await fx.addLead(org, customer, { createdBy: admin.id, dispatcher: holder.id });
       const res = await (await holder.api()).get(`/api/leads/${lead.id}`);
       expect(res.status).toBe(200);
-      expect(res.body.lead.actions).toEqual(['edit', 'edit_address', 'edit_source', 'edit_schedule', 'reopen']);
+      expect(res.body.lead.actions).toEqual(['edit', 'edit_address', 'edit_source', 'edit_schedule', 'add_note', 'reopen']);
     });
 
-    it('offers a person who can open the lead but neither edits nor made it nothing', async () => {
+    it('offers a person who can open the lead but does not edit it only Add note (they hold Add notes)', async () => {
       const { org, customer, admin } = await fx.newOrg();
       const crew = await technician(org);
       await crew.lose!();
       const lead = await fx.addLead(org, customer, { createdBy: admin.id, owner: crew.id, assignees: [crew.id] });
       const res = await (await crew.api()).get(`/api/leads/${lead.id}`);
       expect(res.status).toBe(200);
-      expect(res.body.lead.actions).toEqual([]);
+      // The Technician preset holds Add notes, which `lose` leaves alone: the lead is in reach, so the Notes tab offers a note.
+      expect(SWITCH_CATALOG.find((s) => s.key === 'add_notes')!.presets.TECHNICIAN).toBe(true);
+      expect(res.body.lead.actions).toEqual(['add_note']);
     });
   });
 });

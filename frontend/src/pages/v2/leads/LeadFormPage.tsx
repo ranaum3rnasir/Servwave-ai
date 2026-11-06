@@ -136,7 +136,8 @@ export default function LeadFormPage() {
         </Card>
       );
     }
-    return <EditLeadForm lead={lead} leadId={id!} navigate={navigate} queryClient={queryClient} />;
+    // Keyed by the lead: another lead gets a fresh form, so its fields and the Notes baseline are filled from it together.
+    return <EditLeadForm key={id} lead={lead} leadId={id!} navigate={navigate} queryClient={queryClient} />;
   }
 
   const searchParams = new URLSearchParams(location.search);
@@ -191,6 +192,9 @@ function CreateLeadForm({
   // start with); anyone else has the "I'll do this walkthrough" checkbox, checked by default, which puts
   // only them on it. The server books the time as a real walkthrough visit with these people on it.
   const mayBookWalkthroughs = ability.can('schedule_walkthrough', 'Lead');
+  // The Notes box writes the lead's general note (#3104), so it shows only to a person who may add a lead note: Add notes
+  // or Edit leads, the rule the Notes tab and POST /api/leads/:id/notes follow.
+  const mayAddLeadNote = ability.can('add_note', 'Lead') || ability.can('update', 'Lead');
   const { actorId, actorKnownPeople } = useAssignUserPermission();
   const [performerIds, setPerformerIds] = useState<string[]>([]);
   const [doItMyself, setDoItMyself] = useState(true);
@@ -335,7 +339,7 @@ function CreateLeadForm({
         : doItMyself && prefill?.can_be_on_crew && actorId ? [actorId] : [];
       const baseLeadFields = {
         service_request: data.service_request,
-        notes: data.notes || undefined,
+        notes: mayAddLeadNote ? data.notes || undefined : undefined,
         job_type: data.job_type || undefined,
         // A holder saves what the pickers hold (kept, changed or cleared); anyone else sends no people and the
         // server applies the creator rule, so what the form showed is what is saved.
@@ -646,12 +650,14 @@ function CreateLeadForm({
                   {errors.service_request && <p data-error-for="v2-service-request" className="text-destructive text-xs">{errors.service_request.message}</p>}
                 </div>
 
+                {mayAddLeadNote && (
                 <div className="flex flex-col gap-1.5">
                   <Label htmlFor="v2-notes">Notes</Label>
                   <Textarea id="v2-notes" {...form.register('notes')} rows={2} placeholder="Internal notes..." />
                   <TextLengthCounter length={(form.watch('notes') ?? '').length} max={LONG_TEXT_MAX} />
                   {errors.notes && <p data-error-for="v2-notes" className="text-destructive text-xs">{errors.notes.message}</p>}
                 </div>
+                )}
 
                 <div className="grid grid-cols-1 gap-x-6 gap-y-5 sm:grid-cols-2">
                   <div ref={jobTypeField} className="flex flex-col gap-1.5">
@@ -953,11 +959,19 @@ function EditLeadForm({
     || customerLocations.find((l) => l.is_primary)
     || customerLocations[0];
 
+  // The text the Notes box was filled with (#3104), captured ONCE, when this form mounts and fills the box. The save sends
+  // the box only when it differs from this (Ran's build ruling 4): an untouched box leaves the general note as it is, even
+  // if someone else changed or removed it meanwhile. The box is filled once too (useForm's defaultValues are read at
+  // mount and nothing here resets the form), so a later refetch of the lead moves neither the box nor this baseline.
+  // The page mounts this form only once the lead has loaded, and remounts it for another lead (keyed by id).
+  const [loadedNotes] = useState(() => (lead.general_note as { content?: string } | null | undefined)?.content ?? '');
+
   const form = useForm<EditFormData>({
     resolver: zodResolver(mayEditAddress ? editLeadFormSchema : editLeadDetailsFormSchema),
     defaultValues: {
       service_request: lead.service_request as string,
-      notes: (lead.notes as string) || '',
+      // The lead's general note (#3104): the box edits that note in place. Empty when the lead has none.
+      notes: loadedNotes,
       job_type: (lead.job_type as string) || '',
       ad_source: ((lead.customer as { ad_source?: string | null })?.ad_source) || '',
       scheduled_date: extractDate(lead.scheduled_start as string | null),
@@ -1008,7 +1022,7 @@ function EditLeadForm({
             };
       const payload = {
         service_request: data.service_request,
-        notes: data.notes || null,
+        ...((data.notes ?? '') !== loadedNotes ? { notes: data.notes || null } : {}),
         job_type: data.job_type || null,
         ...(mayEditSource ? { ad_source: data.ad_source || null } : {}),
         ...(mayEditSchedule
@@ -1025,6 +1039,9 @@ function EditLeadForm({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['lead', leadId] });
       queryClient.invalidateQueries({ queryKey: ['leads'] });
+      // The Notes box edits the general note: the Notes tab and the Activity panel show the change.
+      queryClient.invalidateQueries({ queryKey: ['notes', 'LEAD', leadId] });
+      queryClient.invalidateQueries({ queryKey: ['timeline', 'LEAD', leadId] });
       navigate(v2Path(`/leads/${leadId}`));
     },
   });

@@ -17,7 +17,7 @@ import { noteRowRefusal } from './refusalNote';
  * real delegate (`prisma.lead`, `prisma.invoice`, …) be passed bare — the canonical call
  * shape — while the call below always supplies `{ where, select: { id: true } }`.
  */
-type RowDelegate = {
+export type RowDelegate = {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   findFirst(args: any): Promise<{ id: string } | null>;
   // #2042 (R1): canCreateOnAnchor probes existence with `count`, not `findFirst` - see the

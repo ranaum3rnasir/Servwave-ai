@@ -118,8 +118,8 @@ export function liveVisitPerformerIds(lead: Record<string, unknown>): string[] {
 /**
  * The resync signature: the page passes this as the component's `key`, so the
  * editable local state below is re-seeded exactly when the legacy effect would
- * have re-run - when the lead's scheduled-at, duration, performers or notes
- * change.
+ * have re-run - when the lead's scheduled-at, duration, performers or stamps
+ * change (the notes are not here: they are written on the Notes tab).
  *
  * The completed/cancelled stamps are in here because the SEED reads them (see
  * `liveVisitPerformerIds`): cancelling the current visit leaves its scheduled-at, duration and
@@ -132,7 +132,6 @@ export function walkthroughSyncKey(lead: Record<string, unknown>): string {
     lead.walkthrough_scheduled_at ?? '',
     lead.walkthrough_duration_minutes ?? '',
     performers.map((p) => p.user.id).join(','),
-    lead.walkthrough_notes ?? '',
     lead.walkthrough_completed_at ?? '',
     lead.walkthrough_cancelled_at ?? '',
     // Where the visit is. In the key for the same reason the crew is: the location control is
@@ -214,19 +213,20 @@ export function WalkthroughTabContent({
   // rule cannot rescue a form that always states one.
   const storedLocation = lead.walkthrough_location as StoredVisitLocation | null | undefined;
   const [wtLocation, setWtLocation] = useState<VisitLocationValue>(() => seedVisitLocation(storedLocation));
-  // The notes are free text typed on site: a tab switch unmounts this panel, so they live in the
-  // one draft hook (mobile slice 66), measured against the lead's SAVED notes. Only a user who may
-  // record notes keeps a draft; for anybody else the field is read-only and shows what is saved.
-  const savedNotes = (lead.walkthrough_notes as string) || '';
-  const notesDraft = useFieldDraft({
+  // What is typed while BOOKING (no live walkthrough, or "Book Another Visit"). A booked walkthrough's notes are written
+  // on the lead's Notes tab, not here: this text belongs to the walkthrough the booking is about to
+  // create, so it starts empty (a cancelled walkthrough's notes are not carried onto the next one) and is open to
+  // anyone who may book, whether or not they may write a booked walkthrough's notes.
+  // Which door the form stands in front of (see the comment where it is used below): "Book Another Visit" or not.
+  const [isAddingVisit, setIsAddingVisit] = useState(false);
+  const bookingNotes = useFieldDraft({
     recordType: 'LEAD',
     recordId: leadId,
-    field: 'walkthrough_notes',
-    baseline: savedNotes,
-    enabled: canPerformWalkthrough,
+    // "Book Another Visit" is a different form from the first booking: each keeps its own unsent text.
+    field: isAddingVisit ? 'walkthrough_additional_visit_notes' : 'walkthrough_booking_notes',
+    baseline: '',
+    enabled: canScheduleWalkthrough,
   });
-  const wtNotes = notesDraft.value;
-  const setWtNotes = notesDraft.setValue;
   const [historyOpen, setHistoryOpen] = useState(false);
   // A reschedule is the SAME visit at a new time, not a second booking: POST /walkthrough/schedule
   // reuses the lead's live visit row (walkthrough.service.ts, scheduleActiveWalkthrough). So this
@@ -237,7 +237,6 @@ export function WalkthroughTabContent({
   // POST /api/leads/:id/visits creates a NEW row and leaves every existing one alone, while
   // POST /walkthrough/schedule reuses the live one. Both drive the same fields below - one form,
   // two doors - so this flag says which door Book/Save is standing in front of.
-  const [isAddingVisit, setIsAddingVisit] = useState(false);
   // Held apart from the mutation's own error so the override can re-post the identical payload
   // with `force`, and so editing the fields can drop a verdict that no longer describes them.
   const [conflicts, setConflicts] = useState<ScheduleConflict[] | null>(null);
@@ -384,10 +383,15 @@ export function WalkthroughTabContent({
         // `null` is that clear; a saved location sends its ID ALONE, because the stored value is
         // a pointer and a copied address would stop tracking corrections made in Settings.
         location: visitLocationPayload(wtLocation),
+        // Written on the walkthrough this booking CREATES. A reschedule never sends it: the server leaves the
+        // moved walkthrough's notes alone either way, and the reschedule form has no such box.
+        ...(!isRescheduling && bookingNotes.value.trim() ? { notes: bookingNotes.value } : {}),
         ...(force ? { force: true } : {}),
       });
     },
     onSuccess: () => {
+      // Only a booking sends the notes; a reschedule / Set Time sent none, so unsent text stays in the draft.
+      if (!isRescheduling) bookingNotes.markSaved();
       setConflicts(null);
       // The page re-keys this component off the lead's own values, so a moved visit remounts
       // back into its read-only summary. Closed here too for the reschedule that lands on the
@@ -435,10 +439,14 @@ export function WalkthroughTabContent({
         // that carries it on the other. `location`, not the `location_id`/address fields spread
         // flat: this endpoint's schema is the SAME shared field, and Zod would strip a flat one.
         location: visitLocationPayload(wtLocation),
+        // The extra walkthrough's own notes; the route has always taken them.
+        ...(bookingNotes.value.trim() ? { notes: bookingNotes.value } : {}),
         ...(force ? { force: true } : {}),
       });
     },
     onSuccess: () => {
+      bookingNotes.setValue('');
+      bookingNotes.markSaved();
       setConflicts(null);
       setIsAddingVisit(false);
       // The new trip need not become the CURRENT one (booking it later than the live visit
@@ -466,43 +474,6 @@ export function WalkthroughTabContent({
     mutationFn: async () => { await api.post(`/api/leads/${leadId}/walkthrough/complete`); },
     onSuccess: () => { refreshAfterVisitWrite(queryClient, { leadId }); },
   });
-
-  const saveNotesMutation = useMutation({
-    mutationFn: async () => {
-      await api.post(`/api/leads/${leadId}/walkthrough`, { walkthrough_notes: wtNotes || null });
-    },
-    onSuccess: () => {
-      notesDraft.markSaved();
-      queryClient.invalidateQueries({ queryKey: ['lead', leadId] });
-    },
-  });
-
-  const notesBlock = (showError: boolean) => (
-    <div>
-      <p className="text-muted-foreground mb-3 text-xs font-semibold uppercase">Notes</p>
-      <Textarea
-        value={wtNotes}
-        onChange={(e) => setWtNotes(e.target.value)}
-        rows={4}
-        placeholder="Walkthrough notes..."
-        disabled={!canPerformWalkthrough}
-      />
-      <DraftRestoredNote restored={notesDraft.restored} onDiscard={notesDraft.clear} />
-      {canPerformWalkthrough && wtNotes !== savedNotes && (
-        <Button
-          size="sm"
-          className="mt-2"
-          onClick={() => saveNotesMutation.mutate()}
-          disabled={saveNotesMutation.isPending}
-        >
-          {saveNotesMutation.isPending ? 'Saving...' : 'Save Notes'}
-        </Button>
-      )}
-      {showError && saveNotesMutation.error && (
-        <p className="text-destructive mt-1 text-sm">Failed to save notes</p>
-      )}
-    </div>
-  );
 
   // The booked visit, read-only. Start and end are both stamped with their DATE: a walkthrough
   // that crosses midnight ends on a different day, and a bare end time would not say so.
@@ -755,12 +726,29 @@ export function WalkthroughTabContent({
    * shared `MultiAssigneeSelect`, disabled for a viewer without `assign User`, holding the one
    * chip `openAddVisit` seeded - no dropdown, nothing to remove.
    */
+  const bookingNotesBox = (
+    <div>
+      <label htmlFor="v2-wt-booking-notes" className="text-muted-foreground mb-3 block text-xs font-semibold uppercase">
+        Walkthrough notes
+      </label>
+      <Textarea
+        id="v2-wt-booking-notes"
+        value={bookingNotes.value}
+        onChange={(e) => bookingNotes.setValue(e.target.value)}
+        rows={4}
+        placeholder="What did the customer say?"
+      />
+      <DraftRestoredNote restored={bookingNotes.restored} onDiscard={bookingNotes.clear} />
+    </div>
+  );
+
   const addVisitSection = canScheduleWalkthrough && !isRescheduling && (
     isAddingVisit ? (
       <div>
         <p className="text-muted-foreground mb-3 text-xs font-semibold uppercase">Additional Visit</p>
         <div className="flex flex-col gap-4">
           {scheduleFieldsBlock}
+          {bookingNotesBox}
           {conflictBlock}
           <div className="flex items-center gap-2">
             <Button
@@ -809,7 +797,6 @@ export function WalkthroughTabContent({
 
         {addVisitSection}
         {visitHistorySection}
-        {notesBlock(false)}
       </div>
     );
   }
@@ -890,7 +877,6 @@ export function WalkthroughTabContent({
 
         {addVisitSection}
         {visitHistorySection}
-        {notesBlock(true)}
       </div>
     );
   }
@@ -918,16 +904,7 @@ export function WalkthroughTabContent({
         {scheduleFieldsBlock}
       </div>
 
-      <div>
-        <p className="text-muted-foreground mb-3 text-xs font-semibold uppercase">Notes</p>
-        <Textarea
-          value={wtNotes}
-          onChange={(e) => setWtNotes(e.target.value)}
-          rows={4}
-          placeholder="Walkthrough notes..."
-          disabled={!canPerformWalkthrough}
-        />
-      </div>
+      {canScheduleWalkthrough && bookingNotesBox}
 
       {canScheduleWalkthrough && (
         <div className="flex flex-col gap-4">

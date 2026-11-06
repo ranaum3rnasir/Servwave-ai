@@ -183,7 +183,10 @@ suite('closing a lead as Lost through the lead update and through Mark lost (rea
 
     expect(res.status).toBe(200);
     const lead = await db.lead.findUniqueOrThrow({ where: { id: f.lead.id } });
-    expect(lead).toMatchObject({ status: 'LOST', lost_reason: REASON, notes: 'Called back twice' });
+    // The Notes box is the lead's general note (#3104), never the lead's own column.
+    expect(lead).toMatchObject({ status: 'LOST', lost_reason: REASON, notes: null });
+    const general = await db.note.findMany({ where: { entity_type: 'LEAD', entity_id: f.lead.id, is_general: true }, select: { content: true } });
+    expect(general).toEqual([{ content: 'Called back twice' }]);
   });
 
   it('the lead update takes a reason only with a move to Lost', async () => {

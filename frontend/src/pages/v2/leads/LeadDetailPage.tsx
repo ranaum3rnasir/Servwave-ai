@@ -45,7 +45,7 @@ import {
   CancelWalkthroughDialog, DeleteLeadDialog, MarkLostDialog, ReopenLeadDialog,
 } from './components/leadDialogs';
 import { useScheduleTimezone } from '@/lib/schedule-tz';
-import { formatDate, formatDateTime, isWalkthroughActive, leadOffers, type UserSummary } from './components/leadShared';
+import { formatDate, formatDateTime, isWalkthroughActive, leadOffers, type UserSummary, type VisitHistoryRow } from './components/leadShared';
 import { LoadError } from '../_shared/loadError';
 import NotAuthorizedPage from '@/components/NotAuthorizedPage';
 import { isForbiddenError, isNotFoundError, retryUnlessRefused } from '../_shared/loadErrorState';
@@ -56,6 +56,8 @@ import { ProcessingBadge } from '@/components/invoices/ProcessingBadge';
 import { StatusMenu, type StatusMenuOption } from '../_shared/statusMenu';
 import { LEAD_STATUS_MEANING, type LeadStatusOptionFromServer } from './leadStatusMeaning';
 import { TabPanel, TabStrip } from '../_shared/tabs';
+import { LeadWalkthroughNotes } from './components/leadWalkthroughNotes';
+import { RecordNotesTab, type RecordNoteItem } from '@/components/notes/RecordNotesTab';
 import { WalkthroughTabContent, walkthroughSyncKey } from './components/walkthroughTab';
 import { useRecordVisit } from '../pageBreadcrumbs';
 
@@ -104,7 +106,7 @@ function WalkthroughDot({
  * would fork it. Recorded in the branch report.
  */
 /** The tabs a `?tab=` link may open (the contractor's list). */
-const LEAD_TABS = ['overview', 'walkthrough', 'estimates', 'attachments', 'communication', 'tasks'] as const;
+const LEAD_TABS = ['overview', 'walkthrough', 'estimates', 'attachments', 'communication', 'tasks', 'notes'] as const;
 
 export default function LeadDetailPage() {
   const tz = useScheduleTimezone();
@@ -194,6 +196,15 @@ export default function LeadDetailPage() {
     // After the lead's own answer, so a lead the person may not open costs one refused request and not two.
     enabled: Boolean(id) && Boolean(lead),
   });
+  // The lead's own notes, for the Notes tab. Same key and answer as the Activity panel's list, so the two share one fetch.
+  const { data: leadNotes } = useQuery({
+    queryKey: ['notes', 'LEAD', id],
+    queryFn: async () => {
+      const { data } = await api.get(`/api/leads/${id}/notes`);
+      return data.notes as RecordNoteItem[];
+    },
+    enabled: Boolean(id) && Boolean(lead),
+  });
   // Every attachment on the lead: its Attachments tab is the lead's ONE list, so the count
   // must match what that list renders.
   const attachmentCount = (leadAttachments ?? []).length;
@@ -255,6 +266,8 @@ export default function LeadDetailPage() {
   // they are still on it) and whether they may set its status by hand.
   const mayEditLeads = ability.can('update', 'Lead');
   const canEdit = leadOffers(lead, 'edit', mayEditLeads);
+  // Add note: Add notes or Edit leads, with the lead in reach - the server's per-lead answer.
+  const canAddNote = leadOffers(lead, 'add_note', ability.can('add_note', 'Lead') || mayEditLeads);
   // Walkthrough capabilities are split from `update Lead` to mirror the backend
   // routes: a strict TECHNICIAN holds `perform_walkthrough` but NOT
   // `update`/`schedule`, so gating these on `update Lead` would lock a tech out.
@@ -696,6 +709,7 @@ export default function LeadDetailPage() {
               },
               ...(canReadComms ? [{ value: 'communication', label: 'Communication' }] : []),
               { value: 'tasks', label: 'Tasks' },
+              { value: 'notes', label: 'Notes' },
             ]}
           />
 
@@ -707,13 +721,7 @@ export default function LeadDetailPage() {
                   <p className="text-muted-foreground mb-3 text-xs font-semibold uppercase">Service Request</p>
                   <p className="whitespace-pre-wrap text-sm">{lead.service_request as string}</p>
 
-                  {(lead.notes as string) && (
-                    <div className="mt-3">
-                      <p className="text-muted-foreground text-xs font-medium">Lead Notes</p>
-                      <p className="text-muted-foreground mt-1 whitespace-pre-wrap text-sm">{lead.notes as string}</p>
-                    </div>
-                  )}
-
+                  {/* No "Lead Notes" block (#3104): the lead's general note is the first note on the Notes tab. */}
                   <div className="mt-3 flex gap-6 text-sm">
                     <p>
                       <span className="text-muted-foreground">Source: </span>
@@ -1023,6 +1031,13 @@ export default function LeadDetailPage() {
               entity={{ type: 'LEAD', id: lead.id, label: `Lead from ${customerDisplayName(customer)}` }}
               jobType={(lead.job_type as string | null) ?? undefined}
             />
+          </TabPanel>
+
+          <TabPanel value="notes" activeValue={visibleTab}>
+            <RecordNotesTab recordType="LEAD" recordId={lead.id as string} notes={leadNotes} canAddNotes={canAddNote} />
+            <div className="px-5 pb-5">
+              <LeadWalkthroughNotes leadId={lead.id as string} history={lead.walkthrough_history as VisitHistoryRow[] | undefined} tz={tz} />
+            </div>
           </TabPanel>
 
           {canReadComms && (

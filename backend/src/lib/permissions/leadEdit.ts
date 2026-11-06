@@ -1,5 +1,5 @@
 import type { Request } from 'express';
-import { canActOnRow } from './enforce';
+import { canAccessRow, canActOnRow, type RowDelegate } from './enforce';
 import { prisma } from '../prisma';
 import { walkthroughStepsFor } from './walkthroughSteps';
 
@@ -19,7 +19,27 @@ export type LeadAction =
   | 'reopen'
   // The walkthrough steps (S04.19), from the same answer the walkthrough routes ask: noting the current walkthrough and
   // finishing the scheduled one. Independent of Edit leads, which a person doing only the walkthrough does not hold.
-  | 'walkthrough_notes' | 'walkthrough_finish';
+  | 'walkthrough_notes' | 'walkthrough_finish'
+  // A note on the lead itself: Add notes or Edit leads (a note is the lead's own data), for a lead in the person's reach.
+  // The same two checks POST /api/leads/:id/notes makes, so the Notes tab offers "Add note" exactly where the route accepts one.
+  | 'add_note';
+
+/**
+ * May this person add a note to this lead: Add notes or Edit leads, for a lead in their reach. The rule behind the
+ * `add_note` action and POST /api/leads/:id/notes. `delegate` is the client to look the lead up with.
+ */
+export async function mayAddLeadNote(req: Request, leadId: string, delegate: RowDelegate = prisma.lead): Promise<boolean> {
+  return holdsLeadNoteSwitch(req) && (await canAccessRow(req, 'Lead', delegate, leadId));
+}
+
+/**
+ * Does this person hold Add notes or Edit leads at all, whatever their Leads scope reaches. The new-lead form's Notes box
+ * asks only this (#3104, Ran's build ruling 3): a creator whose scope does not reach the lead they just made, or reaches
+ * it only through the walkthrough booked with it, still gets the typed text saved as the general note.
+ */
+export function holdsLeadNoteSwitch(req: Request): boolean {
+  return !!(req.ability?.can('add_note', 'Lead') || req.ability?.can('update', 'Lead'));
+}
 
 /** The actions this person may take on a lead they can already open. */
 export async function leadActionsFor(req: Request, leadId: string): Promise<LeadAction[]> {
@@ -27,10 +47,11 @@ export async function leadActionsFor(req: Request, leadId: string): Promise<Lead
   // Reopen leads is its own switch: a person who cannot edit the lead may still bring a closed one back.
   const reopen: LeadAction[] =
     req.ability?.can('reopen', 'Lead') && (await canActOnRow(req, 'Lead', prisma.lead, leadId, 'reopen')) ? ['reopen'] : [];
-  if (!req.ability?.can('update', 'Lead')) return [...reopen, ...steps];
+  const note: LeadAction[] = (await mayAddLeadNote(req, leadId)) ? ['add_note'] : [];
+  if (!req.ability?.can('update', 'Lead')) return [...note, ...reopen, ...steps];
   const actions: LeadAction[] = ['edit', 'edit_address', 'edit_source', 'edit_schedule'];
   if (req.ability?.can('change_status', 'Lead') && (await canActOnRow(req, 'Lead', prisma.lead, leadId, 'change_status'))) {
     actions.push('change_status');
   }
-  return [...actions, ...reopen, ...steps];
+  return [...actions, ...note, ...reopen, ...steps];
 }

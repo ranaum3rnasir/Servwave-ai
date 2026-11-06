@@ -35,6 +35,12 @@ export interface VisitHistoryRow {
    * interface is: this is the shape the lead DETAIL payload's `walkthrough_history` arrives in.
    */
   location_label?: string | null;
+  /** The walkthrough's own notes (the Notes tab's card). Absent on a payload from before the card existed. */
+  notes?: string | null;
+  /** Who is on this walkthrough, for the card's subline. */
+  performers?: { id: string; first_name: string; last_name: string }[];
+  /** This person's own answer for writing THIS walkthrough's notes; the server computes it by the door's rule. */
+  can_write_notes?: boolean;
 }
 
 /**
@@ -88,7 +94,9 @@ export type LeadAction =
   | 'reopen'
   // The walkthrough steps: noting the current walkthrough and finishing the scheduled one, each only for a person on
   // that walkthrough's crew or holding Update any visit's status.
-  | 'walkthrough_notes' | 'walkthrough_finish';
+  | 'walkthrough_notes' | 'walkthrough_finish'
+  // A note on the lead itself: Add notes or Edit leads, with the lead in reach.
+  | 'add_note';
 
 /**
  * Does the lead's action list offer this action? A response without the list (an older server) falls back to

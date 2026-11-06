@@ -129,6 +129,7 @@ import { walkthroughSnapshotSelect, projectLeadWalkthroughFields, projectLeadVis
 import { replaceVisitCrew } from '../services/visitCrew';
 import { PROCESSING_PAYMENT_WHERE, paidCents, fromCents } from '../lib/payment-ledger';
 import { LONG_TEXT_MAX, VERY_LONG_TEXT_MAX } from '../lib/text-limits';
+import { NOTE_ROW_SELECT } from '../lib/lead-general-note';
 
 // ─── Select Objects ────────────────────────────────────
 
@@ -7049,12 +7050,7 @@ export async function getNotes(req: Request, res: Response) {
 
     const rows = await prisma.note.findMany({
       where: { entity_type: 'JOB', entity_id: id, ...tenantWhere(req) },
-      select: {
-        id: true,
-        content: true,
-        created_at: true,
-        creator: { select: { id: true, first_name: true, last_name: true } },
-      },
+      select: NOTE_ROW_SELECT,
       orderBy: { created_at: 'desc' },
     });
 
@@ -7089,14 +7085,10 @@ export async function getNotes(req: Request, res: Response) {
       return;
     }
 
+    // The same row shape as the lead's own list, its edit marks included: the lead's general note may have been edited.
     const wtNotes = await prisma.note.findMany({
       where: { entity_type: 'LEAD', entity_id: leadId, ...tenantWhere(req) },
-      select: {
-        id: true,
-        content: true,
-        created_at: true,
-        creator: { select: { id: true, first_name: true, last_name: true } },
-      },
+      select: NOTE_ROW_SELECT,
       orderBy: { created_at: 'desc' },
     });
 

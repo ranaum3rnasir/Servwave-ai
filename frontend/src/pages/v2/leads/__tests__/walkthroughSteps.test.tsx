@@ -102,39 +102,39 @@ beforeEach(() => {
 });
 
 describe('the walkthrough tab, from the lead\'s action list', () => {
-  it('offers no Finish walkthrough and a read-only note to a person with Perform walkthroughs who is not on this walkthrough', async () => {
+  it('offers no Finish walkthrough and no notes box to a person with Perform walkthroughs who is not on this walkthrough', async () => {
     serve(scheduledLead({ actions: [] }));
     await openWalkthroughTab(performerOnly);
 
     await screen.findByText(/^Starts:/);
     expect(screen.queryByRole('button', { name: 'Finish walkthrough' })).toBeNull();
-    expect(screen.getByPlaceholderText('Walkthrough notes...')).toBeDisabled();
+    expect(screen.queryByPlaceholderText('Walkthrough notes...')).toBeNull();
   });
 
-  it('offers Finish walkthrough and an editable note when the server lists both steps', async () => {
+  it('offers Finish walkthrough and no notes box when the server lists both steps', async () => {
     serve(scheduledLead({ actions: ['walkthrough_notes', 'walkthrough_finish'] }));
     await openWalkthroughTab(performerOnly);
 
     expect(await screen.findByRole('button', { name: 'Finish walkthrough' })).toBeInTheDocument();
-    expect(screen.getByPlaceholderText('Walkthrough notes...')).toBeEnabled();
+    expect(screen.queryByPlaceholderText('Walkthrough notes...')).toBeNull();
   });
 
-  it('offers the note without Finish walkthrough when the server lists the note alone', async () => {
+  it('offers neither Finish walkthrough nor a notes box when the server lists the note step alone', async () => {
     serve(scheduledLead({ actions: ['walkthrough_notes'] }));
     await openWalkthroughTab(performerOnly);
 
     await screen.findByText(/^Starts:/);
     expect(screen.queryByRole('button', { name: 'Finish walkthrough' })).toBeNull();
-    expect(screen.getByPlaceholderText('Walkthrough notes...')).toBeEnabled();
+    expect(screen.queryByPlaceholderText('Walkthrough notes...')).toBeNull();
   });
 
-  it('lets a person with Edit leads off, on a lead someone else assigned, finish and note the walkthrough and offers no Edit', async () => {
+  it('lets a person with Edit leads off, on a lead someone else assigned, finish the walkthrough, with no notes box, and offers no Edit', async () => {
     serve(scheduledLead({ actions: ['walkthrough_notes', 'walkthrough_finish'] }));
     // Assign keeps the header menu from being empty, so a missing Edit is a real absence.
     const user = await openWalkthroughTab(buildAbility([...performerOnlyRules, { action: 'assign', subject: 'Lead' }]));
 
     expect(await screen.findByRole('button', { name: 'Finish walkthrough' })).toBeInTheDocument();
-    expect(screen.getByPlaceholderText('Walkthrough notes...')).toBeEnabled();
+    expect(screen.queryByPlaceholderText('Walkthrough notes...')).toBeNull();
     expect(await kebabItems(user)).not.toContain('Edit');
   });
 

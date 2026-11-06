@@ -3,7 +3,7 @@
  * lead, customer and job create forms ask before they are left.
  *
  * On every device project:
- *   - the lead's Walkthrough notes survive a switch to another tab and back, and a discarded page,
+ *   - the lead's Walkthrough notes (the Notes tab card) survive a switch to another tab and back, and a discarded page,
  *     coming back with the quiet "Draft restored" and Discard;
  *   - the log-a-call drawer's notes come back after the page is backgrounded and discarded, and
  *     Discard on the question throws them away on purpose;
@@ -48,8 +48,9 @@ async function openLead(page: Page) {
 }
 
 async function openWalkthroughNotes(page: Page, touch: boolean) {
-  await press(touch, page.getByRole('tab', { name: /Walkthrough/ }), { timeout: 20_000 });
-  const box = page.getByPlaceholder('Walkthrough notes...');
+  // The notes live on the Notes tab, one card per walkthrough (the seeded lead has one, Walkthrough 1).
+  await press(touch, page.getByRole('tab', { name: 'Notes' }), { timeout: 20_000 });
+  const box = page.getByRole('textbox', { name: 'Walkthrough 1 notes' });
   await expect(box).toBeVisible({ timeout: 15_000 });
   return box;
 }
@@ -66,7 +67,7 @@ test('walkthrough notes survive a tab switch and a discarded page', async ({ pag
 
     // A tab switch unmounts the panel; the notes used to go with it.
     await press(device.touch, page.getByRole('tab', { name: 'Overview' }), { timeout: 15_000 });
-    await expect(page.getByPlaceholder('Walkthrough notes...')).toHaveCount(0);
+    await expect(page.getByRole('textbox', { name: 'Walkthrough 1 notes' })).toHaveCount(0);
     const back = await openWalkthroughNotes(page, device.touch);
     await expect(back).toHaveValue(WALKTHROUGH_NOTE);
     const status = page.getByRole('status').filter({ hasText: 'Draft restored' });

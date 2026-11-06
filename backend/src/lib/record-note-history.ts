@@ -15,8 +15,11 @@ type Db = Pick<Prisma.TransactionClient, 'timelineEvent'>;
 /** The record a note hangs on, and so the one whose timeline the entry lands on. */
 export type NoteRecord = { type: 'JOB' | 'LEAD'; id: string };
 
-/** The same event type on both records, as the attachment delete's `ATTACHMENT_DELETED` is on every record. */
-export const NOTE_EVENT = { DELETED: 'NOTE_DELETED' } as const;
+/**
+ * The same event type on both records, as the attachment delete's `ATTACHMENT_DELETED` is on every record. EDITED is a
+ * lead's general note changed from the Edit lead form (#3104), the only note that can be edited.
+ */
+export const NOTE_EVENT = { DELETED: 'NOTE_DELETED', EDITED: 'NOTE_EDITED' } as const;
 
 /** A person as a name on a history line. */
 export interface NoteHistoryPerson {
@@ -61,6 +64,37 @@ export async function recordNoteDeleted(
         deleted_by_name: deleter,
       },
       created_by: deletedBy.id,
+    },
+  });
+}
+
+/**
+ * The history of an edit to a lead's general note (#3104): one TimelineEvent on the lead with who edited it and the text
+ * before and after, `{ note_id, from, to, edited_by, edited_by_name }`. The Activity panel draws it as "<name> edited the
+ * note" with Before and After. Written with the transaction client of the edit itself.
+ */
+export async function recordNoteEdited(
+  db: Db,
+  orgId: string,
+  record: NoteRecord,
+  edit: { noteId: string; from: string; to: string },
+  editedBy: NoteHistoryPerson,
+): Promise<void> {
+  await db.timelineEvent.create({
+    data: {
+      organization_id: orgId,
+      entity_type: record.type,
+      entity_id: record.id,
+      event_type: NOTE_EVENT.EDITED,
+      description: 'Note edited',
+      metadata: {
+        note_id: edit.noteId,
+        from: edit.from,
+        to: edit.to,
+        edited_by: editedBy.id,
+        edited_by_name: nameOf(editedBy),
+      },
+      created_by: editedBy.id,
     },
   });
 }
