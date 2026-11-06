@@ -1,8 +1,8 @@
 import type { Prisma, PrismaClient } from '@prisma/client';
 import { logger } from '../logger';
 import { logAudit } from '../audit';
-import { CtmApiError, isCtmConfigured, isOptedOut, isOutboundAllowed, sendSms } from './client';
-import { resolveOutboundNumber } from '../communication/resolveOutboundNumber';
+import { CtmApiError, type CtmCallLimits, isCtmConfigured, isOptedOut, isOutboundAllowed, sendSms } from './client';
+import { resolveOutboundNumber, type ResolvedOutboundNumber } from '../communication/resolveOutboundNumber';
 import { hasFeature } from '../entitlements/resolve';
 
 /**
@@ -108,22 +108,36 @@ interface GatePass {
 }
 type GateOutcome = GatePass | { ok: false; reason: CtmSmsFailureReason };
 
-async function runGates(db: Db, params: CtmSmsPrecheckParams): Promise<GateOutcome> {
+/** The company fields the gates read. */
+const GATE_ORG_SELECT = {
+  ctm_account_id: true,
+  ctm_sms_ready: true,
+  sms_sending_enabled: true,
+  plan: true,
+  trial_ends_at: true,
+  feature_overrides: true,
+} as const satisfies Prisma.OrganizationSelect;
+
+type GateOrg = Prisma.OrganizationGetPayload<{ select: typeof GATE_ORG_SELECT }>;
+
+function readGateOrg(db: Db, orgId: string): Promise<GateOrg | null> {
+  return db.organization.findUnique({ where: { id: orgId }, select: GATE_ORG_SELECT });
+}
+
+async function runGates(
+  db: Db,
+  params: CtmSmsPrecheckParams,
+  limits?: CtmCallLimits,
+  company?: StaffTextCompany,
+): Promise<GateOutcome> {
   // Platform keys unset = nothing is connected anywhere. Checked first so the
   // path is a pure no-op (no DB reads) on unconfigured environments.
   if (!isCtmConfigured()) return { ok: false, reason: 'NOT_CONNECTED' };
 
-  const org = await db.organization.findUnique({
-    where: { id: params.orgId },
-    select: {
-      ctm_account_id: true,
-      ctm_sms_ready: true,
-      sms_sending_enabled: true,
-      plan: true,
-      trial_ends_at: true,
-      feature_overrides: true,
-    },
-  });
+  // A staff text may bring the company's row and outbound number already read for its whole run (staffTextCompany);
+  // every other caller passes none and reads them here, as always.
+  const pre = company && company.orgId === params.orgId && !params.userId ? company : null;
+  const org = pre ? await pre.org() : await readGateOrg(db, params.orgId);
   if (!org?.ctm_account_id) return { ok: false, reason: 'NOT_CONNECTED' };
   if (!org.ctm_sms_ready) return { ok: false, reason: 'SMS_NOT_READY' };
   if (!org.sms_sending_enabled) return { ok: false, reason: 'ORG_SMS_DISABLED' };
@@ -145,11 +159,13 @@ async function runGates(db: Db, params: CtmSmsPrecheckParams): Promise<GateOutco
   // numbers. The thread's most recent outbound TPN would be ideal, but Message
   // rows don't store the sending TPN (not derivable today). `from` is the CTM
   // "TPN…" id.
-  const resolved = await resolveOutboundNumber(db, {
-    orgId: params.orgId,
-    userId: params.userId,
-    requireSms: true,
-  });
+  const resolved = pre
+    ? await pre.outboundNumber()
+    : await resolveOutboundNumber(db, {
+        orgId: params.orgId,
+        userId: params.userId,
+        requireSms: true,
+      });
   // No usable from-number, or no resolvable destination — either way there is
   // no number to text with/to.
   if (!resolved || !params.toE164) {
@@ -164,7 +180,11 @@ async function runGates(db: Db, params: CtmSmsPrecheckParams): Promise<GateOutco
   }
 
   // Fresh per-send compliance check — never cached (client.ts contract).
-  if (await isOptedOut(org.ctm_account_id, params.toE164)) {
+  // Only the staff path passes limits; every other caller reaches the client exactly as before.
+  const optedOut = limits
+    ? await isOptedOut(org.ctm_account_id, params.toE164, limits)
+    : await isOptedOut(org.ctm_account_id, params.toE164);
+  if (optedOut) {
     return { ok: false, reason: 'RECIPIENT_OPTED_OUT' };
   }
 
@@ -355,6 +375,20 @@ export async function sendCtmSms(db: Db, params: CtmSmsSendParams): Promise<CtmS
 
 // ─── Staff alerts (Spider, #2619) ────────────────────────────────────────────
 
+/**
+ * Spider's staff alert text must not hold a sweep: about 10 s in TOTAL, one attempt per call, no
+ * inline retry (#2995). The text makes two provider calls (the fresh opt-out check, then the send);
+ * both share ONE deadline, so the pair cannot hold the sweep longer than that. A timed-out opt-out
+ * check fails closed: nothing is sent and the text is recorded as failed.
+ * Applies to `sendStaffAlertSms` ONLY; every other text keeps the client's 30 s x 3 default.
+ */
+export const STAFF_ALERT_SMS_LIMITS = { timeoutMs: 10_000, maxAttempts: 1 } as const;
+
+/** The limits for ONE staff alert text, with its shared deadline starting now. */
+export function staffAlertLimits(now: number = Date.now()): CtmCallLimits {
+  return { ...STAFF_ALERT_SMS_LIMITS, deadlineAt: now + STAFF_ALERT_SMS_LIMITS.timeoutMs };
+}
+
 export interface StaffAlertSmsParams {
   orgId: string;
   /** A staff member's own phone, in E.164 - never a customer's or a lead's. */
@@ -362,6 +396,44 @@ export interface StaffAlertSmsParams {
   body: string;
   /** Names the alert this text belongs to, so the double-fire guard is per alert and person. */
   alertKey: string;
+  /**
+   * The company's row and outbound number, read once for a whole run of staff texts (staffTextCompany). Omitted, both
+   * are read for this text, as always. Never the opt-out check: that stays fresh for every text.
+   */
+  company?: StaffTextCompany;
+}
+
+/**
+ * What every staff text of one company's run shares, read at most once for the run (#2992): the company row the gates
+ * read and the outbound number a system send resolves to (resolveOutboundNumber with no user: the company default, else
+ * the oldest active texting number). The same reads as a text makes on its own, made on the first text that reaches
+ * each gate and kept for the rest of the run; a read that fails is not kept, so the next text reads again, as it would
+ * have. The opt-out check and the double-fire guard stay per text.
+ */
+export interface StaffTextCompany {
+  readonly orgId: string;
+  org(): Promise<GateOrg | null>;
+  outboundNumber(): Promise<ResolvedOutboundNumber | null>;
+}
+
+export function staffTextCompany(db: Db, orgId: string): StaffTextCompany {
+  return {
+    orgId,
+    org: onceForTheRun(() => readGateOrg(db, orgId)),
+    outboundNumber: onceForTheRun(() => resolveOutboundNumber(db, { orgId, requireSms: true })),
+  };
+}
+
+/** The first call's answer for every later call; a failure is not kept. */
+function onceForTheRun<T>(read: () => Promise<T>): () => Promise<T> {
+  let kept: Promise<T> | null = null;
+  return () => {
+    kept ??= read().catch((err: unknown) => {
+      kept = null;
+      throw err;
+    });
+    return kept;
+  };
 }
 
 /**
@@ -379,13 +451,14 @@ export async function sendStaffAlertSms(db: Db, params: StaffAlertSmsParams): Pr
   const threadId = `staff-alert:${params.alertKey}`;
   const key = doubleFireKey(params.orgId, threadId, params.body);
   let attempted = false;
+  const limits = staffAlertLimits();
   try {
-    const gate = await runGates(db, { orgId: params.orgId, toE164: params.toE164, threadId, body: params.body });
+    const gate = await runGates(db, { orgId: params.orgId, toE164: params.toE164, threadId, body: params.body }, limits, params.company);
     if (!gate.ok) return { delivered: false, reason: gate.reason };
 
     recentSends.set(key, Date.now());
     attempted = true;
-    await sendSms(gate.accountId, { from: gate.fromTpnId, to: params.toE164, msg: params.body });
+    await sendSms(gate.accountId, { from: gate.fromTpnId, to: params.toE164, msg: params.body }, limits);
     return { delivered: true };
   } catch (err) {
     if (attempted) recentSends.delete(key);

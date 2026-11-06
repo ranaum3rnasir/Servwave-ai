@@ -149,6 +149,22 @@ They join ~20 existing filesystem guards in that directory (for example
 DB-backed tests use the `TEST_DATABASE_URL ? describe : describe.skip` idiom, so
 they skip locally and run in the `Database` job.
 
+### Counting queries in a test
+
+To prove a code path runs a fixed number of queries however many rows it handles, use
+`countQueries` from `backend/src/__tests__/support/query-counter.ts`:
+`const { count, queries } = await countQueries(async () => { await theCode(); })`. It counts every statement the
+client sends (interactive-transaction queries, BEGIN/COMMIT and the tenant guard's `set_config` included) and returns
+the SQL, so `writes(queries, ['leads'])` / `reads(queries, ['leads'])` count only those. It reads the client
+`lib/prisma` exports at call time, so a suite that mocks `lib/prisma` with its own client counts that client; pass a
+client as the second argument for another. Prisma sends query events only to a client built with an event log:
+`setup.ts` sets `PRISMA_QUERY_EVENTS=on` for the shared client (ignored in production), and a client a test builds
+needs `log: QUERY_EVENT_LOG`. A client without it throws instead of reporting zero. Each count is bounded by two
+marker queries of its own (never counted), so late query events land in the right count. Separate counts on one client
+(or on it and its tenant-guard wrap) run one after another. A count inside another count's block on the same client is
+refused with an error, so count each part on its own. Anything else using the client during a count is counted too.
+Example: `query-counter-db.test.ts`.
+
 **Before adding a new CI job, ask whether the check needs anything CI has that a
 test does not** - the PR's git history, a live external service, a real database,
 or a compiled artifact. If not, write a test.

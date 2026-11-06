@@ -2,8 +2,10 @@
  * Spider's History tab (slice S3): what the contractor's table, filters, export and preview drawer
  * read (his SpiderWatcherPage.tsx History tab at 3bb6606), built from our alert log.
  *
- * Rows written since S3 carry their own copy, taken when the alert went out (sweep.ts). Rows from
- * before it show what they do hold, honestly:
+ * Rows written since S3 carry their own copy, taken when the alert went out (sweep.ts). The list of
+ * people is the exception since #3107: a row stores it once in a recipient set it points at
+ * (recipientSets.ts) and holds none of its own; a row from before that keeps its own list. Both read
+ * the same (storedRecipients). Rows from before S3 show what they do hold, honestly:
  *   - lead number, customer, company, request and address are read from the lead as it is now (as
  *     his own screen did, from the live lead list);
  *   - people are named as they are now, with no "how they were chosen";
@@ -128,10 +130,20 @@ export function historyWhere(
   if (f.roles.length > 0) {
     and.push({
       OR: [
-        ...f.roles.map((role) => ({ recipients: { array_contains: [{ role }] } })),
+        // The role each person had when alerted, from the list the row holds: its own (older rows) or its stored set.
+        ...f.roles.flatMap((role) => [
+          { recipients: { array_contains: [{ role }] } },
+          { recipient_set: { is: { recipients: { array_contains: [{ role }] } } } },
+        ]),
         // His "Administrator (Owner)" also matched the people alerted as the lead's owner.
-        ...(f.roles.includes('ADMIN') ? [{ recipients: { array_contains: [{ type: 'owner' }] } }] : []),
-        { recipients: { equals: Prisma.DbNull }, recipient_ids: { hasSome: [...roleUserIds] } },
+        ...(f.roles.includes('ADMIN')
+          ? [
+              { recipients: { array_contains: [{ type: 'owner' }] } },
+              { recipient_set: { is: { recipients: { array_contains: [{ type: 'owner' }] } } } },
+            ]
+          : []),
+        // Only a row with no list anywhere (before S3) is matched on who holds the role now.
+        { recipients: { equals: Prisma.DbNull }, recipient_set_id: null, recipient_ids: { hasSome: [...roleUserIds] } },
       ],
     });
   }
@@ -157,8 +169,17 @@ export function historyWhere(
       ],
     });
   }
-  return and.length > 0 ? { ...base, AND: and } : base;
+  return { ...base, AND: [SUMMARY_NOT_BUILDING, ...and] };
 }
+
+/**
+ * History never lists a claim of a starting summary that is still being written (#3108): the summary is BUILDING until its
+ * last claim is saved, and a half-written one must not be seen. Every other row is listed - an alert, a claim of a READY
+ * summary, a claim of a SUPERSEDED one (kept for good), and a claim whose summary link is empty.
+ */
+export const SUMMARY_NOT_BUILDING: Prisma.SpiderAlertWhereInput = {
+  OR: [{ summary_id: null }, { summary: { is: { OR: [{ status: null }, { status: { not: 'BUILDING' } }] } } }],
+};
 
 // ─── One row ─────────────────────────────────────────────────────────────────
 
@@ -186,6 +207,8 @@ export const HISTORY_ROW_SELECT = {
   elapsed_unit: true,
   channels: true,
   recipients: true,
+  // The list a newer row points at (recipientSets.ts); an older row holds its own in `recipients`.
+  recipient_set: { select: { recipients: true } },
   email_subject: true,
   email_body: true,
   sms_message: true,
@@ -405,11 +428,22 @@ function sentencesOf(delivery: unknown) {
   };
 }
 
+/**
+ * The list of people a row stored when it was written: the recipient set it points at (rows since #3107), else its own copy
+ * (rows before). Null for a row from before S3, which stored none.
+ */
+export function storedRecipients(row: Pick<HistoryRow, 'recipients' | 'recipient_set'>): Prisma.JsonArray | null {
+  const set = row.recipient_set?.recipients;
+  if (Array.isArray(set)) return set;
+  return Array.isArray(row.recipients) ? row.recipients : null;
+}
+
 function recipientsOf(row: HistoryRow, users: ReadonlyMap<string, HistoryUser>): HistoryRecipient[] {
   const { perPerson } = sentencesOf(row.delivery);
   const old = (id: string) => ({ email_outcome: perPerson('email', id), text_outcome: perPerson('text', id) });
-  if (Array.isArray(row.recipients)) {
-    return row.recipients.flatMap((r) => {
+  const stored = storedRecipients(row);
+  if (stored) {
+    return stored.flatMap((r) => {
       const o = obj(r);
       if (!o || typeof o.id !== 'string') return [];
       return [{

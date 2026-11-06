@@ -15,6 +15,7 @@ import { orgEmailFeatureOn } from '../lib/communication/emailFeature';
 import { bringOverReceivedAttachments } from '../lib/inbound-attachments';
 import { alertEmailReply } from '../services/notifications/emailReplyAlerts';
 import { publishEmailsChanged } from '../services/notifications/realtimePublish';
+import { applySpiderEmailEvent } from '../services/spider/emailEvents';
 
 /**
  * Tell the people a customer wrote back to (post-commit; see the call site).
@@ -407,6 +408,9 @@ export async function processResendEvent(
       if (!emailId) return null; // event type carries no correlation key — recorded, nothing more to do.
 
       const email = await tx.email.findUnique({ where: { provider_message_id: emailId } });
+      // Not a business email: one of Spider's own (#2997) updates the Spider record that holds this id
+      // (services/spider/emailEvents.ts), and is never an unknown id.
+      if (!email && (await applySpiderEmailEvent(tx, emailId, event))) return null;
       if (!email) {
         // Unknown/race (e.g. the send row hasn't committed yet): recorded above,
         // acknowledge rather than 404/500ing a webhook into a retry dead end.

@@ -80,6 +80,18 @@ export async function readersWithEntityAccess(
   const delegate = ALERT_RECORD_DELEGATES[ref.type] as unknown as ProbeDelegate | undefined;
   if (!readers.length || !delegate) return { withAccess, ...counter };
 
+  await Promise.all(
+    (await scopeCohorts(readers, ref.type)).map(async ({ where, ids }) => {
+      const granted = await resolveCohort(delegate, ref, where, [...new Set(ids)], counter);
+      granted.forEach((id) => withAccess.add(id));
+    }),
+  );
+
+  return { withAccess, ...counter };
+}
+
+/** The readers grouped by the scope fragment they resolve to for `type`: one probe answers each group. */
+async function scopeCohorts(readers: PermissionUser[], type: string): Promise<Cohort[]> {
   const people = readers.filter((r) => !isSuperUser(r));
   // Two people on one role can hold different switch values (a person's own set is theirs to tailor), and
   // the grants a scope is derived from come from those values, so the values are part of the profile.
@@ -105,7 +117,7 @@ export async function readersWithEntityAccess(
   const cohorts = new Map<string, Cohort>();
   await Promise.all(
     [...profiles.values()].map(async (profile) => {
-      const scope = await entityAccessScope(profile.members[0], ref.type, {
+      const scope = await entityAccessScope(profile.members[0], type, {
         profile: { userIdPlaceholder: COHORT_USER },
       });
       if (!scope) return; // unknown type, or a subject grant this profile does not hold: no probe
@@ -115,15 +127,164 @@ export async function readersWithEntityAccess(
       else cohorts.set(key, { where: scope.where, ids: profile.members.map((m) => m.id) });
     }),
   );
+  return [...cohorts.values()];
+}
+
+// ─── many entities at once ─────────────────────────────────────────────────────────────────────
+
+type ManyDelegate = {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  findMany(args: any): Promise<Record<string, unknown>[]>;
+};
+
+export interface CohortEntitiesAccess {
+  /** For each entity id, the readers who can open it. An entity nobody in the input can open is absent. */
+  readersOf: Map<string, Set<string>>;
+  /** Entity probes issued. Grows with the distinct scope fragments, never with the number of entities. */
+  probes: number;
+  /** As on readersWithEntityAccess: arms resolved one reader at a time. */
+  fallbacks: number;
+}
+
+/**
+ * Which of `readers` can open each of these entities of one `type`? `readersWithEntityAccess` asked for
+ * many entities at once: the same cohorts, arms and mirrored selects, each asked of every entity in one
+ * `findMany` instead of one `findFirst` per entity, so the answer for each entity is the one
+ * `readersWithEntityAccess` gives for it alone, and the probes do not grow with the number of entities.
+ * The Spider sweep asks this once per company run for all its overdue leads (services/spider/recipients.ts).
+ *
+ * Fails CLOSED per reader as the single-entity form does. One exception to the fixed count: the
+ * made-by-me arms (Estimate and Invoice only, never Lead) cost one probe per distinct maker in the cohort.
+ */
+export async function readersWithAccessToEach(
+  readers: PermissionUser[],
+  type: string,
+  entityIds: readonly string[],
+): Promise<CohortEntitiesAccess> {
+  const readersOf = new Map<string, Set<string>>();
+  const counter: Counter = { probes: 0, fallbacks: 0 };
+  const delegate = ALERT_RECORD_DELEGATES[type] as unknown as ManyDelegate | undefined;
+  const entities = [...new Set(entityIds)];
+  if (!readers.length || !delegate || !entities.length) return { readersOf, ...counter };
+
+  const grant = (entityId: string, ids: readonly string[]) => {
+    if (!ids.length) return;
+    const set = readersOf.get(entityId) ?? new Set<string>();
+    ids.forEach((id) => set.add(id));
+    readersOf.set(entityId, set);
+  };
 
   await Promise.all(
-    [...cohorts.values()].map(async ({ where, ids }) => {
-      const granted = await resolveCohort(delegate, ref, where, [...new Set(ids)], counter);
-      granted.forEach((id) => withAccess.add(id));
-    }),
+    (await scopeCohorts(readers, type)).map(({ where, ids }) =>
+      resolveCohortForEach(delegate, type, entities, where, [...new Set(ids)], counter, grant),
+    ),
   );
+  return { readersOf, ...counter };
+}
 
-  return { withAccess, ...counter };
+type AddReaders = (entityId: string, ids: readonly string[]) => void;
+
+const idsOf = (rows: Record<string, unknown>[]): string[] => rows.map((r) => r.id as string);
+
+/** resolveCohort, for every entity at once. */
+async function resolveCohortForEach(
+  delegate: ManyDelegate,
+  type: string,
+  entities: string[],
+  where: Record<string, unknown>,
+  ids: string[],
+  counter: Counter,
+  grant: AddReaders,
+): Promise<void> {
+  if (!containsPlaceholder(where)) {
+    counter.probes += 1;
+    const rows = await delegate.findMany({ where: { id: { in: entities }, ...where }, select: { id: true } });
+    idsOf(rows).forEach((entityId) => grant(entityId, ids));
+    return;
+  }
+  const arms = splitArms(where);
+  const creatorBound = arms.filter((arm) => creatorColumnOf(arm));
+  for (const arm of arms.filter((a) => !creatorBound.includes(a))) {
+    await resolveArmForEach(delegate, type, entities, arm, ids, counter, grant);
+  }
+  if (creatorBound.length) await resolveCreatorBoundArmsForEach(delegate, entities, creatorBound, ids, counter, grant);
+}
+
+/** resolveArm, for every entity at once: one mirrored `findMany` reads back, per entity, which readers matched. */
+async function resolveArmForEach(
+  delegate: ManyDelegate,
+  type: string,
+  entities: string[],
+  arm: Record<string, unknown>,
+  ids: string[],
+  counter: Counter,
+  grant: AddReaders,
+): Promise<void> {
+  if (!containsPlaceholder(arm)) {
+    counter.probes += 1;
+    const rows = await delegate.findMany({ where: { id: { in: entities }, ...arm }, select: { id: true } });
+    idsOf(rows).forEach((entityId) => grant(entityId, ids));
+    return;
+  }
+  const mirror = buildMirror(arm, ids);
+  if (mirror) {
+    try {
+      counter.probes += 1;
+      const rows = await delegate.findMany({
+        where: { id: { in: entities }, ...(substitutePlaceholder(arm, ids) as Record<string, unknown>) },
+        select: { id: true, ...mirror },
+      });
+      for (const row of rows) {
+        const found = new Set<string>();
+        collectMirrored(row, mirror, found);
+        grant(row.id as string, ids.filter((id) => found.has(id)));
+      }
+      return;
+    } catch (err) {
+      logger.warn('entityAccessCohort: mirrored probe failed, falling back per reader', err);
+    }
+  }
+  logger.warn(
+    `entityAccessCohort: cannot batch a ${type} scope arm, resolving ${ids.length} readers one at a time`,
+    { arm: JSON.stringify(arm) },
+  );
+  counter.fallbacks += 1;
+  for (const id of ids) {
+    counter.probes += 1;
+    const rows = await delegate.findMany({
+      where: { id: { in: entities }, ...(substitutePlaceholder(arm, id) as Record<string, unknown>) },
+      select: { id: true },
+    });
+    idsOf(rows).forEach((entityId) => grant(entityId, [id]));
+  }
+}
+
+/** resolveCreatorBoundArms, for every entity at once: who made each, then the arms asked of each maker in the cohort. */
+async function resolveCreatorBoundArmsForEach(
+  delegate: ManyDelegate,
+  entities: string[],
+  arms: Record<string, unknown>[],
+  ids: string[],
+  counter: Counter,
+  grant: AddReaders,
+): Promise<void> {
+  const column = creatorColumnOf(arms[0])!;
+  counter.probes += 1;
+  const rows = await delegate.findMany({ where: { id: { in: entities } }, select: { id: true, [column]: true } });
+  const madeBy = new Map<string, string[]>();
+  for (const row of rows) {
+    const maker = row[column];
+    if (typeof maker !== 'string' || !ids.includes(maker)) continue;
+    madeBy.set(maker, [...(madeBy.get(maker) ?? []), row.id as string]);
+  }
+  for (const [maker, made] of madeBy) {
+    counter.probes += 1;
+    const hits = await delegate.findMany({
+      where: { id: { in: made }, OR: arms.map((arm) => substitutePlaceholder(arm, maker)) },
+      select: { id: true },
+    });
+    idsOf(hits).forEach((entityId) => grant(entityId, [maker]));
+  }
 }
 
 /**

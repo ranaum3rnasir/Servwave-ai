@@ -37,6 +37,7 @@
     "org:create": "tsx scripts/create-org.ts",
     "org:set-plan": "tsx scripts/set-plan.ts",
     "org:audit": "tsx scripts/audit-org.ts",
+    "fixture:big-company": "tsx scripts/synthetic-big-company.ts",
     "permissions:check-preset-migration": "tsx src/scripts/check-preset-migration.ts",
     "permissions:preset-dry-run": "tsx src/scripts/preset-migration-report.ts dry-run",
     "permissions:preset-proof": "tsx src/scripts/preset-migration-report.ts proof",

@@ -86,6 +86,7 @@ import commUsageRoutes from './routes/comm-usage.routes';
 import commNumbersRoutes from './routes/comm-numbers.routes';
 import commPhoneAccessRoutes from './routes/comm-phone-access.routes';
 import commNumberAssignmentsRoutes from './routes/comm-number-assignments.routes';
+import healthRoutes from './routes/health.routes';
 import { logger } from './lib/logger';
 import { prisma } from './lib/prisma';
 import { assertNoTestRoutesInProduction } from './lib/test-routes-guard';
@@ -154,53 +155,8 @@ app.use('/api', reviewAttentionScope);
 // Live-update pings an API request raises are sent after its response has been written, not while it is still building the answer.
 app.use('/api', realtimePingScope);
 
-// Budget for the /health DB ping. A stalled query is NOT the same failure as a
-// rejected one: the probe below once sat on its very first `SELECT 1` for 49s
-// with neither a row nor an error, and an unbounded `await` turns that into a
-// hang — the CI boot loop gets 45s of opaque curl timeouts, and on Render the
-// platform health check pins a worker until server.requestTimeout (index.ts)
-// kills the request, logging nothing either way. 2s is far above a healthy ping
-// and far below both deadlines, so /health always answers in time to be read.
-const HEALTH_DB_PROBE_TIMEOUT_MS = 2000;
-
-// Health check (DB ping prevents Supabase Free auto-pause)
-app.get('/health', async (_req, res) => {
-  let probeTimer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    // Promise.resolve() adopts the PrismaPromise rather than assuming it is a
-    // native one, so `await`-compatible return values keep behaving as before.
-    const probe = Promise.resolve(prisma.$queryRaw`SELECT 1`);
-    // Promise.race subscribes to BOTH entries, so a probe that rejects long
-    // after the timeout already won is still a handled rejection, not an
-    // unhandled one — and the response was already sent and returned by then.
-    const timedOut = await Promise.race([
-      probe.then(() => false),
-      new Promise<boolean>((resolve) => {
-        probeTimer = setTimeout(() => resolve(true), HEALTH_DB_PROBE_TIMEOUT_MS);
-      }),
-    ]);
-    if (timedOut) {
-      // Deliberately distinct from the reject message below: this line is the
-      // only evidence that separates "the DB said no" from "the DB said
-      // nothing at all", which is the fact the silent CI boot log lacked.
-      logger.error(
-        `Health check DB probe timed out after ${HEALTH_DB_PROBE_TIMEOUT_MS}ms: the database accepted the connection but returned neither a result nor an error`
-      );
-      res.status(503).json({ status: 'ok', db: 'error', timestamp: new Date().toISOString() });
-      return;
-    }
-    res.json({ status: 'ok', db: 'ok', timestamp: new Date().toISOString() });
-  } catch (err) {
-    // Log the real cause — a bare 503 here made a prod DB-connection failure
-    // (e.g. during an RLS role/pooler switch) impossible to diagnose from logs.
-    logger.error('Health check DB probe failed:', err);
-    res.status(503).json({ status: 'ok', db: 'error', timestamp: new Date().toISOString() });
-  } finally {
-    // A fast success leaves the 2s timer still armed, and an armed timer holds
-    // a ref on the event loop — every clean shutdown would wait up to 2s for it.
-    clearTimeout(probeTimer);
-  }
-});
+// Health: /health (the platform's check) answers from memory; /health/deep asks the database on its own line.
+app.use('/health', healthRoutes);
 
 // API info
 app.get('/api', (_req, res) => {

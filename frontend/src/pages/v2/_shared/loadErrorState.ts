@@ -1,3 +1,5 @@
+import { retryUnlessClientError } from '@/lib/queryClient';
+
 /**
  * True when a request failed because the record is not there (or is outside the viewer's scope):
  * the one failure that really means "not found". Every other failure - a dropped connection, a
@@ -16,9 +18,9 @@ export function isForbiddenError(error: unknown): boolean {
 }
 
 /**
- * React Query's `retry` for the read of a record's OWN page. The app retries a failed read once; for a refusal (403) that only
- * repeats the refusal, and each repeat is another failed request in the browser console. A refused record is asked for once.
+ * React Query's `retry` for the read of a record's OWN page. The app retries a failed read once, but never after a 4xx
+ * (a 403 refusal only repeats, and each repeat is another failed request). Same rule as the shared query client.
  */
 export function retryUnlessRefused(failureCount: number, error: unknown): boolean {
-  return !isForbiddenError(error) && failureCount < 1;
+  return retryUnlessClientError(1)(failureCount, error);
 }

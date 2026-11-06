@@ -40,3 +40,20 @@ export async function isTransactionalSendSuppressed(to: string | string[]): Prom
   });
   return Boolean(hit);
 }
+
+/**
+ * Which of these addresses are suppressed for TRANSACTIONAL sends, in ONE read: the Spider sweep asks this once per
+ * company run for every person its alerts may email (#2992), instead of once per email. Each address is normalized
+ * exactly as `isTransactionalSendSuppressed` normalizes it, and the read matches exactly as its read does (the same
+ * column equality), so for any address `suppressedAmong(list).has(normalizeSuppressionAddress(a))` is what
+ * `isTransactionalSendSuppressed(a)` answers at the same moment. Returns the suppressed addresses, normalized.
+ */
+export async function transactionalSuppressedAmong(addresses: readonly string[]): Promise<Set<string>> {
+  const normalized = [...new Set(addresses.map(normalizeSuppressionAddress).filter(Boolean))];
+  if (normalized.length === 0) return new Set();
+  const hits = await prisma.emailSuppression.findMany({
+    where: { address: { in: normalized }, category: TRANSACTIONAL_SUPPRESSION_CATEGORY },
+    select: { address: true },
+  });
+  return new Set(hits.map((h) => h.address));
+}

@@ -94,5 +94,9 @@ first (see MEMORY: `.env.example` intends 6543/`pgbouncer=true` for prod).
 - **New cron/background callers** must wrap their entry in `runUnscoped`, and new
   unauthenticated routes that resolve the org from the entity must use the
   `unscopedRequest` middleware — otherwise they will (correctly) see no rows.
+- **New cron jobs** are started with `scheduleJob` (`lib/scheduleJob.ts`), never a bare `cron.schedule`: that runs the job
+  on the background jobs' own two database lines (`lib/prismaJobs.ts`, with a 5 s statement limit and a 1 s lock limit)
+  instead of the users' pool. Any other background run at boot goes inside `runOnJobsClient`. The jobs' client is under the
+  same tenant guard as `prisma`, so the `runUnscoped` rule above applies to it unchanged.
 - The child-table policies use an `EXISTS` join to the parent's org; this adds a
   subquery per row under enforcement. Acceptable for a backstop.

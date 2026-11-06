@@ -117,6 +117,31 @@ interface RequestOpts {
   // CTM accepts JSON on most write endpoints; the SMS endpoint is exercised
   // form-encoded in CTM's own examples, so it opts in via `form`.
   form?: boolean;
+  /** Per-call override of the 30 s request timeout. Unset = REQUEST_TIMEOUT_MS. */
+  timeoutMs?: number;
+  /** Per-call override of the 3-attempt retry. 1 = no inline retry. Unset = MAX_ATTEMPTS. */
+  maxAttempts?: number;
+  /**
+   * An absolute wall-clock deadline (ms since epoch) shared by several calls. Each attempt's
+   * timeout is capped by the time left, and a call that starts past it fails at once.
+   */
+  deadlineAt?: number;
+}
+
+/** The per-call limits a caller may pass to the SMS-path calls. Unset fields keep the defaults. */
+export interface CtmCallLimits {
+  timeoutMs?: number;
+  maxAttempts?: number;
+  deadlineAt?: number;
+}
+
+/** Spreads only the limits that are set, so an absent limit never overrides a default. */
+function limitOpts(limits?: CtmCallLimits): Pick<RequestOpts, 'timeoutMs' | 'maxAttempts' | 'deadlineAt'> {
+  return {
+    ...(limits?.timeoutMs !== undefined ? { timeoutMs: limits.timeoutMs } : {}),
+    ...(limits?.maxAttempts !== undefined ? { maxAttempts: limits.maxAttempts } : {}),
+    ...(limits?.deadlineAt !== undefined ? { deadlineAt: limits.deadlineAt } : {}),
+  };
 }
 
 async function request<T = Record<string, unknown>>(path: string, opts: RequestOpts = {}): Promise<T> {
@@ -126,9 +151,14 @@ async function request<T = Record<string, unknown>>(path: string, opts: RequestO
     );
   }
   const url = `${baseUrl()}${path}`;
+  const timeoutMs = opts.timeoutMs ?? REQUEST_TIMEOUT_MS;
+  const maxAttempts = opts.maxAttempts ?? MAX_ATTEMPTS;
 
   for (let attempt = 1; ; attempt++) {
     await pace();
+    // A shared deadline caps this attempt; once it has passed, no further call is made.
+    const left = opts.deadlineAt !== undefined ? opts.deadlineAt - Date.now() : Infinity;
+    if (left <= 0) throw new CtmApiError(0, 'network error or timeout');
     let res: Response;
     try {
       res = await fetch(url, {
@@ -151,20 +181,20 @@ async function request<T = Record<string, unknown>>(path: string, opts: RequestO
               ).toString()
             : JSON.stringify(opts.body)
           : undefined,
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        signal: AbortSignal.timeout(Math.max(1, Math.min(timeoutMs, left))),
       });
     } catch {
       // Network / timeout. Retry with backoff; the final failure is generic on
       // purpose (fetch errors can embed the URL — never the creds, but keep it
       // clean anyway).
-      if (attempt < MAX_ATTEMPTS) {
+      if (attempt < maxAttempts) {
         await sleep(250 * 2 ** (attempt - 1));
         continue;
       }
       throw new CtmApiError(0, 'network error or timeout');
     }
 
-    if ((res.status === 429 || res.status >= 500) && attempt < MAX_ATTEMPTS) {
+    if ((res.status === 429 || res.status >= 500) && attempt < maxAttempts) {
       await sleep(250 * 2 ** (attempt - 1));
       continue;
     }
@@ -433,12 +463,13 @@ export async function createVoiceMenu(
 // ─── Opt-outs ────────────────────────────────────────────────────────────────
 
 /** Fresh per-send compliance check — never cached. */
-export async function isOptedOut(accountId: string, e164: string): Promise<boolean> {
+export async function isOptedOut(accountId: string, e164: string, limits?: CtmCallLimits): Promise<boolean> {
   const digits = e164.replace(/\D/g, '');
   let res: PagedEnvelope;
   try {
     res = await request<PagedEnvelope>(
       `/accounts/${accountId}/opt_out_texts?phone_number=${encodeURIComponent(e164)}`,
+      limitOpts(limits),
     );
   } catch (err) {
     if (err instanceof CtmApiError && err.httpStatus === 404) return false;
@@ -661,11 +692,18 @@ export async function getRecordingResponse(accountId: string, callSid: string): 
 export async function sendSms(
   accountId: string,
   args: { from: string; to: string; msg: string; status_callback?: string },
+  /** Only Spider's staff alert text passes this (10 s, no inline retry). Everyone else omits it. */
+  limits?: CtmCallLimits,
 ): Promise<Record<string, unknown>> {
   if (args.msg.length > 1600) {
     throw new Error('SMS body exceeds the 1600-character limit.');
   }
-  return request(`/accounts/${accountId}/sms`, { method: 'POST', body: { ...args }, form: true });
+  return request(`/accounts/${accountId}/sms`, {
+    method: 'POST',
+    body: { ...args },
+    form: true,
+    ...limitOpts(limits),
+  });
 }
 
 // ─── A2P / Trust Center ──────────────────────────────────────────────────────

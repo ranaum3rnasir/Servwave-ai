@@ -35,6 +35,7 @@ import {
   type SpiderNotificationsConfig,
   type SystemRoleItem,
   type TimeUnit,
+  type WatcherCustomer,
   DEFAULT_LEAD_STAGES,
   DEFAULT_SYSTEM_ROLES,
   buildWatcherCustomersFromLive,
@@ -190,12 +191,76 @@ function SpiderStatusError() {
 
 // ─── The draft, in the contractor's shapes, and the server's ────────────────
 
-interface SpiderDraft {
+/**
+ * One change the person made to the lead ticks, kept as what they did ("untick lead L00001", "tick
+ * customer Kim", "Select all", "untick Auto-select new leads"), not as the ids it gave on the list
+ * shown then. The lead list is cached for a few minutes (#2988), so a save replays these on the
+ * server's current list and writes what the same clicks give on it.
+ */
+type LeadPick =
+  | { kind: 'lead'; id: string; on: boolean }
+  | { kind: 'customer'; id: string; on: boolean }
+  | { kind: 'all'; on: boolean }
+  | { kind: 'auto'; on: boolean };
+
+interface LeadSelection {
+  autoEnrollAllLeads: boolean;
+  selectedLeadIds: string[];
+}
+
+interface SpiderDraft extends LeadSelection {
   notifications: SpiderNotificationsConfig;
   assignments: SpiderAssignmentsConfig;
   leadStages: LeadStageConfig[];
-  autoEnrollAllLeads: boolean;
-  selectedLeadIds: string[];
+  // autoEnrollAllLeads / selectedLeadIds: the selection as the server last gave it; leadPicks: the
+  // person's changes to it since.
+  leadPicks: LeadPick[];
+}
+
+/**
+ * The selection `picks` give from `base` on a lead list, by his tick rules: while "Auto-select new
+ * leads" is on every listed lead is ticked; unticking any (or Deselect all) turns it off and keeps
+ * the rest ticked as the selected leads; Select all ticks every listed lead; unticking the box keeps
+ * every listed lead ticked. `readsList` says whether the result depends on which leads are listed.
+ */
+function applyLeadPicks(
+  base: LeadSelection,
+  picks: readonly LeadPick[],
+  customers: readonly WatcherCustomer[],
+): LeadSelection & { readsList: boolean } {
+  let auto = base.autoEnrollAllLeads;
+  let ids = base.selectedLeadIds;
+  let readsList = false;
+  const listed = () => {
+    readsList = true;
+    return customers.flatMap((c) => c.leads.map((l) => l.id));
+  };
+  const ticked = () => (auto ? listed() : ids);
+  // A change to the ticks: auto-select stays on only while every listed lead is still ticked.
+  const tick = (next: string[]) => {
+    ids = next;
+    auto = false;
+  };
+  for (const p of picks) {
+    if (p.kind === 'lead') {
+      const cur = ticked();
+      tick(p.on ? (cur.includes(p.id) ? cur : [...cur, p.id]) : cur.filter((id) => id !== p.id));
+    } else if (p.kind === 'customer') {
+      readsList = true;
+      const own = customers.find((c) => c.id === p.id)?.leads.map((l) => l.id) ?? [];
+      const cur = ticked();
+      tick(p.on ? Array.from(new Set([...cur, ...own])) : cur.filter((id) => !own.includes(id)));
+    } else if (p.kind === 'all') {
+      if (p.on) ids = listed();
+      else tick([]);
+    } else if (p.on) {
+      auto = true;
+    } else {
+      ids = ticked();
+      auto = false;
+    }
+  }
+  return { autoEnrollAllLeads: auto, selectedLeadIds: ids, readsList };
 }
 
 const UNIT_FROM_SERVER: Record<string, TimeUnit> = { MINUTE: 'Minute', HOUR: 'Hour', DAY: 'Day' };
@@ -226,10 +291,13 @@ function draftFrom(settings: SpiderSettings): SpiderDraft {
     }),
     autoEnrollAllLeads: settings.watch_all_leads,
     selectedLeadIds: settings.selected_lead_ids,
+    leadPicks: [],
   };
 }
 
-function inputFrom(d: SpiderDraft): SpiderSettingsInput {
+/** The draft as a save body, its lead picks applied on `customers` (the lead list). */
+function inputFrom(d: SpiderDraft, customers: readonly WatcherCustomer[]): SpiderSettingsInput {
+  const selection = applyLeadPicks(d, d.leadPicks, customers);
   return {
     status_limits: Object.fromEntries(
       d.leadStages.map((s) => {
@@ -249,8 +317,8 @@ function inputFrom(d: SpiderDraft): SpiderSettingsInput {
       user_ids: d.assignments.users,
       lead_owner: d.assignments.owner,
     },
-    watch_all_leads: d.autoEnrollAllLeads,
-    selected_lead_ids: d.selectedLeadIds,
+    watch_all_leads: selection.autoEnrollAllLeads,
+    selected_lead_ids: selection.selectedLeadIds,
   };
 }
 
@@ -324,10 +392,8 @@ function SpiderWatcherTabs({ onUnsavedChange }: { onUnsavedChange: (unsaved: boo
   } = useQuery({
     queryKey: SPIDER_LEADS_QUERY_KEY,
     queryFn: fetchSpiderLeadsApi,
-    // Read once per visit (and again after a save): never polled, never on focus.
-    staleTime: Infinity,
-    refetchOnMount: 'always',
-    refetchOnWindowFocus: false,
+    // The app's own freshness rules apply (lib/queryClient.ts): reopening the page inside the window
+    // reads nothing; a save invalidates this key (handleConfirmSave). Never polled.
   });
 
   // Fetch real customers from API
@@ -339,19 +405,24 @@ function SpiderWatcherTabs({ onUnsavedChange }: { onUnsavedChange: (unsaved: boo
   } = useQuery({
     queryKey: SPIDER_CUSTOMERS_QUERY_KEY,
     queryFn: fetchSpiderCustomersApi,
-    // Read once per visit (and again after a save): never polled, never on focus.
-    staleTime: Infinity,
-    refetchOnMount: 'always',
-    refetchOnWindowFocus: false,
+    // The app's own freshness rules apply (lib/queryClient.ts): reopening the page inside the window
+    // reads nothing; a save invalidates this key (handleConfirmSave). Never polled.
   });
+
+  const storeCustomers = useMemo(
+    // Time in a stage counts from when the lead entered it, as the server counts it (#2794): never
+    // from when Spider was switched on.
+    () => buildWatcherCustomersFromLive(apiLeads || [], apiCustomers || [], null),
+    [apiLeads, apiCustomers],
+  );
 
   // Take the server's copy whenever a fresh one arrives (first load, and a refetch), unless the
   // draft holds edits not saved yet: a background refetch never overwrites them (#2793). Done while
   // rendering, keyed on the response object.
   const [draft, setDraft] = useState<SpiderDraft | null>(null);
   const [syncedFrom, setSyncedFrom] = useState<SpiderSettingsResponse | undefined>(undefined);
-  const serverInput = syncedFrom ? inputFrom(draftFrom(syncedFrom.settings)) : null;
-  const unsaved = !!draft && !!serverInput && !sameInput(inputFrom(draft), serverInput);
+  const serverInput = syncedFrom ? inputFrom(draftFrom(syncedFrom.settings), storeCustomers) : null;
+  const unsaved = !!draft && !!serverInput && !sameInput(inputFrom(draft, storeCustomers), serverInput);
   // While History is open with nothing unsaved, the settings are not asked for again.
   const settingsQuery = useSpiderSettings({ enabled: activeTab === 'config' || unsaved });
   if (settingsQuery.data && settingsQuery.data !== syncedFrom) {
@@ -360,12 +431,6 @@ function SpiderWatcherTabs({ onUnsavedChange }: { onUnsavedChange: (unsaved: boo
   }
 
   const settings = settingsQuery.data?.settings;
-  const storeCustomers = useMemo(
-    // Time in a stage counts from when the lead entered it, as the server counts it (#2794): never
-    // from when Spider was switched on.
-    () => buildWatcherCustomersFromLive(apiLeads || [], apiCustomers || [], null),
-    [apiLeads, apiCustomers],
-  );
 
   useEffect(() => {
     onUnsavedChange(unsaved);
@@ -377,7 +442,6 @@ function SpiderWatcherTabs({ onUnsavedChange }: { onUnsavedChange: (unsaved: boo
     [syncedFrom],
   );
 
-  const update = (patch: Partial<SpiderDraft>) => setDraft((d) => (d ? { ...d, ...patch } : d));
   const setDraftNotifications: React.Dispatch<React.SetStateAction<SpiderNotificationsConfig>> = (u) =>
     setDraft((d) => (d ? { ...d, notifications: typeof u === 'function' ? u(d.notifications) : u } : d));
   const setDraftAssignments: React.Dispatch<React.SetStateAction<SpiderAssignmentsConfig>> = (u) =>
@@ -386,10 +450,14 @@ function SpiderWatcherTabs({ onUnsavedChange }: { onUnsavedChange: (unsaved: boo
   // "Auto-select new leads" is the server's watch-all flag: while it is on the server watches every
   // lead, so every listed lead is ticked, as his screen showed. Unticking any of them (or Deselect
   // all) turns it off and keeps the rest ticked, saved as the selected leads, so the ticks always
-  // match what the server watches.
-  const autoSelect = draft?.autoEnrollAllLeads === true;
+  // match what the server watches. The ticks on screen are the draft's picks applied on the list shown.
+  const leadSelection = useMemo(
+    () => (draft ? applyLeadPicks(draft, draft.leadPicks, storeCustomers) : null),
+    [draft, storeCustomers],
+  );
+  const autoSelect = leadSelection?.autoEnrollAllLeads === true;
   const listedLeadIds = useMemo(() => storeCustomers.flatMap((c) => c.leads.map((l) => l.id)), [storeCustomers]);
-  const storedSelectedLeadIds = draft?.selectedLeadIds;
+  const storedSelectedLeadIds = leadSelection?.selectedLeadIds;
   const draftSelectedLeadIds = useMemo(
     () => (autoSelect ? listedLeadIds : (storedSelectedLeadIds ?? [])),
     [autoSelect, listedLeadIds, storedSelectedLeadIds],
@@ -409,9 +477,8 @@ function SpiderWatcherTabs({ onUnsavedChange }: { onUnsavedChange: (unsaved: boo
     return selectedLeadsListOf(storeCustomers, ids, selectedLeadLabels).length;
   }, [savedSettings, listedLeadIds, storeCustomers, selectedLeadLabels]);
 
-  /** A change to the ticks: auto-select stays on only while every listed lead is still ticked. */
-  const selectLeads = (selectedLeadIds: string[]) =>
-    update(autoSelect ? { selectedLeadIds, autoEnrollAllLeads: false } : { selectedLeadIds });
+  /** A change to the ticks, kept as what the person did (applyLeadPicks gives the ticks). */
+  const pick = (p: LeadPick) => setDraft((d) => (d ? { ...d, leadPicks: [...d.leadPicks, p] } : d));
 
   const updateDraftLeadStage = (id: string, updates: Partial<LeadStageConfig>) => {
     setDraft((d) =>
@@ -427,47 +494,79 @@ function SpiderWatcherTabs({ onUnsavedChange }: { onUnsavedChange: (unsaved: boo
       draftSelectedCustomerIds.includes(customerId) &&
       (leadIdsForCustomer.length === 0 || allLeadsSelected);
 
-    const newLeadIds = isSelected
-      ? draftSelectedLeadIds.filter((id) => !leadIdsForCustomer.includes(id))
-      : Array.from(new Set([...draftSelectedLeadIds, ...leadIdsForCustomer]));
-    selectLeads(newLeadIds);
+    pick({ kind: 'customer', id: customerId, on: !isSelected });
   };
 
   const toggleLeadSelection = (leadId: string) => {
-    const isLeadSelected = draftSelectedLeadIds.includes(leadId);
-    const newLeadIds = isLeadSelected
-      ? draftSelectedLeadIds.filter((id) => id !== leadId)
-      : [...draftSelectedLeadIds, leadId];
-    selectLeads(newLeadIds);
+    pick({ kind: 'lead', id: leadId, on: !draftSelectedLeadIds.includes(leadId) });
   };
 
   const selectAllCustomers = () => {
-    update({ selectedLeadIds: listedLeadIds });
+    pick({ kind: 'all', on: true });
   };
 
   const deselectAllCustomers = () => {
-    selectLeads([]);
+    pick({ kind: 'all', on: false });
   };
 
   // Ticking auto-select ticks everything; unticking it on its own keeps every listed lead ticked
   // (and watched), as the selected leads.
-  const changeAutoSelect = (enabled: boolean) =>
-    update(enabled ? { autoEnrollAllLeads: true } : { autoEnrollAllLeads: false, selectedLeadIds: draftSelectedLeadIds });
+  const changeAutoSelect = (enabled: boolean) => pick({ kind: 'auto', on: enabled });
 
   const handleSaveClick = () => {
     setIsConfirmModalOpen(true);
   };
 
+  const showSaveError = (err: unknown) => {
+    toast({
+      title: 'Failed to Save Settings',
+      description: spiderErrorText(err, 'Could not save Spider settings to the server.', STAGE_LABELS),
+      variant: 'destructive',
+      duration: 4000,
+    });
+  };
+
   // Saves the settings only, never the switch (D1). Success is claimed only once the server has
   // accepted the save.
-  const handleConfirmSave = () => {
+  const handleConfirmSave = async () => {
     if (!draft) return;
     setIsConfirmModalOpen(false);
-    save.mutate(inputFrom(draft), {
-      onSuccess: (data, sent) => {
+    const saving = draft;
+    let customers = storeCustomers;
+    if (applyLeadPicks(saving, saving.leadPicks, storeCustomers).readsList) {
+      // The ticks came from a lead list that may be a few minutes older than the server's. Write what
+      // the same clicks give on the server's CURRENT list: read it once, fresh. If it cannot be read,
+      // nothing is saved: a save from the old list could drop a lead Spider watches now.
+      try {
+        const freshLeads = await queryClient.fetchQuery({
+          queryKey: SPIDER_LEADS_QUERY_KEY,
+          queryFn: fetchSpiderLeadsApi,
+          staleTime: 0,
+        });
+        customers = buildWatcherCustomersFromLive(freshLeads || [], apiCustomers || [], null);
+      } catch (err) {
+        showSaveError(err);
+        return;
+      }
+    }
+    const sent = inputFrom(saving, customers);
+    save.mutate(sent, {
+      onSuccess: (data) => {
         setSyncedFrom(data);
-        // An edit made while the save was on its way stays, still unsaved.
-        setDraft((d) => (d && !sameInput(inputFrom(d), sent) ? d : draftFrom(data.settings)));
+        // An edit made while the save was on its way stays, still unsaved: its picks made since then
+        // now apply to what the server holds, so the next save still replays them on a fresh list.
+        setDraft((d) => {
+          if (!d || d === saving || sameInput(inputFrom(d, customers), sent)) return draftFrom(data.settings);
+          const sentPicks = saving.leadPicks;
+          if (!sentPicks.every((p, i) => d.leadPicks[i] === p)) return d;
+          const saved = draftFrom(data.settings);
+          return {
+            ...d,
+            autoEnrollAllLeads: saved.autoEnrollAllLeads,
+            selectedLeadIds: saved.selectedLeadIds,
+            leadPicks: d.leadPicks.slice(sentPicks.length),
+          };
+        });
         setIsSaved(true);
         toast({
           title: 'Spider Agent Settings Saved',
@@ -479,14 +578,7 @@ function SpiderWatcherTabs({ onUnsavedChange }: { onUnsavedChange: (unsaved: boo
         queryClient.invalidateQueries({ queryKey: SPIDER_LEADS_QUERY_KEY });
         queryClient.invalidateQueries({ queryKey: SPIDER_CUSTOMERS_QUERY_KEY });
       },
-      onError: (err) => {
-        toast({
-          title: 'Failed to Save Settings',
-          description: spiderErrorText(err, 'Could not save Spider settings to the server.', STAGE_LABELS),
-          variant: 'destructive',
-          duration: 4000,
-        });
-      },
+      onError: showSaveError,
     });
   };
 
@@ -605,7 +697,7 @@ function SpiderWatcherTabs({ onUnsavedChange }: { onUnsavedChange: (unsaved: boo
                 if (isLeadsError) refetchLeads();
                 if (isCustomersError) refetchCustomers();
               }}
-              autoEnrollNewLeads={draft.autoEnrollAllLeads}
+              autoEnrollNewLeads={autoSelect}
               onAutoEnrollChange={changeAutoSelect}
               isActive
               activatedAt={null}
@@ -666,7 +758,7 @@ function SpiderWatcherTabs({ onUnsavedChange }: { onUnsavedChange: (unsaved: boo
           storeCustomers={storeCustomers}
           availableRoles={availableRoles}
           availableUsers={availableUsers}
-          autoEnrollAllLeads={draft.autoEnrollAllLeads}
+          autoEnrollAllLeads={autoSelect}
           selectedLeadLabels={selectedLeadLabels}
           onConfirm={handleConfirmSave}
         />

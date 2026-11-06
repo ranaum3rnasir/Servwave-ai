@@ -38,9 +38,11 @@ const OPTIONAL_CLIENT_HELPERS = new Set([
 
 /**
  * Transactions opened on a client of their own, so what runs inside them uses the app's client on another connection by
- * design: the Spider sweep's lock (services/spider/sweep.ts), which pins its own single connection for the run.
+ * design. None today: the Spider sweep's lock transaction on its own client was the one entry, and it is a lease row now
+ * (#2993, services/spider/sweepLease.ts) that holds no transaction. A new entry needs a real-database case on one
+ * connection.
  */
-const OWN_CLIENT_RECEIVERS = new Set(['lockClient']);
+const OWN_CLIENT_RECEIVERS = new Set<string>([]);
 
 type FnNode = ts.FunctionLikeDeclaration;
 

@@ -1,11 +1,12 @@
 /* =============================================================================
    Spider lead watcher: the sweep on the hosted database's pool (one connection).
 
-   The sweep holds a database-wide lock for its whole run, so two servers never sweep at once. A lock held by a
-   transaction pins one pooled connection; the work the sweep does while holding it runs on the app's client, which on
-   a pool of ONE has no second connection to use. It then waits out the pool timeout, fails, and (worse) keeps every
-   other request waiting for the same single connection while it does. Local and CI URLs carry five connections and hide
-   it. These cases run the real sweep on a client with one connection and a short pool timeout.
+   The deployed pool holds ONE connection. The sweep once held a database-wide lock in a transaction for its whole run,
+   which pinned a connection: the work could then never run on the app's client, so it took a second, private client.
+   Since #2993 one run at a time is kept by a lease ROW instead (services/spider/sweepLease.ts): claimed, renewed and
+   given up in single statements, so no transaction is held and the whole run, its renewals included, shares the app's
+   one client and its single connection. Local and CI URLs carry five connections and would hide a run that needed a
+   second one. These cases run the real sweep on a client with one connection and a short pool timeout.
    Skips when TEST_DATABASE_URL is unset. Every org it creates is removed again.
    ========================================================================== */
 
@@ -20,7 +21,6 @@ const clientPromise = vi.hoisted(async () => {
 
 vi.mock('../lib/prisma', async () => ({ prisma: await clientPromise }));
 
-// The sweep opens its lock on a connection of its own, to the same database as the app's client.
 vi.mock('../config/env', () => ({
   env: {
     NODE_ENV: 'test',
@@ -32,6 +32,7 @@ vi.mock('../config/env', () => ({
 }));
 
 import { runSpiderSweep } from '../services/spider/sweep';
+import { SPIDER_SWEEP_LEASE, _setSweepLeaseTiming } from '../services/spider/sweepLease';
 import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
 
 const suite = process.env.TEST_DATABASE_URL ? describe : describe.skip;
@@ -116,27 +117,43 @@ suite('Spider sweep on a one-connection pool (real database)', () => {
     expect(await db.spiderAlert.count({ where: { organization_id: org, lead_id: lead } })).toBe(1);
   });
 
-  it('still refuses to run while another server holds the lock', async () => {
-    await watchedCompany();
-    const { PrismaClient } = await import('@prisma/client');
-    const other = new PrismaClient({ datasources: { db: { url: process.env.TEST_DATABASE_URL! } } });
+  it('still refuses to run while another server holds the lease', async () => {
+    const { org } = await watchedCompany();
+    await db.$executeRawUnsafe(
+      `INSERT INTO spider_sweep_leases (name, holder, claimed_at, expires_at) VALUES ($1, 'other-server', now(), now() + interval '1 minute')
+       ON CONFLICT (name) DO UPDATE SET holder = EXCLUDED.holder, claimed_at = EXCLUDED.claimed_at, expires_at = EXCLUDED.expires_at`,
+      SPIDER_SWEEP_LEASE,
+    );
     try {
-      let release!: () => void;
-      const held = new Promise<void>((r) => (release = r));
-      let locked!: () => void;
-      const lockTaken = new Promise<void>((r) => (locked = r));
-      const holder = other.$transaction(async (tx) => {
-        await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended('spider.sweep', 0))::text`;
-        locked();
-        await held;
-      }, { timeout: 30_000 });
-      await lockTaken;
       const blocked = await runSpiderSweep(T0);
-      release();
-      await holder;
       expect(blocked.ran).toBe(false);
+      expect(await db.spiderAlert.count({ where: { organization_id: org } })).toBe(0);
     } finally {
-      await other.$disconnect();
+      await db.$executeRawUnsafe(`DELETE FROM spider_sweep_leases WHERE name = $1`, SPIDER_SWEEP_LEASE);
+    }
+  });
+
+  it('renews its lease on the same single connection while it works, and gives it up at the end', async () => {
+    // Renewals every 50 ms against a 1 s lease, over a run that alerts several leads: each renewal queues for the one
+    // connection between the sweep's own queries, and the run still finishes with every alert.
+    _setSweepLeaseTiming({ ttlMs: 1_000, renewEveryMs: 50 });
+    try {
+      const { org } = await watchedCompany();
+      for (let i = 0; i < 5; i += 1) {
+        const lead = await db.lead.findFirstOrThrow({ where: { organization_id: org }, select: { customer_id: true } });
+        await db.lead.create({
+          data: {
+            id: randomUUID(), organization_id: org, customer_id: lead.customer_id, lead_number: `L-extra-${i}-${org.slice(0, 4)}`,
+            service_request: 'Fix the door', status: 'NEW', created_at: new Date(T0.getTime() - 24 * HOUR),
+          },
+        });
+      }
+      const result = await runSpiderSweep(T0);
+      expect(result.ran).toBe(true);
+      expect(await db.spiderAlert.count({ where: { organization_id: org } })).toBe(6);
+      expect(await db.$queryRawUnsafe(`SELECT holder FROM spider_sweep_leases WHERE name = $1`, SPIDER_SWEEP_LEASE)).toEqual([]);
+    } finally {
+      _setSweepLeaseTiming();
     }
   });
 });

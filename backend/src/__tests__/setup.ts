@@ -1,5 +1,9 @@
 import { vi } from 'vitest';
 
+// Lets the shared Prisma client (lib/prisma.ts) deliver `$on('query')` events, which the query counter in
+// support/query-counter.ts reads. Test-only: lib/prisma.ts ignores it in production.
+process.env.PRISMA_QUERY_EVENTS ??= 'on';
+
 // Mock env before anything else imports it
 vi.mock('../config/env', async () => ({ env: (await import('./test-env.js')).testEnv }));
 

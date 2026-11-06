@@ -166,9 +166,9 @@ const ALLOWED: AllowedGroup[] = [
     ],
   },
   {
-    reason: 'Health and API info: say only that the server is up. No company data.',
+    reason: 'Health and API info: say only that the server is up, or whether the database answers. No company data.',
     signedIn: false,
-    routes: ['GET /health', 'GET /api'],
+    routes: ['GET /health', 'GET /health/deep', 'GET /api'],
   },
   {
     reason: 'Signing in and its links: nobody is signed in yet. Each takes a password, a refresh token, a sign-in code, or a single-use '

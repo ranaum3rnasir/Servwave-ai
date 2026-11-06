@@ -7,6 +7,7 @@
  * a failed notification never breaks the parent action.
  */
 
+import { randomUUID } from 'crypto';
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { logger } from '../../lib/logger';
@@ -53,9 +54,12 @@ export interface EmitArgs {
    */
   personal?: boolean;
   /**
-   * The people named in `entity` have been through the single read of the conversation already, so the row-scope filter is not asked
-   * a second time (a second look at an email conversation costs the same reads again). Only the customer-reply alert
-   * (emailReplyAlerts.ts) sets it, for people it found among those who may read the conversation.
+   * The people named in `entity` have been through this alert's own access check already, so the row-scope filter is not asked a
+   * second time. Two callers set it, and no other may (emit-access-check-guard.test.ts holds the list):
+   *   - the customer-reply alert (emailReplyAlerts.ts), for people it found among those who may read the conversation (a second
+   *     look at an email conversation costs the same reads again);
+   *   - Spider's per-lead alert (spider/sweep.ts), for people Spider's rule kept because they can open the lead: the same row
+   *     check, asked once for all the run's leads (spider/recipients.ts) rather than again for every lead.
    */
   readersChecked?: boolean;
   /**
@@ -70,6 +74,11 @@ export interface EmitArgs {
 }
 
 // ── main export ───────────────────────────────────────────────────────────────
+
+/** The caller has decided who may be told (see `personal` and `readersChecked` on EmitArgs): the row-scope filter is not asked. */
+function skipsAccessCheck(args: EmitArgs): boolean {
+  return Boolean(args.personal || args.readersChecked);
+}
 
 /**
  * The never-silent fallback of a missed call, voicemail or inbound text whose lookup named nobody: up to two alerts to the holders of
@@ -159,7 +168,7 @@ export async function emit(args: EmitArgs): Promise<string[]> {
     // Step 8: Row-scope filter — drop recipients who cannot access the object row. A personal alert is about the people it goes to,
     // and a call or text alert's people have been through the filter already (the fallback's holders are told by design, without
     // caller details when they cannot read it), as a customer's email reply's people have been through the single read.
-    const allowed = args.personal || args.readersChecked || conversationAlert
+    const allowed = skipsAccessCheck(args) || conversationAlert
       ? specs.map((s) => s.userId)
       : await filterRecipientsByAccess(
           args.object.type,
@@ -216,4 +225,78 @@ export async function emit(args: EmitArgs): Promise<string[]> {
     });
     return [];
   }
+}
+
+/**
+ * Many alerts in one step (#2990: Spider's per-lead alerts of one company's run): for each alert exactly what `emit` does - the
+ * known-verb check, the money-free data bag, the template, the dedup key, the recipient rule, the row-scope filter (skipped only on
+ * the same two options) and the live-update ping - with the dedup keys read in one query and every alert's rows written in two
+ * statements in all (the event rows, then every recipient row), however many alerts there are.
+ *
+ * Not for call or text alerts (their people come from a lookup per alert), the never-silent fallback, or a caller's transaction:
+ * those go through `emit`. Unlike `emit` it throws when a read or a write fails, so the caller can record that the alerts were not
+ * shown; nothing is then pinged. Returns, per alert in order, the recipient ids notified ([] for a skipped or duplicate alert).
+ */
+export async function emitMany(list: readonly EmitArgs[]): Promise<string[][]> {
+  const told: string[][] = list.map(() => []);
+  for (const args of list) {
+    if (args.tx || args.fallbackPeople || conversationAlertOf(args)) {
+      throw new Error(`emitMany does not take ${args.verb} alerts with a transaction, the fallback or a conversation lookup; use emit`);
+    }
+  }
+  const known = list.flatMap((args, i) => (isKnownVerb(args.verb) ? [{ i, args }] : []));
+
+  // The dedup keys of every alert, in one read.
+  const keyed = known.filter((k) => k.args.dedupKey);
+  const taken = new Set<string>();
+  if (keyed.length > 0) {
+    const existing = await prisma.notification.findMany({
+      where: { OR: keyed.map((k) => ({ organization_id: k.args.organizationId, dedup_key: k.args.dedupKey! })) },
+      select: { organization_id: true, dedup_key: true },
+    });
+    for (const e of existing) taken.add(`${e.organization_id}|${e.dedup_key}`);
+  }
+
+  const events: Prisma.NotificationCreateManyInput[] = [];
+  const recipients: Prisma.NotificationRecipientCreateManyInput[] = [];
+  const pings: { recipientIds: string[]; organizationId: string }[] = [];
+  for (const { i, args } of known) {
+    if (args.dedupKey && taken.has(`${args.organizationId}|${args.dedupKey}`)) continue;
+    const data = { ...withoutMoneyFields(args.data ?? {}), object_label: args.object.label };
+    const tpl = renderTemplate(args.verb, data);
+    const specs = resolveRecipients({ verb: args.verb, organizationId: args.organizationId, actorId: args.actorId, entity: args.entity ?? {} });
+    const allowed = skipsAccessCheck(args)
+      ? specs.map((s) => s.userId)
+      : await filterRecipientsByAccess(args.object.type, args.object.id, specs.map((s) => s.userId), args.organizationId);
+    const finalSpecs = specs.filter((s) => allowed.includes(s.userId));
+    if (finalSpecs.length === 0) continue;
+    const id = randomUUID();
+    events.push({
+      id,
+      organization_id: args.organizationId,
+      actor_id: args.actorId,
+      verb: args.verb,
+      category: tpl.category,
+      priority: tpl.priority,
+      needs_action: tpl.needs_action,
+      object_type: tpl.object_type,
+      object_id: args.object.id,
+      object_label: args.object.label ?? null,
+      title: tpl.title,
+      body: tpl.body ?? null,
+      data,
+      action_type: tpl.action_type ?? null,
+      dedup_key: args.dedupKey ?? null,
+    });
+    for (const s of finalSpecs) {
+      recipients.push({ notification_id: id, organization_id: args.organizationId, recipient_id: s.userId, priority: s.priority, needs_action: s.needs_action });
+    }
+    told[i] = finalSpecs.map((s) => s.userId);
+    pings.push({ recipientIds: told[i]!, organizationId: args.organizationId });
+  }
+  if (events.length === 0) return told;
+  await prisma.notification.createMany({ data: events });
+  await prisma.notificationRecipient.createMany({ data: recipients });
+  for (const p of pings) void publishNotificationsChanged(p.recipientIds, p.organizationId);
+  return told;
 }

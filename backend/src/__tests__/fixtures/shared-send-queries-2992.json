@@ -1,0 +1,180 @@
+[
+ {
+  "step": "precheck, a user with their own number",
+  "answer": {
+   "ok": true
+  },
+  "queries": [
+   {
+    "sql": "SELECT \"public\".\"organizations\".\"id\", \"public\".\"organizations\".\"ctm_account_id\", \"public\".\"organizations\".\"ctm_sms_ready\", \"public\".\"organizations\".\"sms_sending_enabled\", \"public\".\"organizations\".\"plan\"::text, \"public\".\"organizations\".\"trial_ends_at\", \"public\".\"organizations\".\"feature_overrides\" FROM \"public\".\"organizations\" WHERE (\"public\".\"organizations\".\"id\" = $1 AND 1=1) LIMIT $2 OFFSET $3",
+    "params": "[\"29920000-0000-4000-8000-000000000001\",1,0]"
+   },
+   {
+    "sql": "SELECT \"public\".\"user_phone_numbers\".\"user_id\", \"public\".\"user_phone_numbers\".\"phone_number_id\" FROM \"public\".\"user_phone_numbers\" LEFT JOIN \"public\".\"phone_numbers\" AS \"j0\" ON (\"j0\".\"id\") = (\"public\".\"user_phone_numbers\".\"phone_number_id\") WHERE (\"public\".\"user_phone_numbers\".\"user_id\" = $1 AND \"public\".\"user_phone_numbers\".\"is_default\" = $2 AND (\"j0\".\"organization_id\" = $3 AND \"j0\".\"status\" = $4 AND \"j0\".\"ctm_number_id\" IS NOT NULL AND \"j0\".\"sms_enabled\" = $5 AND (\"j0\".\"id\" IS NOT NULL))) LIMIT $6 OFFSET $7",
+    "params": "[\"29920000-0000-4000-8000-000000000011\",true,\"29920000-0000-4000-8000-000000000001\",\"active\",true,1,0]"
+   },
+   {
+    "sql": "SELECT \"public\".\"phone_numbers\".\"id\", \"public\".\"phone_numbers\".\"ctm_number_id\" FROM \"public\".\"phone_numbers\" WHERE \"public\".\"phone_numbers\".\"id\" IN ($1) OFFSET $2",
+    "params": "[\"29920000-0000-4000-8000-000000000022\",0]"
+   }
+  ]
+ },
+ {
+  "step": "precheck, a user with none: the company default",
+  "answer": {
+   "ok": true
+  },
+  "queries": [
+   {
+    "sql": "SELECT \"public\".\"organizations\".\"id\", \"public\".\"organizations\".\"ctm_account_id\", \"public\".\"organizations\".\"ctm_sms_ready\", \"public\".\"organizations\".\"sms_sending_enabled\", \"public\".\"organizations\".\"plan\"::text, \"public\".\"organizations\".\"trial_ends_at\", \"public\".\"organizations\".\"feature_overrides\" FROM \"public\".\"organizations\" WHERE (\"public\".\"organizations\".\"id\" = $1 AND 1=1) LIMIT $2 OFFSET $3",
+    "params": "[\"29920000-0000-4000-8000-000000000001\",1,0]"
+   },
+   {
+    "sql": "SELECT \"public\".\"user_phone_numbers\".\"user_id\", \"public\".\"user_phone_numbers\".\"phone_number_id\" FROM \"public\".\"user_phone_numbers\" LEFT JOIN \"public\".\"phone_numbers\" AS \"j0\" ON (\"j0\".\"id\") = (\"public\".\"user_phone_numbers\".\"phone_number_id\") WHERE (\"public\".\"user_phone_numbers\".\"user_id\" = $1 AND \"public\".\"user_phone_numbers\".\"is_default\" = $2 AND (\"j0\".\"organization_id\" = $3 AND \"j0\".\"status\" = $4 AND \"j0\".\"ctm_number_id\" IS NOT NULL AND \"j0\".\"sms_enabled\" = $5 AND (\"j0\".\"id\" IS NOT NULL))) LIMIT $6 OFFSET $7",
+    "params": "[\"29920000-0000-4000-8000-000000000012\",true,\"29920000-0000-4000-8000-000000000001\",\"active\",true,1,0]"
+   },
+   {
+    "sql": "SELECT \"public\".\"phone_numbers\".\"id\", \"public\".\"phone_numbers\".\"ctm_number_id\" FROM \"public\".\"phone_numbers\" WHERE (\"public\".\"phone_numbers\".\"organization_id\" = $1 AND \"public\".\"phone_numbers\".\"status\" = $2 AND \"public\".\"phone_numbers\".\"ctm_number_id\" IS NOT NULL AND \"public\".\"phone_numbers\".\"sms_enabled\" = $3 AND \"public\".\"phone_numbers\".\"is_org_default\" = $4) LIMIT $5 OFFSET $6",
+    "params": "[\"29920000-0000-4000-8000-000000000001\",\"active\",true,true,1,0]"
+   }
+  ]
+ },
+ {
+  "step": "precheck, no default: the oldest active number",
+  "answer": {
+   "ok": true
+  },
+  "queries": [
+   {
+    "sql": "SELECT \"public\".\"organizations\".\"id\", \"public\".\"organizations\".\"ctm_account_id\", \"public\".\"organizations\".\"ctm_sms_ready\", \"public\".\"organizations\".\"sms_sending_enabled\", \"public\".\"organizations\".\"plan\"::text, \"public\".\"organizations\".\"trial_ends_at\", \"public\".\"organizations\".\"feature_overrides\" FROM \"public\".\"organizations\" WHERE (\"public\".\"organizations\".\"id\" = $1 AND 1=1) LIMIT $2 OFFSET $3",
+    "params": "[\"29920000-0000-4000-8000-000000000002\",1,0]"
+   },
+   {
+    "sql": "SELECT \"public\".\"phone_numbers\".\"id\", \"public\".\"phone_numbers\".\"ctm_number_id\" FROM \"public\".\"phone_numbers\" WHERE (\"public\".\"phone_numbers\".\"organization_id\" = $1 AND \"public\".\"phone_numbers\".\"status\" = $2 AND \"public\".\"phone_numbers\".\"ctm_number_id\" IS NOT NULL AND \"public\".\"phone_numbers\".\"sms_enabled\" = $3 AND \"public\".\"phone_numbers\".\"is_org_default\" = $4) LIMIT $5 OFFSET $6",
+    "params": "[\"29920000-0000-4000-8000-000000000002\",\"active\",true,true,1,0]"
+   },
+   {
+    "sql": "SELECT \"public\".\"phone_numbers\".\"id\", \"public\".\"phone_numbers\".\"ctm_number_id\" FROM \"public\".\"phone_numbers\" WHERE (\"public\".\"phone_numbers\".\"organization_id\" = $1 AND \"public\".\"phone_numbers\".\"status\" = $2 AND \"public\".\"phone_numbers\".\"ctm_number_id\" IS NOT NULL AND \"public\".\"phone_numbers\".\"sms_enabled\" = $3) ORDER BY \"public\".\"phone_numbers\".\"created_at\" ASC LIMIT $4 OFFSET $5",
+    "params": "[\"29920000-0000-4000-8000-000000000002\",\"active\",true,1,0]"
+   }
+  ]
+ },
+ {
+  "step": "precheck, not ready to text",
+  "answer": {
+   "ok": false,
+   "reason": "SMS_NOT_READY"
+  },
+  "queries": [
+   {
+    "sql": "SELECT \"public\".\"organizations\".\"id\", \"public\".\"organizations\".\"ctm_account_id\", \"public\".\"organizations\".\"ctm_sms_ready\", \"public\".\"organizations\".\"sms_sending_enabled\", \"public\".\"organizations\".\"plan\"::text, \"public\".\"organizations\".\"trial_ends_at\", \"public\".\"organizations\".\"feature_overrides\" FROM \"public\".\"organizations\" WHERE (\"public\".\"organizations\".\"id\" = $1 AND 1=1) LIMIT $2 OFFSET $3",
+    "params": "[\"29920000-0000-4000-8000-000000000003\",1,0]"
+   }
+  ]
+ },
+ {
+  "step": "an automation send (no user, a missing message row)",
+  "answer": {
+   "delivered": false,
+   "reason": "CTM_ERROR"
+  },
+  "queries": [
+   {
+    "sql": "SELECT \"public\".\"organizations\".\"id\", \"public\".\"organizations\".\"ctm_account_id\", \"public\".\"organizations\".\"ctm_sms_ready\", \"public\".\"organizations\".\"sms_sending_enabled\", \"public\".\"organizations\".\"plan\"::text, \"public\".\"organizations\".\"trial_ends_at\", \"public\".\"organizations\".\"feature_overrides\" FROM \"public\".\"organizations\" WHERE (\"public\".\"organizations\".\"id\" = $1 AND 1=1) LIMIT $2 OFFSET $3",
+    "params": "[\"29920000-0000-4000-8000-000000000002\",1,0]"
+   },
+   {
+    "sql": "SELECT \"public\".\"phone_numbers\".\"id\", \"public\".\"phone_numbers\".\"ctm_number_id\" FROM \"public\".\"phone_numbers\" WHERE (\"public\".\"phone_numbers\".\"organization_id\" = $1 AND \"public\".\"phone_numbers\".\"status\" = $2 AND \"public\".\"phone_numbers\".\"ctm_number_id\" IS NOT NULL AND \"public\".\"phone_numbers\".\"sms_enabled\" = $3 AND \"public\".\"phone_numbers\".\"is_org_default\" = $4) LIMIT $5 OFFSET $6",
+    "params": "[\"29920000-0000-4000-8000-000000000002\",\"active\",true,true,1,0]"
+   },
+   {
+    "sql": "SELECT \"public\".\"phone_numbers\".\"id\", \"public\".\"phone_numbers\".\"ctm_number_id\" FROM \"public\".\"phone_numbers\" WHERE (\"public\".\"phone_numbers\".\"organization_id\" = $1 AND \"public\".\"phone_numbers\".\"status\" = $2 AND \"public\".\"phone_numbers\".\"ctm_number_id\" IS NOT NULL AND \"public\".\"phone_numbers\".\"sms_enabled\" = $3) ORDER BY \"public\".\"phone_numbers\".\"created_at\" ASC LIMIT $4 OFFSET $5",
+    "params": "[\"29920000-0000-4000-8000-000000000002\",\"active\",true,1,0]"
+   },
+   {
+    "sql": "UPDATE \"public\".\"messages\" SET \"status\" = $1, \"status_reason\" = $2, \"ctm_sms_id\" = $3, \"phone_number_id\" = $4, \"updated_at\" = $5 WHERE (\"public\".\"messages\".\"id\" = $6 AND 1=1) RETURNING \"public\".\"messages\".\"id\", \"public\".\"messages\".\"thread_id\", \"public\".\"messages\".\"direction\", \"public\".\"messages\".\"body\", \"public\".\"messages\".\"ts\", \"public\".\"messages\".\"status\", \"public\".\"messages\".\"status_reason\", \"public\".\"messages\".\"automated\", \"public\".\"messages\".\"job_id\", \"public\".\"messages\".\"job_label\", \"public\".\"messages\".\"lead_id\", \"public\".\"messages\".\"ctm_sms_id\", \"public\".\"messages\".\"phone_number_id\", \"public\".\"messages\".\"sent_by_user_id\", \"public\".\"messages\".\"created_at\", \"public\".\"messages\".\"updated_at\", \"public\".\"messages\".\"organization_id\"",
+    "params": "[\"sent\",null,\"sms-2992\",\"29920000-0000-4000-8000-000000000023\",\"2026-11-04 08:02:04.580 UTC\",\"29920000-0000-4000-8000-000000000031\"]"
+   },
+   {
+    "sql": "UPDATE \"public\".\"messages\" SET \"status\" = $1, \"status_reason\" = $2, \"updated_at\" = $3 WHERE (\"public\".\"messages\".\"id\" = $4 AND 1=1) RETURNING \"public\".\"messages\".\"id\", \"public\".\"messages\".\"thread_id\", \"public\".\"messages\".\"direction\", \"public\".\"messages\".\"body\", \"public\".\"messages\".\"ts\", \"public\".\"messages\".\"status\", \"public\".\"messages\".\"status_reason\", \"public\".\"messages\".\"automated\", \"public\".\"messages\".\"job_id\", \"public\".\"messages\".\"job_label\", \"public\".\"messages\".\"lead_id\", \"public\".\"messages\".\"ctm_sms_id\", \"public\".\"messages\".\"phone_number_id\", \"public\".\"messages\".\"sent_by_user_id\", \"public\".\"messages\".\"created_at\", \"public\".\"messages\".\"updated_at\", \"public\".\"messages\".\"organization_id\"",
+    "params": "[\"failed\",\"CTM_ERROR\",\"2026-11-04 08:02:04.586 UTC\",\"29920000-0000-4000-8000-000000000031\"]"
+   }
+  ]
+ },
+ {
+  "step": "a staff text with no pre-read",
+  "answer": {
+   "delivered": true
+  },
+  "queries": [
+   {
+    "sql": "SELECT \"public\".\"organizations\".\"id\", \"public\".\"organizations\".\"ctm_account_id\", \"public\".\"organizations\".\"ctm_sms_ready\", \"public\".\"organizations\".\"sms_sending_enabled\", \"public\".\"organizations\".\"plan\"::text, \"public\".\"organizations\".\"trial_ends_at\", \"public\".\"organizations\".\"feature_overrides\" FROM \"public\".\"organizations\" WHERE (\"public\".\"organizations\".\"id\" = $1 AND 1=1) LIMIT $2 OFFSET $3",
+    "params": "[\"29920000-0000-4000-8000-000000000001\",1,0]"
+   },
+   {
+    "sql": "SELECT \"public\".\"phone_numbers\".\"id\", \"public\".\"phone_numbers\".\"ctm_number_id\" FROM \"public\".\"phone_numbers\" WHERE (\"public\".\"phone_numbers\".\"organization_id\" = $1 AND \"public\".\"phone_numbers\".\"status\" = $2 AND \"public\".\"phone_numbers\".\"ctm_number_id\" IS NOT NULL AND \"public\".\"phone_numbers\".\"sms_enabled\" = $3 AND \"public\".\"phone_numbers\".\"is_org_default\" = $4) LIMIT $5 OFFSET $6",
+    "params": "[\"29920000-0000-4000-8000-000000000001\",\"active\",true,true,1,0]"
+   }
+  ]
+ },
+ {
+  "step": "a staff text, not ready",
+  "answer": {
+   "delivered": false,
+   "reason": "SMS_NOT_READY"
+  },
+  "queries": [
+   {
+    "sql": "SELECT \"public\".\"organizations\".\"id\", \"public\".\"organizations\".\"ctm_account_id\", \"public\".\"organizations\".\"ctm_sms_ready\", \"public\".\"organizations\".\"sms_sending_enabled\", \"public\".\"organizations\".\"plan\"::text, \"public\".\"organizations\".\"trial_ends_at\", \"public\".\"organizations\".\"feature_overrides\" FROM \"public\".\"organizations\" WHERE (\"public\".\"organizations\".\"id\" = $1 AND 1=1) LIMIT $2 OFFSET $3",
+    "params": "[\"29920000-0000-4000-8000-000000000003\",1,0]"
+   }
+  ]
+ },
+ {
+  "step": "a call, an explicit pick",
+  "answer": {
+   "ctm_number_id": "TPN-user",
+   "phone_number_id": "29920000-0000-4000-8000-000000000022"
+  },
+  "queries": [
+   {
+    "sql": "SELECT \"public\".\"user_phone_numbers\".\"user_id\", \"public\".\"user_phone_numbers\".\"phone_number_id\" FROM \"public\".\"user_phone_numbers\" LEFT JOIN \"public\".\"phone_numbers\" AS \"j0\" ON (\"j0\".\"id\") = (\"public\".\"user_phone_numbers\".\"phone_number_id\") WHERE (\"public\".\"user_phone_numbers\".\"user_id\" = $1 AND \"public\".\"user_phone_numbers\".\"phone_number_id\" = $2 AND (\"j0\".\"organization_id\" = $3 AND \"j0\".\"status\" = $4 AND \"j0\".\"ctm_number_id\" IS NOT NULL AND (\"j0\".\"id\" IS NOT NULL))) LIMIT $5 OFFSET $6",
+    "params": "[\"29920000-0000-4000-8000-000000000011\",\"29920000-0000-4000-8000-000000000022\",\"29920000-0000-4000-8000-000000000001\",\"active\",1,0]"
+   },
+   {
+    "sql": "SELECT \"public\".\"phone_numbers\".\"id\", \"public\".\"phone_numbers\".\"ctm_number_id\" FROM \"public\".\"phone_numbers\" WHERE \"public\".\"phone_numbers\".\"id\" IN ($1) OFFSET $2",
+    "params": "[\"29920000-0000-4000-8000-000000000022\",0]"
+   }
+  ]
+ },
+ {
+  "step": "suppression, one address in another case",
+  "answer": true,
+  "queries": [
+   {
+    "sql": "SELECT \"public\".\"email_suppressions\".\"id\" FROM \"public\".\"email_suppressions\" WHERE (\"public\".\"email_suppressions\".\"address\" IN ($1) AND \"public\".\"email_suppressions\".\"category\" = $2) LIMIT $3 OFFSET $4",
+    "params": "[\"shared-send-2992@example.test\",\"TRANSACTIONAL\",1,0]"
+   }
+  ]
+ },
+ {
+  "step": "suppression, a list",
+  "answer": true,
+  "queries": [
+   {
+    "sql": "SELECT \"public\".\"email_suppressions\".\"id\" FROM \"public\".\"email_suppressions\" WHERE (\"public\".\"email_suppressions\".\"address\" IN ($1,$2) AND \"public\".\"email_suppressions\".\"category\" = $3) LIMIT $4 OFFSET $5",
+    "params": "[\"nobody-2992@example.test\",\"shared-send-2992@example.test\",\"TRANSACTIONAL\",1,0]"
+   }
+  ]
+ },
+ {
+  "step": "suppression, nobody",
+  "answer": false,
+  "queries": [
+   {
+    "sql": "SELECT \"public\".\"email_suppressions\".\"id\" FROM \"public\".\"email_suppressions\" WHERE (\"public\".\"email_suppressions\".\"address\" IN ($1) AND \"public\".\"email_suppressions\".\"category\" = $2) LIMIT $3 OFFSET $4",
+    "params": "[\"nobody-2992@example.test\",\"TRANSACTIONAL\",1,0]"
+   }
+  ]
+ }
+]

@@ -3,14 +3,16 @@ import fs from 'node:fs';
 import app from './app';
 import { env } from './config/env';
 import { logger } from './lib/logger';
-import cron from 'node-cron';
+import { scheduleJob, runJobAtBoot } from './lib/scheduleJob';
+import { warnUnknownPausedJobs } from './lib/jobsPaused';
 import { runInvoiceDueChecks } from './services/notifications/invoiceDueCron';
 import { runAutomationTick } from './services/automations/cron';
 import { runUnscoped } from './lib/tenant-context';
 import { refreshAllAccountStatuses } from './lib/account-status';
 import { sweepUncapturedFees } from './lib/reconcile-stripe-fees';
 import { runNightlyReconcile } from './services/payment-reconcile';
-import { runSpiderSweep } from './services/spider/sweep';
+import { runSpiderSweep, whenSpiderSweepIdle } from './services/spider/sweep';
+import { installStopSignals } from './lib/graceful-stop';
 import { spiderPilotListBootLine } from './services/spider/gate';
 import { sweepReceivedAttachments } from './lib/inbound-attachments';
 
@@ -44,8 +46,15 @@ server.requestTimeout = 30_000; // 30s for the whole request
 // SENT estimates no longer auto-archive on a lapsed valid_until. See cron/estimate-expiration.ts
 // (deleted) in git history if SRVW-53 revives a real expiry feature.
 
+// Every background job below is started through scheduleJob (or runJobAtBoot, for the boot-time run), which puts it on the
+// jobs' own two database lines (lib/prismaJobs.ts) with a 5 s statement limit and a 1 s lock limit, so a job can never hold the
+// users' lines. jobs-use-jobs-client-guard.test.ts fails for a job started any other way.
+// The first argument is the job's name for JOBS_PAUSED (lib/jobsPaused.ts, the one list of names): an operator pauses a job, or
+// all of them, with that setting; a paused job skips its run before it touches the database. Unknown names are warned about once.
+warnUnknownPausedJobs();
+
 // Daily invoice overdue / due-soon check at 6 AM UTC
-cron.schedule('0 6 * * *', () => {
+scheduleJob('invoice-due', '0 6 * * *', () => {
   runUnscoped(() => runInvoiceDueChecks()).catch((err) =>
     logger.error('invoice due cron failed', err),
   );
@@ -54,24 +63,29 @@ cron.schedule('0 6 * * *', () => {
 // Automation Center poller — every minute: scans time-based triggers
 // ("24h before job" etc.) and executes due / send-window-deferred runs.
 // runAutomationTick never throws; the catch is belt-and-braces.
-cron.schedule('* * * * *', () => {
+scheduleJob('automations', '* * * * *', () => {
   runAutomationTick().catch((err) => logger.error('automation tick failed', err));
 });
 
 logger.info('Automation Center poller scheduled (every minute)');
 
 // Spider lead watcher sweep (#2619) — every 2 minutes. Unscoped at the top, then scoped per
-// company inside; one instance across servers (advisory lock) and never two overlapping runs.
+// company inside; one instance across servers (a lease row, services/spider/sweepLease.ts) and never two overlapping runs.
 // runSpiderSweep never throws; the catch is belt-and-braces.
-cron.schedule('*/2 * * * *', () => {
+scheduleJob('spider', '*/2 * * * *', () => {
   runSpiderSweep().catch((err) => logger.error('spider sweep failed', err));
 });
 logger.info(spiderPilotListBootLine());
 
+// Stopping the server (a deploy or restart sends SIGTERM; a terminal sends SIGINT): a Spider sweep in progress stops
+// between two per-lead alerts and finishes its end step (unsent claims released, records written) before the process
+// ends by the same signal, as it always did. At most 25 s (lib/graceful-stop.ts); nothing else about shutdown changes.
+installStopSignals({ finishing: whenSpiderSweepIdle });
+
 // Received-mail attachments (PRD 10, S10.17) — every 10 minutes: received messages whose files were still on their way after the
 // first try (the provider was unreachable, the process stopped mid-way) are tried again, a fixed number of times each. Cross-company,
 // so unscoped at the top. sweepReceivedAttachments never throws and never runs twice at once; the catch is belt-and-braces.
-cron.schedule('*/10 * * * *', () => {
+scheduleJob('attachments', '*/10 * * * *', () => {
   runUnscoped(() => sweepReceivedAttachments()).catch((err) => logger.error('received attachments sweep failed', err));
 });
 
@@ -84,7 +98,7 @@ cron.schedule('*/10 * * * *', () => {
 // container TZ does flip. NOTE: that 6 AM job is documented as UTC but passes no
 // timezone, so it has this same latent drift - a known gap, deliberately left for its
 // own change rather than widened into this one.
-cron.schedule('0 7 * * *', () => {
+scheduleJob('stripe-fees', '0 7 * * *', () => {
   runUnscoped(() => sweepUncapturedFees())
     .then((r) => logger.info(`Stripe fee sweep: ${r.swept} payment(s) backfilled`))
     .catch((err) => logger.error('Stripe fee sweep cron failed', err));
@@ -94,9 +108,10 @@ cron.schedule('0 7 * * *', () => {
 // boot, never crashes it - a restart cannot otherwise accelerate recovery from a capture
 // missed at webhook time, and a deploy landing between a payment write and its detached
 // fee-capture call is exactly the case this repairs. Safe to run alongside the 07:00 UTC
-// cron above - the sweep's where clause makes an already-captured row invisible to it.
-void runUnscoped(() => sweepUncapturedFees())
-  .then((r) => logger.info(`[boot] Stripe fee sweep: ${r.swept} payment(s) backfilled`))
+// cron above - the sweep's where clause makes an already-captured row invisible to it. Same job, same JOBS_PAUSED name
+// ('stripe-fees'): a pause only takes effect on a restart, and the restart must not run the sweep that was paused.
+void runJobAtBoot('stripe-fees', () => runUnscoped(() => sweepUncapturedFees()))
+  .then((r) => r && logger.info(`[boot] Stripe fee sweep: ${r.swept} payment(s) backfilled`))
   .catch((err) => logger.error('[boot] Stripe fee sweep failed', err));
 
 // Nightly payment reconcile against the processor (payments go-live slice 37). Runs after the fee
@@ -104,7 +119,7 @@ void runUnscoped(() => sweepUncapturedFees())
 // start in the same second as the hourly and per-minute jobs (staging's pool has one connection).
 // Listing the orgs is the only cross-org read (unscoped, like the crons above); each org is then
 // compared in its own tenant context, and one org failing never stops the rest. Drift is alerted by an ops email and a log line per finding.
-cron.schedule('7 8 * * *', () => {
+scheduleJob('payment-reconcile', '7 8 * * *', () => {
   runUnscoped(() => runNightlyReconcile())
     .then((r) => logger.info(`Payment reconcile: ${r.orgs.length} org(s) checked, ${r.driftCount} difference(s), ${r.errorCount} not checked`))
     .catch((err) => logger.error('Payment reconcile cron failed', err));
@@ -115,7 +130,7 @@ cron.schedule('7 8 * * *', () => {
 // the only cross-org read (unscoped, like the crons above); each org is then refreshed in its
 // own tenant context and FAILS CLOSED on any processor error (lib/account-status.ts). The
 // account event and the return from onboarding refresh between runs.
-cron.schedule('30 7 * * *', () => {
+scheduleJob('account-status', '30 7 * * *', () => {
   runUnscoped(() => refreshAllAccountStatuses())
     .then((r) => logger.info(`Stripe account status refresh: ${r.orgs.length} org(s) checked`))
     .catch((err) => logger.error('Stripe account status refresh cron failed', err));

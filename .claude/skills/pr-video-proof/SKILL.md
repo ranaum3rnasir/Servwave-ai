@@ -33,7 +33,7 @@ access, the reviews and tests in the PR body still carry the weight; say that in
 - Frontend: `https://servwave-demo.vercel.app` (company: "ServWave Test"). Backend: `https://alpha-crm-test-env.onrender.com`.
 - Sign-in: `STAGING_TEST_EMAIL` and `STAGING_TEST_PASSWORD` from the environment. Never print them, never write them
   to a file in the repo, never type them on camera. Fail when they are unset.
-- `/health` does NOT report the running commit (it returns status, db and timestamp only).
+- `/health` does NOT report the running commit (it returns status and timestamp only; `/health/deep` adds the database state).
 
 ## Steps
 

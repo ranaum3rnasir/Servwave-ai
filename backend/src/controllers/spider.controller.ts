@@ -40,6 +40,8 @@ import {
   historyQuerySchema,
   historySummarySchema,
   historyWhere,
+  SUMMARY_NOT_BUILDING,
+  storedRecipients,
   type HistoryRow,
 } from '../services/spider/history';
 import { SPIDER_STAGE_NAME } from '../services/spider/messages';
@@ -309,7 +311,7 @@ async function userIdsWithRoles(where: { organization_id: string }, roles: reado
 
 /** The table's rows, in the History tab's shape. People on alerts from before S3 are named as they are now. */
 async function historyItems(where: { organization_id: string }, rows: HistoryRow[]) {
-  const legacyIds = [...new Set(rows.filter((r) => !Array.isArray(r.recipients)).flatMap((r) => r.recipient_ids))];
+  const legacyIds = [...new Set(rows.filter((r) => storedRecipients(r) === null).flatMap((r) => r.recipient_ids))];
   const users = legacyIds.length
     ? await prisma.user.findMany({
         where: { ...where, id: { in: legacyIds } },
@@ -395,7 +397,7 @@ export async function getSpiderHistorySummary(req: Request, res: Response) {
     badQuery(res, parsed.error);
     return;
   }
-  const where = tenantWhere(req);
+  const where = { ...tenantWhere(req), ...SUMMARY_NOT_BUILDING };
   const orgId = req.user!.organization_id;
   try {
     const since = parsed.data.since ? new Date(parsed.data.since) : null;

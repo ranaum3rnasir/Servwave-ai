@@ -82,9 +82,9 @@ This removes the entire "Phase A prod prep" from the old plan.
 | API | `alpha-crm-test-env.onrender.com` | **`api.servwave.com`** |
 | Frontend | `servwave-demo.vercel.app` | `app.servwave.com` |
 | Supabase | `knriiqdqxgfoecsfarlx` | `fvcjinnllchzqcupmrah` |
-| Health | 200 `db:ok` | 200 `db:ok` |
+| Health (`/health/deep`) | 200 `db:ok` | 200 `db:ok` |
 
-**Always address production as `api.servwave.com`.** Verified 2026-08-10: 200 `db:ok`, and the same
+**Always address production as `api.servwave.com`.** Verified 2026-08-10: 200 `db:ok` (on `/health`, which then reported the database; `/health/deep` does now), and the same
 route baseline as the origin. It is Cloudflare-fronted; `alpha-crm-1.onrender.com` is the Render
 origin behind it and is the name to click in the Render dashboard, not the one to put in a webhook,
 a config value or a probe. `alpha-crm-api.onrender.com`, which older planning docs name as the prod
@@ -330,7 +330,7 @@ Verify, in order:
 
 1. `_prisma_migrations`: all 14 present, `finished_at` set, `rolled_back_at` null, and the total
    moves 169 -> 183.
-2. `/health` returns 200 `db:ok`.
+2. `/health/deep` returns 200 `db:ok` (`/health` answers from memory and no longer reports the database).
 3. **The discriminator:** `POST /api/webhooks/resend` moves 404 -> **401** (unsigned body). Until
    it does, the old code is still serving.
 4. `PATCH /api/organization/email-sender` -> 401, and `PATCH /api/organization/never-existed` ->

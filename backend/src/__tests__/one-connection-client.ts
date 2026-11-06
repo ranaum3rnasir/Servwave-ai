@@ -21,6 +21,7 @@
    ========================================================================== */
 
 import type { PrismaClient } from '@prisma/client';
+import { QUERY_EVENT_LOG } from './support/query-counter';
 
 /** Seconds a query waits for a free connection before it fails (the hosted default is 10). */
 export const SHORT_POOL_TIMEOUT_SECONDS = 4;
@@ -32,5 +33,5 @@ export async function oneConnectionClient(url: string | undefined): Promise<Pris
   const pooled = new URL(url);
   pooled.searchParams.set('connection_limit', '1');
   pooled.searchParams.set('pool_timeout', String(SHORT_POOL_TIMEOUT_SECONDS));
-  return new PrismaClient({ datasources: { db: { url: pooled.toString() } } });
+  return new PrismaClient({ datasources: { db: { url: pooled.toString() } }, log: QUERY_EVENT_LOG });
 }

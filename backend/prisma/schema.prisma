@@ -3074,7 +3074,9 @@ model Organization {
   // --- Spider lead watcher (#2619) ---
   spider_settings             SpiderSettings?
   spider_alerts               SpiderAlert[]
-  spider_summary              SpiderSummary?
+  spider_summaries            SpiderSummary[]
+  spider_summary_runs         SpiderSummaryRun[]
+  spider_recipient_sets       SpiderRecipientSet[]
   record_contact_entries      RecordContactEntry[]
   credits                     Credit[]
   deposit_credit_applications DepositCreditApplication[]
@@ -6599,11 +6601,15 @@ model SpiderSettings {
 }
 
 // Spider's starting summary (#2794): the backlog already past its limit when Spider started watching
-// something new, reported once per recipient instead of one alert per lead. Only the latest summary of
-// a company is kept (one row per company); its leads are the alert-log rows that point at it.
+// something new, reported once per recipient instead of one alert per lead. One CURRENT summary per company: a
+// partial unique index on organization_id where status is not SUPERSEDED (migration 20261105110000; Prisma cannot
+// express a partial index, so the schema carries no @unique). Its leads are the alert-log rows that point at it.
+//   status BUILDING: its claims are still being written (#3108, services/spider/summaryRuns.ts); nobody can read it.
+//   status READY:    complete and delivered; the only summary staff and History read. Rows from before #3108 are READY.
+//   status SUPERSEDED: replaced by a newer switch-on or trigger (or given up on); kept for good, never deleted.
 model SpiderSummary {
   id              String   @id @default(uuid()) @db.Uuid
-  organization_id String   @unique @db.Uuid
+  organization_id String   @db.Uuid
   created_at      DateTime @default(now())
   // When the starting trigger happened, and which kind (spider_settings.summary_trigger_kind).
   triggered_at    DateTime
@@ -6611,12 +6617,42 @@ model SpiderSummary {
   lead_count      Int      @default(0)
   recipient_count Int      @default(0)
   // Per channel, in plain words: { in_app: {outcome}, email: {outcome, recipients:[{user_id,outcome}]}, text: {...} }.
+  // { state: 'SENDING' } from the moment delivery starts until its outcome is recorded: delivery starts at most once.
   delivery        Json     @default("{}")
+  // BUILDING | READY | SUPERSEDED. Nullable, defaulting to READY: every row that exists comes out READY, and a row with no
+  // status reads as READY (services/spider/summaryRuns.ts is the only writer).
+  status          String?  @default("READY")
 
-  organization Organization  @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  organization Organization       @relation(fields: [organization_id], references: [id], onDelete: Cascade)
   alerts       SpiderAlert[]
 
   @@map("spider_summaries")
+}
+
+// One go at making a starting summary (#3108): the summary is written in small saved pieces, so a run that stops
+// resumes where it was, and one that keeps failing gives up. `attempts` is counted and saved BEFORE any work starts;
+// `cursor` is the last lead id whose claim is saved; `next_attempt_at` is when the next attempt may start (2, then 8,
+// then 30 minutes after the attempt began). RUNNING | DONE | ABANDONED. One RUNNING run per company (partial unique
+// index in the migration). Services/spider/summaryRuns.ts.
+model SpiderSummaryRun {
+  id              String    @id @default(uuid()) @db.Uuid
+  organization_id String    @db.Uuid
+  summary_id      String    @unique @db.Uuid
+  status          String    @default("RUNNING")
+  attempts        Int       @default(0)
+  cursor          String?   @db.Uuid
+  last_error      String?
+  next_attempt_at DateTime?
+  created_at      DateTime  @default(now())
+  updated_at      DateTime  @default(now()) @updatedAt
+  finished_at     DateTime?
+
+  // summary_id has its foreign key (ON DELETE CASCADE) in the migration only: a relation here would add a field to
+  // SpiderSummary, whose generated types every file of the backend carries (the backend's typecheck runs close to its memory
+  // limit). The organization relation is declared: the company purge (lib/purge.ts) reads the schema for what cascades.
+  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@map("spider_summary_runs")
 }
 
 // The Spider alert log: one row per lead per status visit per switched-on period Spider alerted
@@ -6672,10 +6708,15 @@ model SpiderAlert {
   kind       String  @default("ALERTED")
   // The starting summary it was reported in; cleared when a newer summary replaces that one.
   summary_id String? @db.Uuid
+  // The list of people this alert told, stored once per distinct list (#3107). Rows written before it keep
+  // their own copy in `recipients` above; a row written since sets this and leaves `recipients` NULL.
+  recipient_set_id String? @db.Uuid
 
-  organization Organization   @relation(fields: [organization_id], references: [id], onDelete: Cascade)
-  lead         Lead           @relation(fields: [lead_id], references: [id], onDelete: Cascade)
-  summary      SpiderSummary? @relation(fields: [summary_id], references: [id], onDelete: SetNull)
+  organization  Organization       @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  lead          Lead               @relation(fields: [lead_id], references: [id], onDelete: Cascade)
+  summary       SpiderSummary?     @relation(fields: [summary_id], references: [id], onDelete: SetNull)
+  // NoAction, not SetNull: a set that vanished must fail loudly, never turn into an alert that lost its people.
+  recipient_set SpiderRecipientSet? @relation(fields: [recipient_set_id], references: [id], onDelete: NoAction)
 
   // Named explicitly: Prisma's default name for this key truncates to the old 4-column key's name.
   @@unique([organization_id, lead_id, status, entered_status_at, counted_from], map: "spider_alerts_visit_activation_key")
@@ -6683,7 +6724,39 @@ model SpiderAlert {
   @@index([organization_id, customer_id])
   @@index([lead_id])
   @@index([summary_id])
+  @@index([recipient_set_id])
   @@map("spider_alerts")
+}
+
+// One list of the people a Spider alert told (#3107), stored once however many alerts told exactly that list.
+// `recipients` is the History tab's list ([{ id, name, email, role, type }], in user id order, never a phone number),
+// as the alert-log row used to carry it; `hash` is a stable hash of that list (services/spider/recipientSets.ts), so
+// a list already stored is found again and reused. Unique per company on the hash.
+model SpiderRecipientSet {
+  id              String   @id @default(uuid()) @db.Uuid
+  organization_id String   @db.Uuid
+  hash            String
+  recipients      Json
+  created_at      DateTime @default(now())
+
+  organization Organization  @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  alerts       SpiderAlert[]
+
+  @@unique([organization_id, hash])
+  @@map("spider_recipient_sets")
+}
+
+// The Spider sweep's lease (#2993): at most one run at a time across servers, with no transaction held for the run.
+// One row per sweep name. A run claims it (insert, or take over a row whose expires_at has passed), renews expires_at
+// while it works, and deletes its row at the end; a killed run's row simply expires. holder is the run's own random id.
+// No company data, so no organization_id and no tenant policy (services/spider/sweepLease.ts).
+model SpiderSweepLease {
+  name       String   @id
+  holder     String
+  claimed_at DateTime @db.Timestamptz(3)
+  expires_at DateTime @db.Timestamptz(3)
+
+  @@map("spider_sweep_leases")
 }
 
 // Roles & Permissions, PRD 5 (S05.7): a job's (or a lead's) own copy of a customer detail. A person with the pencil

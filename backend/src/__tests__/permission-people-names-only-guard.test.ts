@@ -293,7 +293,9 @@ const ALLOWED: Record<string, string | [string, number]> = {
   'services/notifications/filterByAccess.ts › filterRecipientsByAccess: is_admin': CHECK,
   'services/notifications/stepHolderEmails.ts › stepHolderEmails: email': MAIL,
   'services/payment-reconciler/checkout-effects.ts › CHECKOUT_INVOICE_SELECT: email': MAIL,
-  'services/spider/recipients.ts › resolveSpiderRecipients: email,phone': [MAIL, 2],
+  'services/spider/recipients.ts › resolveSpiderRecipientsForLeads: email,is_admin,phone': CHECK_THEN_MAIL,
+  // #3108: a starting summary is delivered from what is saved, so the people it already named (Spider's rule, recipients.ts) are read back by id to be emailed and texted.
+  'services/spider/summary.ts › readDelivery: email,phone': MAIL,
   'services/walkthrough.service.ts › validatePerformers: email,is_admin,phone': CHECK_THEN_MAIL,
 };
 

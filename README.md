@@ -99,6 +99,31 @@ alpha-crm/
 - `npm run dev` - Start with hot reload
 - `npm run build` - Compile TypeScript
 - `npm run prisma:studio` - Open Prisma Studio
+- `npm run fixture:big-company -- <seed|status|delete>` - The synthetic big company (see below)
+
+### Synthetic big company (scale test data)
+
+`backend/scripts/synthetic-big-company.ts` builds one fake company at the size of a large customer, to
+measure Spider and the list screens at scale. All data is generated: names like "Alex Sample 00042",
+emails on `synthetic-big-company.invalid`, phone numbers in the fictional 555-01XX range.
+
+- Defaults: 15,000 customers, 5,000 open leads already past a Spider limit, 60 staff who can receive
+  Spider alerts. Change them with `--customers`, `--overdue-leads`, `--staff` (or the variables
+  `SYNTHETIC_COMPANY_CUSTOMERS`, `SYNTHETIC_COMPANY_OVERDUE_LEADS`, `SYNTHETIC_COMPANY_STAFF`).
+- The company is a demo company on the Scale plan, with Spider limits on New and Contacted and Spider
+  switched off. Staff have no sign-in account and no password.
+- It runs only against a database on this machine, or a staging database named at run time in
+  `E2E_ALLOWED_DB_HOSTS` (its host) and `E2E_ALLOWED_DB_REF` (its project ref). Anything else, and
+  production, is refused. A second `seed` refuses while the company exists.
+
+```
+cd backend
+npm run fixture:big-company -- seed                 # or: seed --customers 3000 --overdue-leads 1300
+npm run fixture:big-company -- status               # row counts, and how many leads are overdue now
+npm run fixture:big-company -- delete               # removes this company and only this company
+```
+
+`delete` needs `MAILBOX_ADDRESS_HASH_KEY` set (the company purge needs it), as any company purge does.
 
 ## User Roles
 

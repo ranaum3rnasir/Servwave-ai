@@ -23,11 +23,10 @@ const { realClient } = vi.hoisted(() => {
 
 vi.mock('../lib/prisma', () => ({ prisma: realClient }));
 
-// The sweep opens its lock on a connection of its own, from the app's database URL, so that URL
-// points at the same test database as the client above (as in spider-sweep-db.test.ts). Every
-// other value is the shared test env from setup.ts, because this suite boots the whole app. This
-// assumes the DB test files run one at a time against the test database (CI runs them with
-// --no-file-parallelism).
+// The app's database URL points at the same test database as the client above. Every other value is
+// the shared test env from setup.ts, because this suite boots the whole app. The sweep's lease is one
+// row for the whole database, so this assumes the DB test files run one at a time against the test
+// database (CI runs them with --no-file-parallelism).
 vi.mock('../config/env', async () => {
   const { testEnv } = await import('./test-env.js');
   return { env: { ...testEnv, DATABASE_URL: process.env.TEST_DATABASE_URL ?? testEnv.DATABASE_URL } };
@@ -938,7 +937,6 @@ suite('Spider API (real database)', () => {
         // Reading the list writes nothing.
         expect((await db.notificationRecipient.findUniqueOrThrow({ where: { id: alertA.id } })).read_at).toBeNull();
 
-        // The sweep's lock connection uses the test database (the file-level env mock above).
         const result = await runSpiderSweep();
         expect(result.ran).toBe(true);
         expect(result.alertsEnded).toBeGreaterThanOrEqual(1);
@@ -1605,6 +1603,43 @@ suite('Spider API (real database)', () => {
       const res = await api.get(HISTORY);
       expect(ids(res)).toEqual([row.id]);
       expect(res.body.items).toEqual(before);
+    });
+  });
+  // ─── The sweep lease (#2993) ───────────────────────────────────────────────
+
+  describe('one sweep at a time across servers (the sweep lease, #2993)', () => {
+    const MINE = '/api/ai-farm/spider/summary';
+    const lease = (sql: string) => db.$executeRawUnsafe(sql);
+
+    it('an Admin switches Spider on over a backlog: while another server holds the lease nothing is sent, then one run sends the starting summary the Admin reads', async () => {
+      const { org, admin, customer } = await onOrg();
+      const save = await (await fx.signedInAs(admin)).put(SETTINGS, body({ recipients: { roles: ['ADMIN'], user_ids: [], lead_owner: false } }));
+      expect(save.status).toBe(200);
+      const backlog = await fx.addLead(org, customer);
+      await db.lead.update({ where: { id: backlog.id }, data: { created_at: new Date(Date.now() - 5 * 3_600_000) } });
+      // Past the starting summary's quiet period.
+      const later = new Date(Date.now() + 15 * 60_000);
+
+      await lease(`INSERT INTO spider_sweep_leases (name, holder, claimed_at, expires_at) VALUES ('spider.sweep', 'other-server', now(), now() + interval '5 minutes')
+                   ON CONFLICT (name) DO UPDATE SET holder = EXCLUDED.holder, claimed_at = EXCLUDED.claimed_at, expires_at = EXCLUDED.expires_at`);
+      try {
+        expect((await runSpiderSweep(later)).ran).toBe(false);
+        expect((await (await fx.signedInAs(admin)).get(MINE)).body).toEqual({ summary: null });
+        expect(await db.spiderAlert.count({ where: { organization_id: org } })).toBe(0);
+      } finally {
+        // The other server's run ends and gives its lease up.
+        await lease(`DELETE FROM spider_sweep_leases WHERE name = 'spider.sweep' AND holder = 'other-server'`);
+      }
+
+      const result = await runSpiderSweep(later);
+      expect(result.ran).toBe(true);
+      expect(result.leadsSummarized).toBeGreaterThanOrEqual(1);
+      const mine = await (await fx.signedInAs(admin)).get(MINE);
+      expect(mine.status).toBe(200);
+      expect(mine.body.summary).toMatchObject({ total: 1, trigger_kind: expect.any(String) });
+      expect(mine.body.summary.leads.map((l: { lead_id: string }) => l.lead_id)).toEqual([backlog.id]);
+      // The run gave the lease up: nothing is left behind for the next run on any server.
+      expect(await db.$queryRawUnsafe(`SELECT holder FROM spider_sweep_leases WHERE name = 'spider.sweep'`)).toEqual([]);
     });
   });
 });

@@ -14,6 +14,12 @@
 > | Staging | `servwave-demo.vercel.app` | `alpha-crm-test-env.onrender.com` |
 >
 > The steps themselves are executed and stand as a record of what was run.
+>
+> **`/health` changed after this plan was written (#3106).** `/health` now answers from memory with
+> `{"status":"ok","timestamp":"..."}` and never touches the database, so Task 0.2's database ping
+> no longer lives there. The database check is `/health/deep` (`{"status":"ok","db":"ok","timestamp":"..."}`,
+> 503 with `"db":"error"` when the database does not answer within 2 s). Every database check and the
+> UptimeRobot monitor below use `/health/deep`; Render's health check path stays `/health`.
 
 **Goal:** Deploy ALPHA CRM to two live hosted environments — a paid always-on staging and a dormant free-tier production — at a current cost of $7/mo, with all infrastructure reproducible from this plan.
 
@@ -587,7 +593,7 @@ Because `staging` was just created from `main`, they're in sync at this point. B
 
   Once live:
   ```bash
-  curl https://alpha-crm-test-env.onrender.com/health
+  curl https://alpha-crm-test-env.onrender.com/health/deep
   ```
   Expected: `{"status":"ok","db":"ok","timestamp":"..."}`
 
@@ -603,13 +609,13 @@ Because `staging` was just created from `main`, they're in sync at this point. B
 - [ ] **Step 2: Verify prod health**
 
   ```bash
-  curl https://alpha-crm-api.onrender.com/health
+  curl https://alpha-crm-api.onrender.com/health/deep
   ```
   Expected: `{"status":"ok","db":"ok","timestamp":"..."}`
 
   *(May take up to 60s to respond the first time — Free tier cold start.)*
 
-**Checkpoint:** Both backend services live. Both `/health` endpoints respond with `db:ok`.
+**Checkpoint:** Both backend services live. Both `/health/deep` endpoints respond with `db:ok`.
 
 ---
 
@@ -754,7 +760,7 @@ Because `staging` was just created from `main`, they're in sync at this point. B
 - [ ] **Step 1: Check staging backend responded to env change**
 
   ```bash
-  curl https://alpha-crm-test-env.onrender.com/health
+  curl https://alpha-crm-test-env.onrender.com/health/deep
   ```
   Expected: still `{"status":"ok","db":"ok",...}` — no impact from env changes, just confirms service is still up.
 
@@ -778,7 +784,7 @@ Because `staging` was just created from `main`, they're in sync at this point. B
 
   - **Type:** HTTPS
   - **Friendly name:** `alpha-crm-api prod`
-  - **URL:** `https://alpha-crm-api.onrender.com/health`
+  - **URL:** `https://alpha-crm-api.onrender.com/health/deep` *(not `/health`: `/health` no longer touches the database, so only `/health/deep` keeps the free-tier database from pausing and alerts you when the database is down)*
   - **Monitoring Interval:** every 5 minutes *(or 14 if on a stricter free tier — must be under 15 to prevent Render spin-down)*
   - **Alert Contacts:** your email
 
@@ -788,7 +794,7 @@ Because `staging` was just created from `main`, they're in sync at this point. B
 
 ### Task 5.2: Optional — also monitor staging
 
-- [ ] **Step 1:** Same as 5.1 but for `alpha-crm-test-env.onrender.com/health`
+- [ ] **Step 1:** Same as 5.1 but for `alpha-crm-test-env.onrender.com/health/deep`
 - [ ] **Step 2:** Name: `alpha-crm-test-env`
 
 *(Staging is always-on via Starter plan, but an uptime check gives you outage notifications.)*
@@ -926,7 +932,7 @@ Because `staging` was just created from `main`, they're in sync at this point. B
 - [ ] **Step 1: Hit prod health**
 
   ```bash
-  curl https://alpha-crm-api.onrender.com/health
+  curl https://alpha-crm-api.onrender.com/health/deep
   ```
   Expected: `{"status":"ok","db":"ok",...}`
 
@@ -996,7 +1002,7 @@ Per CLAUDE.md rule 10: sync vault after milestones. This is a significant infras
 The plan is successfully completed when ALL of:
 
 - [ ] `git log staging` shows the pre-flight commit
-- [ ] Both Render services return `{"status":"ok","db":"ok"}` on `/health`
+- [ ] Both Render services return `{"status":"ok","db":"ok"}` on `/health/deep`
 - [ ] Both Vercel deployments load the login page
 - [ ] Staging smoke test (Task 7.2) runs end-to-end with zero errors in Render logs
 - [ ] Prod Supabase has 0 users/customers/leads and 51 tax rates
@@ -1012,7 +1018,7 @@ The plan is successfully completed when ALL of:
 |---|---|---|
 | Render build fails at `prisma generate` | `DATABASE_URL` missing/wrong | Re-check env vars in Render dashboard |
 | Render build fails at `tsc` | Prisma client missing | Verify `prisma generate` step precedes `tsc` in build command |
-| `/health` returns 503 | Supabase paused or DB creds wrong | Check Supabase dashboard for "Paused" banner; verify `DATABASE_URL` uses `?pgbouncer=true` |
+| `/health/deep` returns 503 (`"db":"error"`) | Supabase paused or DB creds wrong | Check Supabase dashboard for "Paused" banner; verify `DATABASE_URL` uses `?pgbouncer=true` |
 | Stripe webhook returns 400 in Render logs | Wrong `STRIPE_WEBHOOK_SECRET` for this env | Staging & prod have DIFFERENT webhook secrets — ensure each Render service has the right one |
 | Frontend CORS error | `FRONTEND_URL` in Render doesn't match actual Vercel URL | Update `FRONTEND_URL` in Render env, wait for auto-redeploy |
 | Resend emails not arriving | `EMAIL_FROM` domain unverified | Known — current default `no-reply@alphasecurityus.com` may not deliver. Either ignore for Phase 0 or set `EMAIL_FROM=onboarding@resend.dev` in Render env |

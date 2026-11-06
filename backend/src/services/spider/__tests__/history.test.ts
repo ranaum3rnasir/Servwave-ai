@@ -36,6 +36,7 @@ function row(over: Partial<HistoryRow> = {}): HistoryRow {
     elapsed_unit: null,
     channels: null,
     recipients: null,
+    recipient_set: null,
     email_subject: null,
     email_body: null,
     sms_message: null,

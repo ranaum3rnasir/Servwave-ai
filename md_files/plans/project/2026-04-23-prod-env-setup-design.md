@@ -4,6 +4,12 @@
 **Status:** Design in progress (living document — updated as sections are approved)
 **Owner:** Ran
 
+> **`/health` changed after this was written (#3106).** `/health` now answers from memory (`{status, timestamp}`)
+> and no longer touches the database; the database ping described below lives on `/health/deep`
+> (`{status, db, timestamp}`). A monitor that must notice a database outage, or keep a free-tier database from
+> pausing, must call `/health/deep`. Render's health check path stays `/health`: pointing it at `/health/deep`
+> would bring back the restart loop when a job holds the database lines.
+
 > **Stale hostnames, updated 2026-08-25:** every environment hostname in this document is dead.
 > `alpha-crm-api.onrender.com`, `alpha-crm.vercel.app`, `alpha-crm-staging-api.onrender.com` and
 > `alpha-crm-staging.vercel.app` all 404 or are suspended. The live map, verified 2026-08-25:
@@ -41,14 +47,14 @@ Everything you need to provide or do yourself, so nothing blocks execution. Chec
 ### Things you'll do yourself (Claude will guide)
 - [ ] Enable GitHub branch protection on `main` and `staging` (no direct pushes, PR required)
 - [ ] Create Stripe webhook endpoints (two — one per env) and copy the signing secrets back to me
-- [ ] Configure UptimeRobot monitor on prod `/health` (14-min interval)
+- [ ] Configure UptimeRobot monitor on prod `/health/deep` (14-min interval)
 - [ ] (At go-live) Flip prod Render service Free → Starter
 - [ ] (At go-live) Add a real domain and verify it on Resend
 
 ### Things Claude will generate (no action needed from you)
 - Prisma migrations will run automatically during Render builds
 - Supabase Storage bucket config for prod — replicated from staging via SQL + dashboard
-- `/health` endpoint updated to do a DB ping (keeps Supabase Free from pausing)
+- `/health/deep` endpoint does a DB ping (keeps Supabase Free from pausing)
 - `.gitignore` updated: `.env.*` added; `migration_lock.toml` removed from ignore list
 - `seed:tax-rates` npm script added to `backend/package.json`
 - Any hardcoded API URLs in frontend/backend moved to env vars
@@ -69,7 +75,7 @@ Every confirmed decision is captured here so nothing is lost as we progress thro
 | D6 | **Staging backend:** Render **Starter** ($7/mo always-on) | QA workers hit it daily, cannot tolerate 1-min wake-up |
 | D7 | **Staging database:** Supabase **Free** | QA traffic keeps it active; data is disposable, can be reseeded from Prisma migrations if corrupted |
 | D8 | **Production backend:** Render **Free** + keep-alive ping | $0 while dormant; flips to Starter at go-live |
-| D9 | **Production database:** Supabase **Free** | Low/no traffic; backend health pings keep it from pausing |
+| D9 | **Production database:** Supabase **Free** | Low/no traffic; `/health/deep` pings keep it from pausing |
 | D10 | **Frontend:** Vercel Hobby for both envs now, upgrade to Pro at go-live | Hobby terms gray area for commercial, acceptable for pre-customer MVP |
 | D11 | **Git branching:** Two-branch model — `main` = production, `staging` = staging | Matches the "QA gate before prod" flow |
 | D12 | **QA auth:** Regular Supabase login for company employees, no separate gate | QA are internal workers with real user accounts |
@@ -217,13 +223,13 @@ Two isolated environments, each a three-layer stack, wired together through one 
 - At go-live (Render Starter, always-on), cron fires reliably
 - If best-effort becomes unacceptable: promote the cron to Render Cron Jobs (paid, but cheap for short jobs) or trigger it externally via UptimeRobot with a secret header hitting `/api/internal/run-estimate-expiration`
 
-**`/health` must query the DB** (new requirement from spec review):
-- Current `/health` at `backend/src/app.ts:43` returns `{status:'ok'}` without touching Prisma
+**The DB check lives on `/health/deep`** (new requirement from spec review; `/health` itself stays database-free since #3106):
+- The original `/health` at `backend/src/app.ts:43` returned `{status:'ok'}` without touching Prisma
 - Supabase Free pauses after 7 days if the DB sees zero queries — a non-DB health check means prod DB could pause even though the backend is "alive"
-- Fix during execution: update `/health` to do a trivial `SELECT 1` via Prisma (or a cached `prisma.user.count()` with short TTL), returning `{status:'ok', db:'ok'}`
+- Fix during execution: a trivial `SELECT 1` via Prisma (or a cached `prisma.user.count()` with short TTL), returning `{status:'ok', db:'ok'}` (first put on `/health`, now `/health/deep`)
 - Added as a code change in the execution plan (Phase A Step 0)
 
-**Keep-alive (prod Free tier):** UptimeRobot free → `GET /health` every 14 min. Also acts as uptime monitoring.
+**Keep-alive (prod Free tier):** UptimeRobot free → `GET /health/deep` every 14 min. Also acts as uptime monitoring. It must be `/health/deep`: `/health` no longer touches the database, so a monitor on `/health` neither keeps a free-tier database from pausing nor notices a database outage.
 
 **Stripe webhooks:** two endpoints registered in Stripe test mode, one per env, each with its own `STRIPE_WEBHOOK_SECRET`.
 
@@ -301,7 +307,7 @@ Ensure these patterns are present before first push to protected branches:
 ### Phase A — Setup (execute now, ~2-3 hrs total)
 
 0. **Pre-flight code changes (Claude):**
-   - Update `backend/src/app.ts` `/health` endpoint to do a lightweight DB ping (`prisma.$queryRaw\`SELECT 1\``) — keeps Supabase Free from auto-pausing on prod
+   - Add a DB ping to the health endpoint (now `/health/deep`) (`prisma.$queryRaw\`SELECT 1\``) — keeps Supabase Free from auto-pausing on prod
    - Add `.env.*` pattern to `.gitignore` (currently missing; covers future variants)
    - Remove line `backend/prisma/migrations/**/migration_lock.toml` from `.gitignore` and commit the existing `backend/prisma/migrations/migration_lock.toml` — Prisma best practice is to track this so every env uses the same provider
    - Add `"seed:tax-rates": "tsx src/seed-tax-rates.ts"` to `backend/package.json` scripts so Section 3 Step 6 is a clean `npm run seed:tax-rates`
@@ -310,13 +316,13 @@ Ensure these patterns are present before first push to protected branches:
 
 1. **Database (Claude + Supabase MCP):** rename current → `alpha-crm-staging`; create `alpha-crm-prod`; run `prisma migrate deploy` + tax-rate seed against prod; replicate Storage bucket config via MCP; capture 10 credentials
 
-2. **Backend hosting (User + Claude):** User signs up for Render + connects GitHub. Claude creates `alpha-crm-test-env` (Starter) and `alpha-crm-api` (Free) with env vars per Section 4, triggers deploys, verifies `/health` returns `{status:'ok', db:'ok'}`
+2. **Backend hosting (User + Claude):** User signs up for Render + connects GitHub. Claude creates `alpha-crm-test-env` (Starter) and `alpha-crm-api` (Free) with env vars per Section 4, triggers deploys, verifies `/health/deep` returns `{status:'ok', db:'ok'}`
 
 3. **Frontend hosting (User + Claude):** User confirms Vercel + grants repo access. Claude creates project, sets build config + env vars, deploys `main` and `staging` branches
 
 4. **External services (User + Claude):** User creates two Stripe webhook endpoints in test mode (one per env URL), hands Claude the two `STRIPE_WEBHOOK_SECRET`s + `STRIPE_SECRET_KEY` + `VITE_STRIPE_PUBLISHABLE_KEY` + `RESEND_API_KEY`
 
-5. **Keep-alive + monitoring (User):** UptimeRobot → prod `/health` → 14 min interval → email alerts
+5. **Keep-alive + monitoring (User):** UptimeRobot → prod `/health/deep` → 14 min interval → email alerts
 
 6. **Branch protection (User):** GitHub settings → protect `main` and `staging` → PR-required, no direct pushes, require status checks to pass
 

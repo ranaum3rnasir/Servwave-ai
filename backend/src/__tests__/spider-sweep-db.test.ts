@@ -14,16 +14,18 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, vi } 
 import { randomUUID } from 'crypto';
 import type { LeadStatus, PrismaClient, Role } from '@prisma/client';
 
-const { realClient, resendSend } = vi.hoisted(() => {
+const { realClient, resendSend, faults } = vi.hoisted(() => {
   const dbUrl = process.env.TEST_DATABASE_URL;
   const { PrismaClient } = require('@prisma/client') as typeof import('@prisma/client');
   return {
     realClient: dbUrl ? new PrismaClient({ datasources: { db: { url: dbUrl } } }) : undefined,
     resendSend: vi.fn(),
+    faults: { executeRaw: null as null | ((sql: string) => Error | null), calls: [] as string[] },
   };
 });
 
-vi.mock('../lib/prisma', () => ({ prisma: realClient }));
+// The real client, with raw statements that a test can make fail (support/prisma-faults.ts).
+vi.mock('../lib/prisma', async () => ({ prisma: realClient && (await import('./support/prisma-faults.js')).withFaults(realClient, faults) }));
 
 const FRONTEND_URL = 'https://staging.app.test';
 vi.mock('../config/env', () => ({
@@ -33,7 +35,6 @@ vi.mock('../config/env', () => ({
     EMAIL_FROM_BUSINESS: 'no-reply@mail.test.com',
     RESEND_API_KEY: 're_test_key',
     FRONTEND_URL: 'https://staging.app.test',
-    // The sweep opens its lock on a connection of its own, to the same database as the app's client.
     DATABASE_URL: process.env.TEST_DATABASE_URL ?? 'postgresql://test:test@localhost:5432/test',
     // SPEC-5: the Spider pilot list, unset as today. Tests that need it assign it and restore it.
     SPIDER_PILOT_ORG_IDS: undefined,
@@ -220,7 +221,15 @@ suite('Spider sweep (real database)', () => {
     await db.spiderSettings.upsert({ where: { organization_id: c.org }, create: { organization_id: c.org, ...data }, update: data });
   }
 
-  const alertsFor = (leadId: string) => db.spiderAlert.findMany({ where: { lead_id: leadId }, orderBy: { alerted_at: 'asc' } });
+  /**
+   * A lead's alert-log rows. `recipients` is the list of people the row recorded: a row keeps no copy of its own since
+   * #3107, it points at a stored recipient set, so the list is read through it (the row's own column is NULL).
+   */
+  const alertsFor = async (leadId: string) =>
+    (await db.spiderAlert.findMany({ where: { lead_id: leadId }, orderBy: { alerted_at: 'asc' }, include: { recipient_set: true } })).map((a) => ({
+      ...a,
+      recipients: a.recipient_set?.recipients ?? a.recipients,
+    }));
 
   async function spiderNotices(leadId: string) {
     return db.notificationRecipient.findMany({
@@ -286,7 +295,9 @@ suite('Spider sweep (real database)', () => {
       expect(textedTo()).toEqual(['+16175550101']);
     });
 
-    it('checks every open lead - 160 of them - with no cap', async () => {
+    // No cap on the leads a run CHECKS. The alerts it SENDS are capped at 100 per company per run (#2991): the rest go
+    // out on the next run.
+    it('checks every open lead - 160 of them - with no cap, and alerts them all over two runs', async () => {
       const c = await company();
       await configure(c, { channels: { in_app: false, red_frame: false } });
       await db.lead.createMany({
@@ -296,8 +307,11 @@ suite('Spider sweep (real database)', () => {
         })),
       });
       const result = await runSpiderSweep(T0);
-      expect(await db.spiderAlert.count({ where: { organization_id: c.org } })).toBe(160);
       expect(result.leadsChecked).toBeGreaterThanOrEqual(160);
+      expect(await db.spiderAlert.count({ where: { organization_id: c.org } })).toBe(100);
+      const next = await runSpiderSweep(at(2 * MIN));
+      expect(next.leadsChecked).toBeGreaterThanOrEqual(160);
+      expect(await db.spiderAlert.count({ where: { organization_id: c.org } })).toBe(160);
     });
 
     it('measures Contacted time from contacted_at, not from creation, and an edit never resets it', async () => {
@@ -525,8 +539,9 @@ suite('Spider sweep (real database)', () => {
       expect(await alertsFor(bLead)).toHaveLength(1);
     });
 
-    // D4: nothing new goes out while Spider is off, including from a run already going when it was
-    // switched off. Only a send already handed over cannot be recalled.
+    // D4 and Ran's ruling of 2026-11-04 ("Next run"): a company switched off before a run sends nothing; a switch-off
+    // made while a run is sending takes effect from the next run (at most about 45 s, up to 100 alerts, #2991). The
+    // run's records are ended at once by its end step's switch check, so no card stays open in a switched-off company.
     describe('switched off during a run', () => {
       async function twoOverdueLeads() {
         const c = await company();
@@ -553,43 +568,39 @@ suite('Spider sweep (real database)', () => {
 
       const leadOfEmail = (leads: string[]) => resendSend.mock.calls.map(([m]) => leads.find((id) => String(m.text).includes(id)));
 
-      it('raises nothing more, ends what it was raising, and skips its text', async () => {
+      /** Both leads went out in full to both people, and every one of their cards is already ended. */
+      async function expectSentInFullAndEnded(leads: string[], people: string[]) {
+        for (const id of leads) {
+          const [alert] = await alertsFor(id);
+          expect(alert, id).toBeDefined();
+          expect((alert!.delivery as { email: { outcome: string } }).email.outcome).toBe('Email sent');
+          expect((alert!.delivery as { text: { outcome: string } }).text.outcome).toBe('Text message sent');
+          const notices = await spiderNotices(id);
+          expect(notices.map((n) => n.recipient_id)).toEqual([...people].sort());
+          expect(notices.every((n) => n.read_at !== null)).toBe(true);
+        }
+        expect(leadOfEmail(leads).filter(Boolean)).toHaveLength(leads.length * people.length);
+      }
+
+      it("takes effect from the next run: the run's claimed alerts go out in full, their cards end at once, the next run sends nothing", async () => {
         const { c, dispatcher, leads } = await twoOverdueLeads();
         onFirstEmail(() => db.spiderSettings.update({ where: { organization_id: c.org }, data: { is_active: false } }));
-        // alertsSent counts every company in the database. Another company's alert sent in this run
-        // writes exactly one new alert-log row, so taking those away leaves this company's count.
-        const otherCompaniesAlerts = () => db.spiderAlert.count({ where: { organization_id: { not: c.org } } });
-        const othersBefore = await otherCompaniesAlerts();
 
-        const result = await runSpiderSweep(T0);
+        await runSpiderSweep(T0);
 
-        // This company sent no alert: the one it was in the middle of was cut off.
-        expect(result.alertsSent - (await otherCompaniesAlerts() - othersBefore)).toBe(0);
-        const alerted = (await Promise.all(leads.map(async (id) => ((await alertsFor(id)).length > 0 ? [id] : [])))).flat();
-        expect(alerted).toHaveLength(1);
-        const [first] = alerted;
-        const second = leads.find((id) => id !== first)!;
+        await expectSentInFullAndEnded(leads, [c.admin.id, dispatcher.id]);
 
-        // The alert it was in the middle of: recorded in History, ended for both people, text skipped.
-        const [alert] = await alertsFor(first!);
-        const notices = await spiderNotices(first!);
-        expect(notices.map((n) => n.recipient_id)).toEqual([c.admin.id, dispatcher.id].sort());
-        expect(notices.every((n) => n.read_at !== null)).toBe(true);
-        expect((alert.delivery as { text: { outcome: string } }).text.outcome).toBe('Text skipped: Spider was switched off');
-        expect((alert.channels as { sms: Record<string, unknown> }).sms).toMatchObject({
-          enabled: true, status: 'SKIPPED', sent: 0, skipped: 2, skip_reason: 'Spider was switched off',
-        });
-        expect(ctm.sendSms).not.toHaveBeenCalled();
-        // The emails already being handed over when the switch landed went out, for that alert only.
-        expect(new Set(leadOfEmail(leads))).toEqual(new Set([first]));
-
-        // The alert it had not started: not raised at all.
-        expect(await alertsFor(second)).toEqual([]);
-        expect(await db.notification.count({ where: { object_id: second } })).toBe(0);
+        // The next run: Spider is off, so nothing more goes out and nothing is claimed.
+        resendSend.mockClear();
+        vi.mocked(ctm.sendSms).mockClear();
+        const another = await lead(c, { createdAt: at(-5 * HOUR) });
+        await runSpiderSweep(at(2 * MIN));
+        expect(leadOfEmail([...leads, another]).filter(Boolean)).toEqual([]);
+        expect(await alertsFor(another)).toEqual([]);
       });
 
-      it('a quick off-then-on during a run does not alert under the old switched-on period', async () => {
-        const { c, leads } = await twoOverdueLeads();
+      it('a quick off-then-on during a run: the run still sends its claimed alerts, and ends their cards (a new switched-on period)', async () => {
+        const { c, dispatcher, leads } = await twoOverdueLeads();
         onFirstEmail(async () => {
           await db.spiderSettings.update({ where: { organization_id: c.org }, data: { is_active: false } });
           await db.spiderSettings.update({ where: { organization_id: c.org }, data: { is_active: true, activated_at: new Date() } });
@@ -597,9 +608,7 @@ suite('Spider sweep (real database)', () => {
 
         await runSpiderSweep(T0);
 
-        const claimed = (await Promise.all(leads.map((id) => alertsFor(id)))).filter((a) => a.length > 0);
-        expect(claimed).toHaveLength(1);
-        expect(ctm.sendSms).not.toHaveBeenCalled();
+        await expectSentInFullAndEnded(leads, [c.admin.id, dispatcher.id]);
       });
     });
 
@@ -607,11 +616,12 @@ suite('Spider sweep (real database)', () => {
       const c = await company();
       await configure(c, { channels: { email: true, text: true } });
       const id = await lead(c);
-      // The sweep runs every company left by earlier tests, so fail only this lead's claim; a bare
-      // mockRejectedValueOnce lands on whichever company is swept first.
-      const realCreate = db.spiderAlert.create.bind(db.spiderAlert);
-      const spy = vi.spyOn(db.spiderAlert, 'create').mockImplementation(((args: { data: { lead_id?: string } }) =>
-        args.data.lead_id === id ? Promise.reject(new Error('disk full')) : realCreate(args as never)) as never);
+      // The sweep runs every company left by earlier tests, so fail only the claims that include this
+      // lead (a run's claims go in with one insert, #2990); a bare mockRejectedValueOnce lands on
+      // whichever company is swept first.
+      const realBulk = db.spiderAlert.createManyAndReturn.bind(db.spiderAlert);
+      const spy = vi.spyOn(db.spiderAlert, 'createManyAndReturn').mockImplementation(((args: { data: { lead_id?: string }[] }) =>
+        args.data.some((r) => r.lead_id === id) ? Promise.reject(new Error('disk full')) : realBulk(args as never)) as never);
       try {
         await runSpiderSweep(T0);
       } finally {
@@ -1221,8 +1231,9 @@ suite('Spider sweep (real database)', () => {
       await offThenOn(c, at(10 * MIN));
 
       const realUpdate = db.notificationRecipient.updateMany.bind(db.notificationRecipient);
-      const spy = vi.spyOn(db.notificationRecipient, 'updateMany').mockImplementation(((args: { where?: { notification?: { object_id?: string } } }) =>
-        args?.where?.notification?.object_id === id ? Promise.reject(new Error('connection lost')) : realUpdate(args as never)) as never);
+      // A run ends every re-alerted lead's earlier card in one write (#2990): fail the one that names this lead.
+      const spy = vi.spyOn(db.notificationRecipient, 'updateMany').mockImplementation(((args: { where?: { notification?: { object_id?: { in?: string[] } } } }) =>
+        args?.where?.notification?.object_id?.in?.includes(id) ? Promise.reject(new Error('connection lost')) : realUpdate(args as never)) as never);
       try {
         await runSpiderSweep(at(10 * MIN + 2 * HOUR));
       } finally {
@@ -1232,7 +1243,7 @@ suite('Spider sweep (real database)', () => {
       expect(reAlert).toBeDefined();
       expect(await db.notification.count({ where: { dedup_key: `spider.alert:${reAlert!.id}` } })).toBe(1);
       expect(vi.mocked(logger.error).mock.calls.map((x) => String(x[0]))).toContain(
-        `[spider] could not end the earlier alert for org ${c.org} lead ${id}: Error`,
+        `[spider] could not end the earlier alerts for org ${c.org} leads ${id}: Error`,
       );
     });
 
@@ -1243,7 +1254,11 @@ suite('Spider sweep (real database)', () => {
       const spy = vi.spyOn(db.notificationRecipient, 'updateMany');
       try {
         await runSpiderSweep(T0);
-        const endedForLead = spy.mock.calls.filter(([args]) => (args?.where?.notification as { object_id?: unknown } | undefined)?.object_id === id);
+        // A lead's cards are ended by naming it, alone or in the run's one list of re-alerted leads (#2990).
+        const endedForLead = spy.mock.calls.filter(([args]) => {
+          const objectId = (args?.where?.notification as { object_id?: unknown } | undefined)?.object_id;
+          return objectId === id || ((objectId as { in?: string[] } | undefined)?.in ?? []).includes(id);
+        });
         expect(endedForLead).toEqual([]);
       } finally {
         spy.mockRestore();
@@ -1422,14 +1437,22 @@ suite('Spider sweep (real database)', () => {
       const c = await company();
       await configure(c, { channels: { text: true } });
       const id = await lead(c);
+      // The run's one delivery-record write fails, and so does each one-by-one retry of it (#2990).
       const realUpdate = db.spiderAlert.update.bind(db.spiderAlert);
       const spy = vi.spyOn(db.spiderAlert, 'update').mockImplementation(((args: { data: { delivery?: unknown } }) =>
         args.data.delivery ? Promise.reject(new Error('lost')) : realUpdate(args as never)) as never);
+      // The delivery-record write only (the usage count is its own write, #2990).
+      const isDeliveryWrite = (sql: string) => /UPDATE spider_alerts/.test(sql) && /SET channels/.test(sql);
+      faults.calls = [];
+      faults.executeRaw = (sql) => (isDeliveryWrite(sql) ? new Error('lost') : null);
       try {
         await runSpiderSweep(T0);
       } finally {
         spy.mockRestore();
+        faults.executeRaw = null;
       }
+      expect(faults.calls.filter(isDeliveryWrite).length).toBeGreaterThan(0);
+      expect(((await alertsFor(id))[0].delivery as Record<string, unknown>).text).toBeUndefined();
       expect(textedTo()).toEqual(['+16175550101']);
       expect((await alertsFor(id))[0].texts_sent).toBe(1);
     });
@@ -1763,7 +1786,7 @@ suite('Spider sweep (real database)', () => {
     /** A trigger whose quiet period (one sweep interval, 2 minutes) has passed by T0. */
     const QUIET = at(-3 * MIN);
 
-    const summaryOf = (org: string) => db.spiderSummary.findUnique({ where: { organization_id: org } });
+    const summaryOf = (org: string) => db.spiderSummary.findFirst({ where: { organization_id: org, status: 'READY' } });
     const triggerOf = async (org: string) =>
       (await db.spiderSettings.findUniqueOrThrow({ where: { organization_id: org } })).summary_trigger_at;
     async function bellFor(org: string) {
@@ -1980,7 +2003,7 @@ suite('Spider sweep (real database)', () => {
       expect(await alertNotices(c.org)).toBe(0);
     });
 
-    it('keeps only the latest summary: a new one replaces the old, whose leads keep their claim', async () => {
+    it('keeps one current summary: a new one supersedes the old, whose leads keep their claim and their link to it', async () => {
       const c = await company();
       await configure(c, { trigger: QUIET });
       const first = await lead(c, { createdAt: at(-3 * DAY) });
@@ -1993,8 +2016,9 @@ suite('Spider sweep (real database)', () => {
 
       const now = await summaryOf(c.org);
       expect(now!.id).not.toBe(old!.id);
-      expect(await db.spiderSummary.count({ where: { organization_id: c.org } })).toBe(1);
-      expect((await alertsFor(first))[0]).toMatchObject({ kind: 'SUMMARIZED', summary_id: null });
+      expect(await db.spiderSummary.count({ where: { organization_id: c.org, status: { not: 'SUPERSEDED' } } })).toBe(1);
+      expect(await db.spiderSummary.findUniqueOrThrow({ where: { id: old!.id } })).toMatchObject({ status: 'SUPERSEDED' });
+      expect((await alertsFor(first))[0]).toMatchObject({ kind: 'SUMMARIZED', summary_id: old!.id });
       expect((await alertsFor(second))[0]).toMatchObject({ kind: 'SUMMARIZED', summary_id: now!.id });
       await runSpiderSweep(at(10 * MIN));
       expect(await alertsFor(first)).toHaveLength(1);
@@ -2137,21 +2161,28 @@ suite('Spider sweep (real database)', () => {
       expect(await triggerOf(c.org)).toBeNull();
     });
 
-    it('gives up retrying a failing summary once the 10 minutes are up: drops the trigger, logs it, and alerts per lead from then on', async () => {
+    it('gives up on a summary that fails 3 attempts in a row (waits 2 and 8 minutes): drops the trigger, logs it once, and alerts per lead from then on', async () => {
       const c = await company();
       await configure(c, { trigger: at(-3 * MIN), triggerSince: at(-11 * MIN) });
       const id = await lead(c, { createdAt: at(-3 * DAY) });
-      const spy = failSummaryReadFor(c.org);
+      const spy = failSummaryReadFor(c.org, 3);
       const errors = vi.spyOn(logger, 'error');
+      const gaveUp = () => errors.mock.calls.map(([m]) => String(m)).filter((m) => m.includes('gave up') && m.includes(c.org));
 
       await runSpiderSweep(T0);
+      expect(await triggerOf(c.org)).not.toBeNull();
+      await runSpiderSweep(at(2 * MIN));
+      expect(await triggerOf(c.org)).not.toBeNull();
+      expect(await alertsFor(id)).toEqual([]);
+      await runSpiderSweep(at(10 * MIN));
       spy.mockRestore();
       expect(await summaryOf(c.org)).toBeNull();
       expect(await triggerOf(c.org)).toBeNull();
-      expect(errors.mock.calls.map(([m]) => String(m)).some((m) => m.includes('gave up') && m.includes(c.org))).toBe(true);
-      errors.mockRestore();
+      expect(gaveUp()).toHaveLength(1);
 
-      await runSpiderSweep(at(2 * MIN));
+      await runSpiderSweep(at(12 * MIN));
+      expect(gaveUp()).toHaveLength(1);
+      errors.mockRestore();
       expect((await alertsFor(id))[0]).toMatchObject({ kind: 'ALERTED' });
       expect(await spiderNotices(id)).toHaveLength(1);
     });
@@ -2209,30 +2240,20 @@ suite('Spider sweep (real database)', () => {
       for (const digits of ['6175550101', '6175550177', '6175559999']) expect(logged).not.toContain(digits);
     });
 
-    it('never runs while another sweep holds the lock, and never overlaps itself', async () => {
+    it('never runs while another sweep holds the lease, and never overlaps itself', async () => {
       const c = await company();
       await configure(c);
       const id = await lead(c);
-      const { PrismaClient } = await import('@prisma/client');
-      const other = new PrismaClient({ datasources: { db: { url: process.env.TEST_DATABASE_URL! } } });
+      await db.$executeRawUnsafe(
+        `INSERT INTO spider_sweep_leases (name, holder, claimed_at, expires_at) VALUES ('spider.sweep', 'other-server', now(), now() + interval '1 minute')
+         ON CONFLICT (name) DO UPDATE SET holder = EXCLUDED.holder, claimed_at = EXCLUDED.claimed_at, expires_at = EXCLUDED.expires_at`,
+      );
       try {
-        let release!: () => void;
-        const held = new Promise<void>((r) => (release = r));
-        let locked!: () => void;
-        const lockTaken = new Promise<void>((r) => (locked = r));
-        const holder = other.$transaction(async (tx) => {
-          await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended('spider.sweep', 0))::text`;
-          locked();
-          await held;
-        }, { timeout: 30_000 });
-        await lockTaken;
         const blocked = await runSpiderSweep(T0);
-        release();
-        await holder;
         expect(blocked.ran).toBe(false);
         expect(await alertsFor(id)).toEqual([]);
       } finally {
-        await other.$disconnect();
+        await db.$executeRawUnsafe(`DELETE FROM spider_sweep_leases WHERE name = 'spider.sweep'`);
       }
 
       const [first, second] = await Promise.all([runSpiderSweep(T0), runSpiderSweep(T0)]);

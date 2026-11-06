@@ -109,4 +109,14 @@ describe('retryUnlessRefused', () => {
     expect(retryUnlessRefused(0, { response: { status: 500 } })).toBe(true);
     expect(retryUnlessRefused(1, { response: { status: 500 } })).toBe(false);
   });
+
+  it.each([400, 404, 409, 422, 429])('never asks again after a %i', (status) => {
+    expect(retryUnlessRefused(0, { response: { status } })).toBe(false);
+  });
+
+  it('keeps the one retry after a 401 (the session-refresh path) and after a network error', () => {
+    expect(retryUnlessRefused(0, { response: { status: 401 } })).toBe(true);
+    expect(retryUnlessRefused(1, { response: { status: 401 } })).toBe(false);
+    expect(retryUnlessRefused(0, new Error('Network Error'))).toBe(true);
+  });
 });

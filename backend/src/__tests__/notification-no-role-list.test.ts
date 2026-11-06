@@ -106,15 +106,16 @@ describe('no alert recipient is computed from a role name', () => {
     expect(findRoleBasedRecipients(fallback)).toEqual([]);
   });
 
-  it('lets only the customer email reply alert tell people without asking the access filter again (readersChecked)', () => {
-    // `readersChecked` skips emit's row-scope filter for people already put through the single read of the conversation, so no other
-    // door may set it: a caller handing in unchecked ids would bypass the filter.
+  it('lets only the customer email reply alert and Spider\'s per-lead alert tell people without asking the access filter again (readersChecked)', () => {
+    // `readersChecked` skips emit's row-scope filter for people already put through the alert's own access check (the single read of
+    // the conversation; Spider's batched lead check, #2989), so no other door may set it: a caller handing in unchecked ids would
+    // bypass the filter. emit-access-check-guard.test.ts holds the full list of skips.
     const setters = sourceFilesUnder(SRC)
       .map((f) => ({ path: relative(SRC, f), text: readFileSync(f, 'utf8') }))
       .filter((f) => /readersChecked\s*:/.test(f.text.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '')))
       .map((f) => f.path)
       .sort();
-    expect(setters).toEqual(['services/notifications/emailReplyAlerts.ts']);
+    expect(setters).toEqual(['services/notifications/emailReplyAlerts.ts', 'services/spider/sweep.ts']);
   });
 
   it('finds none in the code that sends the moved alerts or the owner emails', () => {

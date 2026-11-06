@@ -151,6 +151,9 @@ const envSchema = z.object({
   // value on every backend service that shares this database, or a pilot's alerts get cleared by a server
   // without the list. Each server logs the count at boot ("Spider pilot list: N companies").
   SPIDER_PILOT_ORG_IDS: z.string().trim().optional(),
+  // JOBS_PAUSED (#3109): background jobs to pause, comma-separated names or `all`. Optional, no default (unset = every
+  // job runs). The names and the parsing live in lib/jobsPaused.ts; documented in .env.example.
+  JOBS_PAUSED: z.string().optional(),
   // Where "book a call" requests from the AI Agentic Farm catalog land — always
   // ServWave's own sales inbox, regardless of which org's user is booking.
   AI_FARM_SALES_EMAIL: z.string().trim().default('info@servwave.com'),
