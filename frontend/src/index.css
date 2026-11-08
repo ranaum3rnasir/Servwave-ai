@@ -1,0 +1,66 @@
+/* Google Fonts — Caveat is the cursive face used for typed signatures (DocuSign-style "Adopt"). */
+@import url("https://fonts.googleapis.com/css2?family=Caveat:wght@500;700&display=swap");
+
+/* Figtree is the CRM UI kit's type face. Applied ONLY inside the v2 shell
+   (`.app` in ui-kit/components/layout/shell.css), never as the app default -
+   the legacy layer stays on Manrope. */
+@import url("https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700;800&display=swap");
+
+/* ServWave design-system tokens — single source of truth. Must load BEFORE the
+   @tailwind layers so the var()-based theme is resolvable. */
+@import "./design-system/tokens.css";
+
+/* v2 presentation layer tokens (CRM UI kit). Loads after tokens.css and
+   defines only names tokens.css does not own. Remove this line and
+   tokens-v2.css to roll the v2 layer back. */
+@import "./design-system/tokens-v2.css";
+
+/* The v2 application shell (topbar / sidebar / canvas). Loads AFTER the token
+   files so every var() it reads is already defined, and before the Tailwind
+   layers so a utility at a call site can still win over a shell rule. Every
+   selector in it is namespaced under the shell's own classes, so nothing here
+   reaches the legacy layer. */
+@import "./ui-kit/components/layout/shell.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+/* Hide native number-input spinner arrows app-wide (cent-stepping spinners
+   on price/qty fields are wrong UX — values are typed, not stepped). */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+/* Utility class used by <SignatureField> and any signed-doc preview. */
+.sig-script {
+  font-family: "Caveat", "Brush Script MT", "Lucida Handwriting", cursive;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+/* Hide scrollbars while allowing touch/wheel scroll */
+.no-scrollbar::-webkit-scrollbar,
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+.no-scrollbar,
+.scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+

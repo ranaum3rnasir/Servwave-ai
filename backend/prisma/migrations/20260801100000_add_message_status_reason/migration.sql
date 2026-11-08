@@ -1,0 +1,13 @@
+-- Message.status_reason - WHY an outbound text was skipped or failed.
+--
+-- Pairs with the honest status vocabulary: a row is written `queued`, promoted
+-- to `sent` only when CTM accepts the POST and to `delivered` only when the
+-- carrier confirms via the status_change webhook. `skipped` and `failed` carry
+-- a CtmSmsFailureReason here (NOT_CONNECTED, SMS_NOT_READY, ORG_SMS_DISABLED,
+-- NOT_ENTITLED, NO_SMS_NUMBER, NOT_IN_TEST_ALLOWLIST, RECIPIENT_OPTED_OUT,
+-- DUPLICATE_SEND, CTM_ERROR); every other status leaves it NULL.
+--
+-- Nullable with no default and no backfill: existing rows predate the
+-- vocabulary, and inventing a reason for them would be fabricating evidence
+-- about sends nobody can now verify.
+ALTER TABLE "messages" ADD COLUMN IF NOT EXISTS "status_reason" TEXT;

@@ -1,0 +1,328 @@
+/* =============================================================================
+   ServWave Design System — tokens.css
+   THE single source of truth. Change a value here → the whole app re-themes.
+
+   Three-tier model:
+     Tier 1 PRIMITIVES — raw palette, no meaning. Colors are stored as
+       SPACE-SEPARATED RGB CHANNELS (e.g. `12 45 58`) so Tailwind can compose
+       opacity via `rgb(var(--token) / <alpha-value>)` (keeps bg-primary/10 etc.).
+     Tier 2 SEMANTIC ALIASES — meaning, theme-aware (reference primitives only).
+     Tier 3 — consumption layers (tailwind.config.js, components, charts) read
+       these tokens; they never hardcode a hex or a px.
+
+   Components consume SEMANTIC tokens (--primary), never primitives (--ocean-800).
+   ============================================================================= */
+
+:root {
+  /* ------------------------------------------------------------------------
+     TIER 1 — PRIMITIVES (raw scale, RGB channels)
+     ------------------------------------------------------------------------ */
+
+  /* Neutrals / ink */
+  --ink:    16 32 43;     /* #10202B  text-primary  */
+  /* Renamed from --muted so the v2 kit can own that name: shadcn's --muted is
+     a background fill, this is a foreground. Same value, same consumers. */
+  --neutral-500: 102 121 133;  /* #667985  text-secondary */
+  --soft:   138 154 165;  /* #8A9AA5  text-soft */
+  --line:   228 232 236;  /* #E4E8EC  border */
+
+  /* Deep Ocean (brand / chrome / interactive anchor) */
+  --ocean-900: 7 31 43;    /* #071F2B */
+  --ocean-800: 12 45 58;   /* #0C2D3A */
+  --ocean-700: 18 63 80;   /* #123F50 */
+
+  /* Sage / green (business / success / data signal) */
+  --green-700: 47 125 93;  /* #2F7D5D  sage-700 */
+  --sage-50:  238 248 242; /* #EEF8F2 */
+  --sage-200: 191 218 203; /* #BFDACB */
+  --sage-500: 107 170 143; /* #6BAA8F */
+  --sage-700: 47 125 93;   /* #2F7D5D */
+
+  /* Amber (warning) */
+  --amber-700: 180 83 9;   /* #B45309 */
+
+  /* Terracotta (danger) */
+  --terracotta: 191 90 76; /* #BF5A4C */
+
+  /* Indigo (AI moments) */
+  --indigo-600: 91 109 255; /* #5B6DFF */
+  --ai-50:  243 240 255;   /* #F3F0FF */
+  --ai-200: 216 208 255;   /* #D8D0FF */
+  --ai-500: 139 124 248;   /* #8B7CF8 */
+  --ai-600: 91 109 255;    /* #5B6DFF */
+
+  /* Info (status only) */
+  --info: 59 130 246;      /* #3B82F6 */
+
+  /* Olive (Calendar Entry board accent — slice 03/06, calendar-entries spec §3, §9 risk 4).
+     REPLACES the original --bronze-600 (#8B6F47), whose ~4.7:1-on-white estimate was never
+     checked against the surface it actually paints. The card composites this token at LOW
+     ALPHA over the board canvas (#EEF1F3) - `bg-event/5` in EVENT_TYPE_META, `bg-event/10` on
+     the Standard view - so "white" was the wrong background to measure against. Measured on
+     the real 10% composite (#e4e4e2, the worse of the two tints): bronze's text-on-tint
+     contrast was 3.70:1, failing AA (needs 4.5).
+     Bronze's hue (~32°) also sat almost on top of warning/amber's (~27°, walkthrough's accent)
+     - raw-RGB distance 79.4, the weakest separation of any pair on this board - which is what
+     let an Event and a Walkthrough card read as near-siblings at a glance.
+     Olive (~60° on the hue wheel) is the one warm-adjacent hue this board had not already
+     claimed: danger=red(~6°), warning=amber(~27°), success=green(~155°), info=blue(~217°),
+     ai=indigo(~237°), neutral(completed)=blue-grey(~200°). Candidates that moved further into
+     green (forest #2F5D3A) or teal (#1F5F5B) fixed the amber problem but created a WORSE one -
+     forest sits only 47.4 from success's green and teal only 34.1, both closer than bronze ever
+     was to amber. Olive stays 72.7 from success while lifting walkthrough separation to 97.6
+     (from 79.4) and clearing AA at 5.48:1 on the same 10% composite. See scheduleModel.ts's
+     EVENT_TYPE_META comment for why this stays a single DEFAULT-only token (matching
+     `--info`/`--warning`/`--ai`) rather than the -surface/-border/-text/-strong badge quartet -
+     and for the honest limit of a colour-only fix (§9 risk 4's "soft lie": no candidate in this
+     family gets background separation from the completed treatment past ~30/441, because both
+     are low-alpha tints over the same near-white canvas). */
+  --olive-700: 90 90 46; /* #5A5A2E */
+
+  /* AI extras - the copilot panel is a DARK surface, so it needs values the
+     light-surface status scale does not carry. */
+  --ai-300:         151 163 255; /* #97A3FF  voice-orb highlight */
+  --ai-gradient-to: 123  91 255; /* #7B5BFF  end stop of the AI send-button gradient */
+  --danger-on-dark:  255 179 166; /* #FFB3A6  error text ON the dark copilot surface.
+                                     --danger-text is tuned for AA on a LIGHT surface
+                                     and is unreadable here. Two near-identical hexes
+                                     (#f49d8d, #ffb3a6) were doing this one job. */
+  --warning-on-dark: 252 211  77; /* #FCD34D  the same role for a warning label */
+  --ai-night-top:     13  19  48; /* #0D1330  copilot panel base, top stop */
+  --ai-night-bottom:   9  14  32; /* #090E20  copilot panel base, bottom stop */
+
+  /* Amber, dark end. --warning/--amber-700 is the only amber the status scale
+     carries, so an amber RAMP had nowhere to start. */
+  --amber-900: 120 53 15; /* #78350F */
+
+  /* Channel brand - third-party surfaces we deliberately mirror so the channel
+     reads as itself. Tokenised rather than inlined so the mirroring is ONE
+     decision; deliberately NOT part of the theme, since retheming ServWave must
+     not repaint someone else's brand. */
+  --channel-whatsapp:        37 211 102;  /* #25D366 */
+  --channel-whatsapp-dark:   30 190  93;  /* #1EBE5D  hover */
+  --channel-whatsapp-bubble: 217 253 211; /* #D9FDD3  outgoing message */
+  --channel-whatsapp-canvas: 239 234 226; /* #EFEAE2  thread background */
+
+  /* Notification rose — notification-count badges ONLY (never a general red) */
+  --notify-rose: 244 63 94; /* #F43F5E */
+
+  /* primary-subtle (ocean tint chip) */
+  --ocean-subtle: 232 238 240; /* #E8EEF0 */
+
+  /* secondary neutrals (legacy chrome) */
+  --secondary:       209 213 219; /* #d1d5db */
+  --secondary-light: 229 231 235; /* #e5e7eb */
+  --secondary-dark:  156 163 175; /* #9ca3af */
+
+  /* Modal scrim - the backdrop behind dialogs, sheets and lightboxes. Pure
+     black today, but a token so that "how much does the app dim" is one
+     decision rather than a `bg-black/NN` guess repeated at each overlay. */
+  --scrim: 0 0 0;
+
+  /* Surfaces / canvas */
+  --canvas:  238 241 243;  /* #EEF1F3  (was warm #F7F7F2) */
+  --surface: 255 255 255;  /* #FFFFFF */
+  --border-soft: 238 241 243; /* #EEF1F3 */
+
+  /* Semantic tints (soft fills) — channels */
+  --green-bg:  238 248 242; /* #EEF8F2 */
+  --amber-bg:  251 241 229; /* #FBF1E5 */
+  --red-bg:    247 236 234; /* #F7ECEA */
+  --indigo-bg: 243 240 255; /* #F3F0FF */
+
+  /* Chart tints — channels */
+  --green-mid:   110 168 134; /* #6EA886 */
+  --green-light: 185 217 200; /* #B9D9C8 */
+  --amber-light: 231 182 102; /* #E7B666 */
+
+  /* Radius primitives */
+  --radius-card: 6px;
+  --radius-control: 6px;
+  --radius-ic: 5px;
+  --radius-button: 14px; /* buttons only — intentionally softer than the 6px "crisp" rule elsewhere */
+  --radius-bubble: 16px; /* chat/SMS message bubbles (copilot, SMS drawer, dialer training,
+                             compose panel) and the legacy floating LineItemRow card corners -
+                             consistently bigger than the 6px crisp rule on purpose. Phase 5a. */
+
+  /* Shadow primitives */
+  --shadow-card: 0 8px 24px rgb(12 45 58 / 0.06);
+  --shadow-soft: 0 4px 12px rgb(12 45 58 / 0.04);
+  --shadow-hover: 0 12px 32px rgb(12 45 58 / 0.10);
+  --shadow-inset: rgb(0 0 0 / 0.16) 0px 1px 1.9px 0px inset;
+
+  /* ------------------------------------------------------------------------
+     TIER 2 — SEMANTIC ALIASES (meaning; reference primitives only)
+     ------------------------------------------------------------------------ */
+
+  /* Interactive anchor = Deep Ocean (chrome / nav / buttons / focus) */
+  --primary:        var(--ocean-800);
+  --primary-dark:   var(--ocean-900);
+  --primary-light:  var(--ocean-700);
+  --primary-subtle: var(--ocean-subtle);
+
+  /* Status / business */
+  --success: var(--green-700);
+  --warning: var(--amber-700);
+  --danger:  var(--terracotta);
+  --ai:      var(--indigo-600);
+  --notify:  var(--notify-rose);
+  --event:   var(--olive-700); /* Calendar Entry board accent — slice 03/06, AA-corrected */
+
+  /* --- Scheduler board accents, per event type -------------------------------------------
+     These four are an INDIRECTION, not new colours: by default each aliases the status token
+     the board has always used, so an org that has customised nothing renders pixel-identical.
+     An org that HAS customised gets the alias re-pointed at its chosen palette token
+     (`--ev-job: var(--sage-700)`) on documentElement (see frontend/src/lib/schedule/
+     eventColors.ts), which repaints every card, pill, bucket, legend swatch and editor chip -
+     portals included - in one assignment.
+
+     Why alias rather than four literal hexes: the AA + hue-separation contract above is stated
+     against --info/--warning/--ai/--event. Aliasing keeps that contract the single source of
+     truth for the DEFAULT board - retune a status token and the scheduler follows, exactly as
+     it does today. The contrast ratchet in design-system/__tests__/contrast.test.ts resolves
+     those four tokens directly, so it keeps measuring the real default either way. */
+  --ev-job:            var(--info);
+  --ev-walkthrough:    var(--warning);
+  --ev-service-plan:   var(--ai);
+  --ev-calendar-entry: var(--event);
+
+  /* --- Scheduler card colours, DERIVED from the four accents above ------------------------
+     A card no longer paints its seed as text on a 10% tint of itself - that failed WCAG AA for
+     9 of the 12 colours an org can pick. It paints an opaque surface, text and left border
+     computed from the seed so every pick clears 4.5:1 text / 3:1 border
+     (design-system/eventCardColors.ts has the rule). The schedule page recomputes these for the
+     org's own picks and writes them on documentElement (lib/schedule/useScheduleEventColorVars);
+     the values here are the DEFAULT seeds' output, for first paint and for any surface that
+     renders before or without the page. GENERATED - do not hand-edit: eventColors.test.ts
+     re-derives every line and fails on drift. */
+  --ev-job-surface:             232 241 255;  /* #E8F1FF */
+  --ev-job-text:                 32 104 217;  /* #2068D9  4.56:1 on surface */
+  --ev-job-border:               59 130 246;  /* #3B82F6 */
+  --ev-job-solid:                43 114 229;  /* #2B72E5  white 4.52:1 (darkened from #3B82F6) */
+  --ev-job-on-solid:            255 255 255;
+  --ev-walkthrough-surface:     255 236 226;  /* #FFECE2 */
+  --ev-walkthrough-text:        177  80   2;  /* #B15002  4.57:1 on surface */
+  --ev-walkthrough-border:      180  83   9;  /* #B45309 */
+  --ev-walkthrough-solid:       180  83   9;  /* #B45309  white 5.02:1 */
+  --ev-walkthrough-on-solid:    255 255 255;
+  --ev-service-plan-surface:    235 240 255;  /* #EBF0FF */
+  --ev-service-plan-text:        78  92 236;  /* #4E5CEC  4.54:1 on surface */
+  --ev-service-plan-border:      91 109 255;  /* #5B6DFF */
+  --ev-service-plan-solid:       86 102 248;  /* #5666F8 */
+  --ev-service-plan-on-solid:   255 255 255;
+  --ev-calendar-entry-surface:  241 242 222;  /* #F1F2DE */
+  --ev-calendar-entry-text:      90  90  46;  /* #5A5A2E  6.30:1 on surface */
+  --ev-calendar-entry-border:    90  90  46;
+  --ev-calendar-entry-solid:     90  90  46;
+  --ev-calendar-entry-on-solid: 255 255 255;
+  /* Status treatments painted over any type, both SOLID so no colour an org picks can make a
+     scheduled card (always a pale tint) look like one: in progress derived from --info,
+     completed from --text-soft (it used to be --text-soft at 60% opacity with white text,
+     2.90:1 before the fade; now darkened just enough for white to clear 4.5:1, unfaded). */
+  --ev-in-progress-solid:        43 114 229;  /* #2B72E5 */
+  --ev-in-progress-on-solid:    255 255 255;
+  --ev-completed-solid:         104 120 130;  /* #687882  white 4.57:1 */
+  --ev-completed-on-solid:      255 255 255;
+
+  /* The scheduler's needs-crew signal (the corner notch, NeedsCrewMark.tsx). One alias rather
+     than --danger inline at every mount, so the signal can be repointed - to amber, or off red
+     entirely - in one place. Now that orgs choose their own card colours, "red" is no longer
+     guaranteed to mean "short-staffed" on a board where Job might BE red; this seam is what lets
+     the signal move if that ambiguity ever bites. Red is otherwise reserved for this one meaning:
+     double-booked moved to --warning on 2026-09-14 so the board carries a single red. */
+  --understaffed: var(--danger);
+
+  /* Surfaces */
+  --background-light: var(--canvas);
+  --background-dark:  17 24 39; /* #111827 */
+  --surface-light:    var(--surface);
+  --surface-dark:     31 41 55; /* #1F2937 */
+
+  /* Text + borders */
+  --text-primary:    var(--ink);
+  --text-secondary:  var(--neutral-500);
+  --text-soft:       var(--soft);
+  --border-color:    var(--line);
+
+  /* ------------------------------------------------------------------------
+     STATUS SCALE - four roles per family.
+
+     WHY four and not one: a status badge needs a background, a hairline, text
+     that is legible ON that background, and a solid fill that carries white.
+     One flat token cannot do all four, and the alternative that was tried -
+     compositing the flat token at 10% (bg-success/10) - FAILS WCAG AA in every
+     family on every surface (measured: 4.38 on white, 3.88 on a hovered row,
+     down to 2.92 for info). The -surface values below are opaque and
+     hand-tuned, which is what buys the contrast headroom.
+
+     Four of these surfaces already existed above as --green-bg / --amber-bg /
+     --red-bg / --indigo-bg but were never exposed in tailwind.config.js, so no
+     component could reach them. They are aliased here rather than duplicated.
+
+     Every pairing is verified: -text on -surface >= 4.5:1, white on -strong
+     >= 4.5:1. Re-run the proof before changing any value here.
+     ------------------------------------------------------------------------ */
+  --success-surface: var(--green-bg);    /* #EEF8F2 */
+  --success-border:  var(--sage-200);    /* #BFDACB */
+  --success-text:     47 125  93;        /* #2F7D5D  4.59:1 on surface */
+  --success-strong:   47 125  93;        /* #2F7D5D  white 4.99:1 */
+
+  --warning-surface: var(--amber-bg);    /* #FBF1E5 */
+  --warning-border:  var(--amber-light); /* #E7B666 */
+  --warning-text:    179  83   9;        /* #B35309  4.53:1 on surface */
+  --warning-strong:  180  83   9;        /* #B45309  white 5.02:1 */
+
+  --danger-surface:  var(--red-bg);      /* #F7ECEA */
+  --danger-border:   232 199 193;        /* #E8C7C1 */
+  --danger-text:     172  81  68;        /* #AC5144  4.52:1 (terracotta darkened from #BF5A4C, which was 3.79) */
+  --danger-strong:   187  88  74;        /* #BB584A  white 4.56:1 (was 4.39) */
+
+  --info-surface:    235 242 254;        /* #EBF2FE  no stranded equivalent, new */
+  --info-border:     206 224 253;        /* #CEE0FD */
+  --info-text:        49 108 204;        /* #316CCC  4.50:1 (darkened from #3B82F6, which was 3.27) */
+  --info-strong:      52 115 218;        /* #3473DA  white 4.55:1 (was 3.68) */
+
+  --ai-surface:      var(--indigo-bg);   /* #F3F0FF */
+  --ai-border:       var(--ai-200);      /* #D8D0FF */
+  --ai-text:          81  96 226;        /* #5160E2  4.54:1 (darkened from #5B6DFF, which was 3.69) */
+  --ai-strong:        86 104 242;        /* #5668F2  white 4.51:1 (was 4.14) */
+
+  --neutral-surface: var(--canvas);      /* #EEF1F3 */
+  --neutral-border:  var(--line);        /* #E4E8EC */
+  --neutral-text:     94 112 123;        /* #5E707B  4.54:1 (darkened from #667985, which was 3.99) */
+  --neutral-strong:  102 121 133;        /* #667985  white 4.53:1 */
+
+  /* Foreground for text sitting on a solid semantic fill. NOT the literal
+     `white`: literal white hardcodes the assumption that every fill is dark,
+     which is the one thing that provably will not repaint if a token moves. */
+  --text-on-fill:    255 255 255;
+
+  /* ------------------------------------------------------------------------
+     DARK-SURFACE CHROME - phase 5b, orphaned by phase 7c.
+
+     Added in phase 5b to carry the values the shadcn-ejected `components/ui/*`
+     primitives used to hardcode as raw `dark:*-slate-*` classes. Phase 7c
+     (2026-07-28) deleted dark mode - the `.dark` block, all 51 `dark:` classes
+     and `darkMode: ['class']` - so these four now have ZERO consumers, as does
+     `--surface-dark` in the Surfaces block above. They are declared but unread:
+     a custom property nobody reads emits no rule, and the `tailwind.config.js`
+     entries only mint classes if a class actually uses them, so the cost is
+     nil. DELIBERATELY KEPT rather than deleted, because phase 9's
+     `<Surface tone="dark">` is the next thing that needs a dark-surface chrome
+     ramp and re-minting one from scratch would lose the role naming below.
+     If phase 9 lands without adopting them, delete all five then.
+     Named by ROLE, not by which slate shade they came from.
+     ------------------------------------------------------------------------ */
+  --chrome-dark:    30  41  59;  /* was slate-800 - border + secondary/hover bg on a dark surface */
+  --on-dark:       248 250 252;  /* was slate-50 - primary text, and the checkbox's inverted checked-fill, on a dark surface */
+  --on-dark-muted: 148 163 184;  /* was slate-400 - secondary/description text on a dark surface */
+  --focus-dark:    203 213 225;  /* was slate-300 - focus ring colour on a dark surface */
+
+  /* ------------------------------------------------------------------------
+     Component surface treatments — the ONE place to retune these app-wide.
+     Change a value here and every table header / card header updates. No
+     component hardcodes these colors; they all read the token below.
+     ------------------------------------------------------------------------ */
+  --table-header: 243 245 247;      /* list/table column-header + pinned-header bg (#F3F5F7 — faint cool tint so the header row reads as a header, matching card headers) */
+  --card-header:  243 245 247;      /* card section-header band (#F3F5F7 — faint cool tint, distinct from white body + canvas) */
+}

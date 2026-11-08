@@ -1,0 +1,355 @@
+/* =============================================================================
+   ServWave Design System - tokens-v2.css
+   The CRM UI kit's palette, ported from crm-ui-kit/src/app/globals.css.
+
+   WHY A SECOND FILE
+   The v2 presentation layer (frontend/src/pages/v2) runs on the kit's token
+   names, which follow shadcn/ui (--card, --muted, --ring) rather than
+   ServWave's (--surface, --text-secondary, --border-color). Keeping them here
+   rather than merged into tokens.css means the whole v2 layer rolls back by
+   deleting this file and its import - which is the point of the parallel-layer
+   migration.
+
+   FORMAT
+   The kit authored these as hex. They are stored here as SPACE-SEPARATED RGB
+   CHANNELS to match tokens.css, so Tailwind's `rgb(var(--token) /
+   <alpha-value>)` mapping keeps opacity modifiers (bg-card/50) working.
+   Non-colour tokens (shadows, radius, pre-composed rgb()) stay verbatim.
+
+   NAME COLLISIONS - resolved, do not reintroduce
+     --primary     kit #0c2d3a is byte-identical to tokens.css --ocean-800,
+                   so the app's token is reused and NOT redefined here.
+     --background   } owned by tokens.css with different meanings; the kit's
+     --border       } equivalents are deliberately not ported. Kit components
+     --surface      } read --card / --border-color instead.
+     --muted       tokens.css renamed its foreground primitive to
+                   --neutral-500 to free this name for the kit's background.
+     --secondary   the app's is a legacy grey; the kit's tonal teal is ported
+                   as --tonal so both survive.
+   ============================================================================= */
+
+:root {
+  /* radius - the kit's 10px, distinct from ServWave's 6px --radius-card */
+  --radius: 0.625rem;
+
+  /* surfaces
+     NOTE the `kit-` prefix on background/card/popover.
+
+     `card` and `popover` MUST be prefixed: both are already boxShadow keys in
+     the app's Tailwind config, and Tailwind's boxShadow and boxShadowColor core
+     plugins share the `shadow-` namespace. A colour of the same name emits a
+     second `.shadow-card` rule that wins and rewrites the shadow's colour.
+
+     `kit-background` is prefixed for symmetry, not necessity. The app's
+     `background` key is {light,dark} with no DEFAULT, and adding one would be
+     safe - bare `bg-background` has ZERO call sites. (An earlier revision of
+     this comment claimed 856; that was a bad grep. `\bbg-background\b` treats
+     the hyphen as a word boundary, so it was counting `bg-background-light`,
+     which is a live, registered, resolving class with 854 sites.) */
+  --kit-background: 255 255 255;   /* #ffffff */
+  --foreground: 20 27 32;          /* #141b20 */
+  /* The page surround and the sidebar. White, matching the mockup's surface:
+     the canvas is separated from it by `--elevation-canvas` alone, which is
+     what the floating-canvas decision has always relied on - a border here
+     would put the hairline grid back that removing borders fixed. */
+  --app: 255 255 255;              /* #ffffff  canvas the panel floats on */
+  --column: 240 243 245;           /* #f0f3f5  kanban column bed */
+  --column-active: 228 237 240;    /* #e4edf0 */
+  --card: 255 255 255;             /* #ffffff */
+  --card-foreground: 20 27 32;     /* #141b20 */
+  --popover: 255 255 255;          /* #ffffff */
+  --popover-foreground: 20 27 32;  /* #141b20 */
+
+  /* brand - --primary itself comes from tokens.css (--ocean-800) */
+  --primary-foreground: 255 255 255; /* #ffffff */
+  --primary-hover: 9 34 44;          /* #09222c  dark surfaces cannot hover via opacity */
+  --tonal: 226 241 244;              /* #e2f1f4  subordinate actions */
+  --tonal-foreground: 11 95 117;     /* #0b5f75 */
+  --tonal-hover: 211 234 239;        /* #d3eaef */
+
+  /* livelier teal: focus rings, links, active + selected */
+  --brand: 14 116 144;             /* #0e7490 */
+  --brand-foreground: 255 255 255; /* #ffffff */
+  --brand-subtle: 226 241 244;     /* #e2f1f4 */
+  --brand-emphasis: 11 95 117;     /* #0b5f75 */
+
+  /* neutrals - shadcn's --accent is a hover background, not the brand colour */
+  --muted: 244 247 249;            /* #f4f7f9 */
+  --muted-foreground: 74 87 96;    /* #4a5760 */
+  --subtle-foreground: 139 152 160;/* #8b98a0  placeholders, meta, disabled */
+  --accent: 244 247 249;           /* #f4f7f9 */
+  --accent-foreground: 20 27 32;   /* #141b20 */
+
+  /* disabled - the one grey nothing live is allowed to wear.
+     Deliberately NOT --muted: muted is the hover surface for ghost buttons and
+     the fill behind table group headers, both of which are live. A disabled
+     control has to be distinguishable from a hovered one at a glance, so it
+     gets a step darker, and a foreground that lands under AA on purpose - the
+     text is meant to read as unavailable, not as content. */
+  --disabled: 228 233 236;         /* #e4e9ec */
+  --disabled-foreground: 152 164 172; /* #98a4ac */
+  --disabled-border: 214 221 225;  /* #d6dde1 */
+
+  --destructive: 226 68 92;            /* #e2445c */
+  --destructive-foreground: 255 255 255;
+  --destructive-hover: 201 57 79;      /* #c9394f */
+
+  /* controls - --input is deliberately darker than the app's divider colour */
+  --input: 199 207 210;            /* #c7cfd2 */
+  --input-hover: 74 87 96;         /* #4a5760 */
+  --ring: 14 116 144;              /* #0e7490 */
+  --selected: 234 245 247;         /* #eaf5f7  selected table rows */
+
+  /* status - solid fills, white text, all clear AA */
+  --status-green: 13 150 104;      /* #0d9668 */
+  --status-blue: 37 99 201;        /* #2563c9 */
+  --status-amber: 192 124 20;      /* #c07c14 */
+  --status-red: 204 51 72;         /* #cc3348 */
+  --status-purple: 112 72 196;     /* #7048c4 */
+  --status-slate: 91 107 115;      /* #5b6b73 */
+  --status-teal: 11 122 117;       /* #0b7a75  5.18:1 with white */
+  --status-indigo: 67 56 202;      /* #4338ca  7.90:1 with white */
+
+  /* status - soft tints for chips and banners */
+  --status-green-subtle: 227 244 236;   --status-green-emphasis: 10 122 81;
+  --status-blue-subtle: 230 237 250;    --status-blue-emphasis: 31 82 171;
+  --status-amber-subtle: 249 239 220;   --status-amber-emphasis: 142 92 13;
+  --status-red-subtle: 251 233 236;     --status-red-emphasis: 173 43 61;
+  --status-purple-subtle: 238 233 250;  --status-purple-emphasis: 87 51 153;
+  --status-slate-subtle: 238 241 243;   --status-slate-emphasis: 71 85 92;
+
+  /* sidebar - no fill of its own; it sits directly on --app */
+  --sidebar-foreground: 34 50 58;         /* #22323a */
+  --sidebar-muted-foreground: 91 112 120; /* #5b7078 */
+  --sidebar-subtle-foreground: 139 160 168;
+  --sidebar-accent: rgb(12 45 58 / 0.055);
+  --sidebar-ring: 14 116 144;
+  /* The active-page indicator - the 3px rail expanded, the rounded square in
+     the rail. Kept as its own name so the indicator stays one decision, but
+     pointed at --primary: the mark that says "you are here" is the brand's
+     anchor colour, not a second petrol invented beside it. Re-point here to
+     move the indicator without hunting through shell.css. */
+  --sidebar-rail: var(--primary);         /* ocean-800  #0C2D3A */
+  /* The active row's pill and its label/icon. Same family as the rail, because
+     the rail, the pill and the label are ONE indicator seen as one thing - a
+     3px sliver in primary next to a full-width pill in teal reads as two
+     marks disagreeing, and the pill wins the eye. */
+  --sidebar-active: var(--primary-subtle);      /* ocean-subtle #E8EEF0 */
+  --sidebar-active-foreground: var(--primary);  /* ocean-800    #0C2D3A */
+
+  /* scrollbars - pre-composed like --sidebar-accent, because a scrollbar thumb
+     is a tint of the ink colour rather than a palette entry of its own. */
+  --scroll: rgb(12 45 58 / 0.20);
+  --scroll-hover: rgb(12 45 58 / 0.34);
+
+
+  /* Kanban work types - filled 16px blocks. Identifiable peripherally by
+     shape; the colour is secondary reinforcement. */
+  --worktype-emergency: 229 73 58;     /* #e5493a */
+  --worktype-maintenance: 47 125 225;  /* #2f7de1 */
+  --worktype-installation: 31 157 99;  /* #1f9d63 */
+  --worktype-inspection: 129 85 214;   /* #8155d6 */
+
+  /* Kanban priority - the glyph encodes direction, so this survives colour
+     blindness; the colour only reinforces it. */
+  --priority-highest: 207 46 32;   /* #cf2e20 */
+  --priority-high: 229 118 42;     /* #e5762a */
+  --priority-medium: 192 124 20;   /* #c07c14 */
+  --priority-low: 75 127 209;      /* #4b7fd1 */
+
+  /* Card label chips - dark text on a light tint; white-on-colour loses
+     legibility at the 11px a label chip wants to be. */
+  --label-warranty-bg: 231 222 251;   --label-warranty-fg: 92 60 170;
+  --label-contract-bg: 214 233 248;   --label-contract-fg: 31 92 150;
+  --label-parts-bg: 251 232 207;      --label-parts-fg: 138 85 16;
+  --label-callback-bg: 251 220 220;   --label-callback-fg: 163 46 38;
+  --label-afterhours-bg: 213 240 227; --label-afterhours-fg: 17 107 70;
+
+  /* Avatar tints - deterministic per name. Deliberately desaturated: bright
+     generated colours beside solid status labels turn a table into confetti. */
+  --avatar-tint-1: 42 111 127;  /* #2a6f7f */
+  --avatar-tint-2: 63 125 90;   /* #3f7d5a */
+  --avatar-tint-3: 138 90 43;   /* #8a5a2b */
+  --avatar-tint-4: 76 106 160;  /* #4c6aa0 */
+  --avatar-tint-5: 122 90 134;  /* #7a5a86 */
+  --avatar-tint-6: 90 107 115;  /* #5a6b73 */
+
+
+  /* elevation - authored as --elevation-* and mapped to shadow-* in tailwind
+     config; authoring them as --shadow-* here would be silently overridden by
+     Tailwind's own defaults */
+  --elevation-xs: 0 1px 1px rgb(12 45 58 / 0.07);
+  --elevation-sm: 0 1px 2px rgb(12 45 58 / 0.07), 0 1px 3px rgb(12 45 58 / 0.04);
+  --elevation-md: 0 2px 6px rgb(12 45 58 / 0.10), 0 1px 2px rgb(12 45 58 / 0.06);
+  --elevation-lg: 0 8px 22px rgb(12 45 58 / 0.13), 0 2px 6px rgb(12 45 58 / 0.07);
+  /* Three layers, and the FIRST one is why the top edge reads at all.
+     `--app` and `--card` are both #ffffff, so this shadow is the only thing
+     separating the canvas from its surround. Both of the offset layers below
+     are cast DOWNWARD: the sides get their blur bleeding out horizontally and
+     the bottom gets the offset, but above the canvas there is nothing to see,
+     because the shadow sits behind the opaque panel. The top edge against the
+     topbar was invisible while the sidebar edge read fine.
+     A 0-offset ambient layer casts equally in every direction, so the top gets
+     the same soft edge the sides already had - without the border the
+     floating-canvas decision exists to avoid. */
+  --elevation-canvas:
+    0 0 10px rgb(12 45 58 / 0.055),
+    0 1px 2px rgb(12 45 58 / 0.05),
+    0 6px 18px rgb(12 45 58 / 0.06);
+  --elevation-card: 0 1px 1px rgb(12 45 58 / 0.18), 0 0 1px rgb(12 45 58 / 0.22);
+  --elevation-card-hover: 0 3px 8px rgb(12 45 58 / 0.16), 0 0 1px rgb(12 45 58 / 0.25);
+  --elevation-popover: 0 6px 18px rgb(12 45 58 / 0.14), 0 2px 5px rgb(12 45 58 / 0.07);
+  --elevation-modal: 0 20px 50px rgb(12 45 58 / 0.24), 0 5px 14px rgb(12 45 58 / 0.12);
+  --elevation-rail: 14px 0 40px rgb(8 26 34 / 0.28);
+
+  /* motion - the kit shipped none of these, so this layer had no timing of its
+     own and every state change in v2 was either instant or borrowed the kit
+     Button's hardcoded 150ms. Grouped under one --motion- prefix and mapped to
+     duration-* / ease-* / animate-* in the tailwind config, the same
+     indirection --elevation-* uses, so the names here stay independent of
+     whatever Tailwind calls the utility. Theme-independent: no .dark override.
+
+     `fast` is for a colour or fill changing in place (the tab indicator
+     cross-fade); `panel` is for a region of content arriving, which needs long
+     enough to be seen as a movement rather than a repaint.
+
+     THE NUMBERS COME FROM THE SHELL, they are not fresh guesses. The first cut
+     of this scale (200/320ms on an easeOutQuint of its own) sat next to a
+     sidebar that moves at 460-620ms on two different curves, and the tab swap
+     read as a pop where the sidebar reads as a glide. Every value below is now
+     a shell.css declaration, quoted in its comment. Nothing here invents a
+     third curve. */
+
+  /* `.nav-rail { ... opacity 0.24s linear }` - the shell's own figure for
+     "a thing changes state in place, no travel". That is exactly the tab
+     indicator's job, so the strip stays crisp under the slower panel. */
+  --motion-duration-fast: 240ms;
+  /* `.sidebar { transition: width 0.46s ... }` - the longest thing the shell
+     does to a region of the layout, and a tab panel replacing its whole
+     content area is the same size of event. */
+  --motion-duration-panel: 460ms;
+  /* `.sb-label { transition: opacity 0.3s ... }` - the shell never fades over
+     the same span it travels over: the label is fully opaque well before the
+     rail has finished moving, so what you watch is the movement, not the
+     fade. The panel is split the same way (see `tab-panel-in` in the tailwind
+     config), and this is the fade half. */
+  --motion-duration-panel-fade: 300ms;
+  /* How far the panel travels. 6px over 320ms was a twitch - too small to
+     track, so all the eye got was the fade, which is what "not smooth" meant.
+     The shell's rail crosses a whole nav row (~38px) and the sidebar 132px of
+     width; a full-bleed panel needs less displacement than a 3px bar to be
+     legible, and more than a hairline to be motion at all. */
+  --motion-travel-panel: 20px;
+  /* The sidebar's shared curve, lifted verbatim from
+     `.sidebar { transition: width 0.46s cubic-bezier(0.32, 0.72, 0, 1) }` and
+     `.sb-label { transition: opacity 0.3s cubic-bezier(0.32, 0.72, 0, 1) }`.
+     Sharp out of the gate, then a long settle, and no overshoot - shell.css
+     notes an overshooting curve "bounced, and the bounce is what read as
+     unsettled". The shell's other curve, the rail's expo-out
+     cubic-bezier(0.16, 1, 0.3, 1), is for an indicator TRAVELLING between
+     rows; the tab indicator only cross-fades, so one curve covers the tabs. */
+  --motion-ease-out: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.dark {
+  --kit-background: 7 15 19;       /* #070f13 */
+  --foreground: 230 237 239;       /* #e6edef */
+  --app: 7 15 19;                  /* #070f13 */
+  --column: 16 29 35;              /* #101d23 */
+  --column-active: 22 48 58;       /* #16303a */
+  --card: 16 29 35;                /* #101d23 */
+  --card-foreground: 230 237 239;
+  --popover: 16 33 40;             /* #102128 */
+  --popover-foreground: 230 237 239;
+
+  --primary-foreground: 255 255 255;
+  --primary-hover: 35 135 157;     /* #23879d */
+  --tonal: 20 51 61;               /* #14333d */
+  --tonal-foreground: 121 207 224; /* #79cfe0 */
+  --tonal-hover: 26 63 74;         /* #1a3f4a */
+
+  --brand: 42 162 186;             /* #2aa2ba */
+  --brand-foreground: 255 255 255;
+  --brand-subtle: 19 51 61;        /* #13333d */
+  --brand-emphasis: 127 211 228;   /* #7fd3e4 */
+
+  --muted: 23 48 58;               /* #17303a */
+  --muted-foreground: 149 164 170; /* #95a4aa */
+  --subtle-foreground: 113 130 138;/* #71828a */
+  --accent: 23 48 58;              /* #17303a */
+  --accent-foreground: 230 237 239;
+
+  /* disabled - lighter than the surface here, for the same reason it is darker
+     in light mode: it has to read as "lifted out of the flow", and on a dark
+     canvas that direction is up. */
+  --disabled: 33 60 71;            /* #213c47 */
+  --disabled-foreground: 106 124 133; /* #6a7c85 */
+  --disabled-border: 45 72 84;     /* #2d4854 */
+
+  --destructive: 226 68 92;
+  --destructive-foreground: 255 255 255;
+  --destructive-hover: 201 57 79;
+
+  --input: 44 74 86;               /* #2c4a56 */
+  --input-hover: 125 145 154;      /* #7d919a */
+  --ring: 42 162 186;              /* #2aa2ba */
+  --selected: 18 54 66;            /* #123642 */
+
+  --status-green: 18 172 120;      /* #12ac78 */
+  --status-blue: 61 125 221;       /* #3d7ddd */
+  --status-amber: 209 144 31;      /* #d1901f */
+  --status-red: 220 68 89;         /* #dc4459 */
+  --status-purple: 134 89 214;     /* #8659d6 */
+  --status-slate: 109 127 136;     /* #6d7f88 */
+  --status-teal: 13 128 123;       /* #0d807b  4.78:1 with white */
+  --status-indigo: 90 82 224;      /* #5a52e0  5.65:1 with white */
+
+  /* dark tints are alpha-composited off the solid fill rather than a second
+     opaque ramp, so they sit on any surface */
+  --status-green-subtle: 18 172 120;
+  --status-blue-subtle: 61 125 221;
+  --status-amber-subtle: 209 144 31;
+  --status-red-subtle: 220 68 89;
+  --status-purple-subtle: 134 89 214;
+  --status-slate-subtle: 109 127 136;
+
+  --sidebar-foreground: 214 226 230;
+  --sidebar-muted-foreground: 142 161 169;
+  --sidebar-subtle-foreground: 104 126 135;
+  /* Stays a literal rather than following --primary like the light theme does.
+     tokens.css does not re-point --primary in dark, so it is still the deep
+     ocean #0C2D3A - which IS roughly the dark sidebar surface, and an indicator
+     the colour of the thing behind it is no indicator. The dark brand accent
+     carries the mark instead. */
+  --sidebar-rail: 42 162 186;             /* #2aa2ba */
+  /* Literals for the same reason as the rail, and tracking it so the indicator
+     stays one colour per theme. --primary-subtle is NOT re-pointed in dark, so
+     inheriting the light value would paint a near-white pill onto the dark
+     sidebar. */
+  --sidebar-active: 23 48 58;                   /* #17303a */
+  --sidebar-active-foreground: 42 162 186;      /* #2aa2ba, matches the rail */
+  --sidebar-accent: rgb(255 255 255 / 0.05);
+  --sidebar-ring: 42 162 186;
+
+  --scroll: rgb(255 255 255 / 0.17);
+  --scroll-hover: rgb(255 255 255 / 0.30);
+
+
+
+  --elevation-xs: 0 1px 2px rgb(0 0 0 / 0.4);
+  --elevation-sm: 0 1px 3px rgb(0 0 0 / 0.45);
+  --elevation-md: 0 6px 18px rgb(0 0 0 / 0.55);
+  --elevation-lg: 0 18px 40px rgb(0 0 0 / 0.65);
+  /* Same ambient-first structure as the light theme, so the canvas top edge
+     reads against the topbar here too. Dark surfaces need the ambient layer
+     more, not less: --app and --card are 9 points apart in luminance, so the
+     offset layers alone leave the top boundary to a difference that small. */
+  --elevation-canvas:
+    0 0 10px rgb(0 0 0 / 0.45),
+    0 1px 3px rgb(0 0 0 / 0.5);
+  --elevation-card: 0 1px 1px rgb(0 0 0 / 0.5), 0 0 1px rgb(0 0 0 / 0.6);
+  --elevation-card-hover: 0 3px 10px rgb(0 0 0 / 0.55);
+  --elevation-popover: 0 10px 30px rgb(0 0 0 / 0.6);
+  --elevation-modal: 0 24px 60px rgb(0 0 0 / 0.7);
+  --elevation-rail: 14px 0 40px rgb(0 0 0 / 0.5);
+}

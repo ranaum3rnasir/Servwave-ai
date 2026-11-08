@@ -1,0 +1,21 @@
+# Normalize line endings: store LF in the repo, check out LF everywhere.
+# Fixes the Windows->macOS CRLF churn that made every file look "modified".
+* text=auto eol=lf
+
+# Keep binary assets untouched
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.pdf  binary
+*.zip  binary
+*.docx binary
+*.xlsx binary
+*.woff  binary
+*.woff2 binary
+*.ttf  binary
+*.otf  binary
+
+# Shell scripts must stay LF regardless
+*.sh text eol=lf

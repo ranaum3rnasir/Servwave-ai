@@ -1,0 +1,36 @@
+title = "ServWave gitleaks config"
+
+# Extends the default ruleset - all ~100 built-in detectors apply.
+[extend]
+useDefault = true
+
+# Project-specific allowlist for known-fake fixtures and third-party content.
+# Add entries here only after a scan surfaces a confirmed false positive.
+[allowlist]
+description = "Known-fake test fixtures and placeholder values"
+paths = [
+  # Documented placeholder values, not real credentials
+  '''backend/\.env\.example''',
+  '''frontend/\.env\.example''',
+  # Test fixtures
+  '''backend/src/__tests__/.*\.ts''',
+  '''e2e/.*\.ts''',
+  '''backend/scripts/test-email\.ts''',
+]
+commits = [
+  "c76eb39f0cfeadbe0554d4646814e746ec84e677",
+]
+regexes = [
+  # Documented fake placeholder in .env.example
+  '''re_your_key_here''',
+  # Automation Center template identifiers (AutomationTemplate.key in
+  # backend/src/services/automations/catalog.ts) - a static vocabulary of
+  # hyphenated slugs, never secrets. generic-api-key trips on `key: '...-Nd'`.
+  '''estimate-follow-up-\d+d''',
+  '''walkthrough-reminder-\d+d''',
+  # Playwright suite selector in frontend/package.json. generic-api-key matches
+  # the `"test:qa:api": "E2E_TEST_DOORS=true ..."` script because the key ends
+  # in "api" and the value is a long opaque-looking string. It is a feature flag
+  # for the end-to-end tests, not a credential.
+  '''E2E_TEST_DOORS=true''',
+]

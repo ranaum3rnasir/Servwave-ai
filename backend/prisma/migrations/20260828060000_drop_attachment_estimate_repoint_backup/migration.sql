@@ -1,0 +1,28 @@
+-- Drop `_attachment_estimate_repoint_backup`, the Phase 1 estimate-attachment rollback artifact.
+--
+-- It was created by 20260827120000_estimate_attachments_to_lead, which re-pointed all 412
+-- attachments hanging off an ESTIMATE onto that estimate's lead so the estimate attachment surface
+-- could be removed. The table recorded each row's prior entity_type/entity_id so the move could be
+-- undone.
+--
+-- Why it can go now: Phase 1 has been live in production since 2026-08-27 with no reported issue,
+-- the estimate attachment surface is deleted, and the whole `context` retirement it belonged to is
+-- finished (20260827220000_drop_attachment_context). Verified in prod immediately before this
+-- migration was written: 412 rows, 317 distinct estimates -> 317 distinct leads, and ZERO rows
+-- whose attachment has since been deleted.
+--
+-- THE CONTENTS ARE NOT RECOVERABLE FROM THE REMAINING DATA. A lead can hold several estimates, so
+-- an attachment's entity_id='<lead>' does not say which estimate it was originally on. A full
+-- 412-row export was taken before this migration was written and is held OUTSIDE the repo, on Ran's
+-- machine at ~/servwave-db-artifacts/attachment-estimate-repoint-backup-2026-08-28.sql -- it carries
+-- the CREATE TABLE and the UPDATE needed to reverse the Phase 1 move. It is deliberately not
+-- committed: it is 68KB of production row ids, which does not belong in git.
+--
+-- NOT DROPPED HERE: `_attachment_context_backup` (the Phase 2b artifact, holding all 2,834 prior
+-- `context` values). It is only hours old and is the rollback path for the column drop. Retiring it
+-- is a separate, later decision.
+--
+-- Idempotent: IF EXISTS, so a re-run on the shared staging DB is a no-op.
+-- Portable: no Supabase-only objects, so CI's vanilla postgres:16 runs it unguarded.
+
+DROP TABLE IF EXISTS "_attachment_estimate_repoint_backup";

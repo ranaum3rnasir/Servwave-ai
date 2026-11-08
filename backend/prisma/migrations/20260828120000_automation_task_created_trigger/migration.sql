@@ -1,0 +1,11 @@
+-- Spec B slice 1: task becomes the fifth automation entity, carrying ONE trigger.
+--
+-- Only the value this slice actually fires is added. The other four task triggers
+-- (assigned, deleted, comment added, date-anchored) each land in the slice that
+-- dispatches them, deliberately: a Postgres enum value can never be removed, so a
+-- smaller irreversible step is the safer one, and an admin can never author a
+-- workflow against a trigger that has not shipped.
+--
+-- Bare ADD VALUE, following 20260718100000_automation_date_anchored_triggers.
+-- No backfill and nothing destructive in this file.
+ALTER TYPE "AutomationTriggerType" ADD VALUE IF NOT EXISTS 'TASK_CREATED';

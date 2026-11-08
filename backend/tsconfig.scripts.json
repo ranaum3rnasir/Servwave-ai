@@ -1,0 +1,52 @@
+{
+  // Type-checks backend/scripts/, which `tsconfig.build.json` does NOT: that project inherits
+  // `"include": ["src/**/*"]` and `"rootDir": "./src"` from tsconfig.json, so adding scripts/
+  // there would put files outside rootDir and change the emitted dist/ layout that `npm start`
+  // depends on. A separate noEmit project checks them without touching what gets built.
+  //
+  // `npm run build` runs this, so CI covers it. (It was once CI's ONLY backend typecheck; the
+  // backend job now also runs `npm run typecheck` -- tsconfig.json, which covers all of src/
+  // including the suites and the seeds. This project is still the only thing checking scripts/.)
+  //
+  // A RATCHET, NOT A WISHLIST. The include is the whole tree and the exclude is an explicit
+  // debt list, so a NEW script is covered the moment it is added and the list can only shrink.
+  // The inverse (an allowlist of the few clean files) would have left every future script
+  // silently unchecked until somebody remembered to add it.
+  //
+  // scripts/ had never been type-checked before this file existed, so the excluded entries
+  // below carry 22 pre-existing errors. Delete an entry once its file is clean; do not add
+  // entries to make a new script pass.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": [
+    // The Express `Request.user` augmentation. Ambient, so it is not reachable by import and
+    // must be named or every `req.user` in a transitively-included controller fails.
+    "src/types/express.d.ts",
+    "scripts/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    // Script TESTS are included, not excluded. They used to be listed here "for the same reason
+    // tsconfig.build.json excludes the suites under src/" - and that reason is gone: the backend
+    // job now runs `npm run typecheck` over the suites under src/ too. Vitest transpiles without
+    // checking types, so an excluded test file is one that nothing checks at all.
+    //
+    // ── Pre-existing type debt. Shrink this list; never grow it. ──
+    // Whole subtrees rather than the 9 individual failing files: an excluded file is still
+    // pulled in when an INCLUDED file imports it, and both of these have a clean-looking
+    // entry point importing a failing helper (verify-stripe.ts -> verify-stripe/fixtures.ts),
+    // so naming the leaves alone does nothing. Every script outside these two directories is
+    // covered by default, which is the property that matters.
+    "scripts/bg-import/**",
+    "scripts/verify-stripe/**",
+    // The entry point too: it imports verify-stripe/fixtures.ts, and an excluded file is
+    // still checked when an included file imports it, so excluding only the helpers is a
+    // no-op. Removing this line is the LAST step of paying that subtree's debt, not the first.
+    "scripts/verify-stripe.ts",
+    "scripts/verify-assigned-user-staging.ts"
+  ]
+}

@@ -1,0 +1,98 @@
+/*
+ * Ported from the approved filter-redesign mockup's `.slider` control
+ * (numeric-range facet — see filter-redesign.html, "# of Estimates").
+ *
+ * Two overlaid native <input type="range"> each drive their own thumb.
+ * `pointer-events: none` on the input itself (and `auto` only on its thumb
+ * pseudo-element) means clicking/dragging the middle of the track never
+ * grabs either thumb — each input's own thumb is the only draggable part,
+ * so the two overlapping ranges never fight each other for a click.
+ *
+ * Colors reference this repo's real tokens (frontend/src/design-system/tokens.css),
+ * which store channel-RGB values (e.g. `--primary: 12 45 58`), hence the
+ * `rgb(var(--token))` wrapper — using the var directly (as the mockup's demo
+ * hex-value tokens did) would not be a valid CSS color here.
+ *
+ * Mockup variable -> real token mapping (no new tokens invented):
+ *   --primary       -> --primary        (Deep Ocean; same name, same role)
+ *   --border-strong -> --border-color   (tokens.css has one border tier, not a
+ *                                         separate "strong" one; closest match)
+ *   --card          -> --surface-light  (thumb/card bg; the semantic alias
+ *                                         components consume, not the raw
+ *                                         --surface primitive)
+ *   --active-tint   -> --primary-subtle (the real token and the mockup's tint are
+ *                                         near-identical, one channel apart)
+ *   --shadow-card   -> --shadow-card    (same name, already a full box-shadow value)
+ */
+.range-slider {
+  position: relative;
+  height: 30px;
+  margin: 0 8px;
+}
+
+.range-slider__track {
+  position: absolute;
+  top: 13px;
+  left: 0;
+  right: 0;
+  height: 4px;
+  border-radius: 2px;
+  background: rgb(var(--border-color));
+}
+
+.range-slider__fill {
+  position: absolute;
+  top: 13px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgb(var(--primary));
+}
+
+.range-slider input[type='range'] {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 30px;
+  margin: 0;
+  background: transparent;
+  pointer-events: none;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.range-slider input[type='range']:focus {
+  outline: none;
+}
+
+.range-slider input[type='range']::-webkit-slider-thumb {
+  pointer-events: auto;
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgb(var(--surface-light));
+  border: 2px solid rgb(var(--primary));
+  cursor: grab;
+  box-shadow: var(--shadow-card);
+  margin-top: -1px;
+}
+
+.range-slider input[type='range']::-moz-range-thumb {
+  pointer-events: auto;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgb(var(--surface-light));
+  border: 2px solid rgb(var(--primary));
+  cursor: grab;
+  box-shadow: var(--shadow-card);
+}
+
+.range-slider input[type='range']:focus::-webkit-slider-thumb {
+  box-shadow: 0 0 0 3px rgb(var(--primary-subtle));
+}
+
+.range-slider input[type='range']:focus::-moz-range-thumb {
+  box-shadow: 0 0 0 3px rgb(var(--primary-subtle));
+}

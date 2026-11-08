@@ -1,0 +1,41 @@
+# Render Blueprint - ServWave development backend.
+#
+# Region MUST stay co-located with the Supabase project (us-east-1 / Virginia).
+# Splitting regions adds roughly 70ms of round-trip latency to every query.
+services:
+  - type: web
+    name: servwave-dev-api
+    runtime: node
+    region: virginia
+    plan: free            # free spins down after ~15m idle (~50s cold start). Bump to "starter" ($7/mo) to keep it warm.
+    branch: main
+    rootDir: .
+    autoDeployTrigger: commit
+    # --include=dev is required: NODE_ENV=production below makes npm omit
+    # devDependencies by default, and the build needs typescript and @types/*.
+    buildCommand: npm install --include=dev && npm run build:backend
+    # migrate deploy uses DIRECT_URL (5432). Then boot the compiled server.
+    startCommand: cd backend && npx prisma migrate deploy && node dist/index.js
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: TAX_RATE
+        value: "0.0875"
+      - key: EMAIL_FROM
+        value: no-reply@servwave.com
+      # --- secrets / per-env (set via the dashboard or the Render API) ---
+      - key: DATABASE_URL              # Supabase pooler, port 6543, + &sslmode=require
+        sync: false
+      - key: DIRECT_URL                # Supabase direct, port 5432, + ?sslmode=require
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: FRONTEND_URL              # set to the Vercel URL once the frontend is deployed
+        sync: false
+      - key: CORS_ALLOWED_ORIGINS      # same Vercel URL
+        sync: false

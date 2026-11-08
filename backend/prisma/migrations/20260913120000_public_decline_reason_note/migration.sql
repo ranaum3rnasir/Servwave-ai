@@ -1,0 +1,19 @@
+-- SRVW-285 slice 1 — the free-text comment the customer leaves when declining an estimate from
+-- the emailed public page. The five-value `lost_reason` column already exists and already ships;
+-- this is the only new state the slice needs.
+--
+-- Deliberately additive and nothing else:
+--   * IF NOT EXISTS, because the shared staging DB can see a migration twice.
+--   * NULLABLE with NO DEFAULT and NO backfill, so the deploy overlap is safe in BOTH directions.
+--     The old instance keeps running `UPDATE estimates SET status, declined_at` and never names
+--     this column; the new instance names it only when the customer actually typed something.
+--     A NOT NULL DEFAULT '' would have stamped an empty string onto every historical estimate and
+--     then made "no comment" indistinguishable from "commented nothing".
+--   * text, not varchar(n): the length rule lives in the handler (LOST_REASON_NOTE_MAX in
+--     estimate.controller.ts), which TRUNCATES rather than rejecting. A column-level cap would
+--     turn an over-long comment into a 22001 that surfaces to a customer mid-decline and loses
+--     the decline itself — the one outcome this feature exists to prevent.
+--
+-- Portable: no Supabase-only object here (no policy, no auth.* reference, no role grant), so CI's
+-- vanilla postgres:16 runs it unguarded.
+ALTER TABLE "estimates" ADD COLUMN IF NOT EXISTS "lost_reason_note" text;

@@ -1,0 +1,86 @@
+name: Dependency audit
+
+# WHY THIS IS NOT PART OF THE PR GATE
+#
+# `audit-ci` queries the LIVE npm advisory database, so its result changes
+# without anyone committing anything. Run on every PR, it reddens work that
+# touched zero dependencies because someone published a CVE overnight - which
+# has happened here more than once (see the audit-ci learnings in the vault).
+# That trains people to ignore a red check, which is worse than not having it.
+#
+# So it runs where each signal actually belongs:
+#   - on PRs that change a dependency manifest, where the PR IS the risk;
+#   - nightly, to catch newly-published advisories against unchanged deps.
+#
+# Deliberately NOT a required status check: a path-filtered workflow that does
+# not trigger leaves a required check pending forever, blocking the PR.
+#
+# The deterministic half of the old job - `verify:overrides`, which reads only
+# package.json + package-lock.json - moved into the backend test suite
+# (backend/src/__tests__/security-overrides.test.ts) and so still runs on EVERY
+# PR and locally. Only the live-advisory half is scheduled here.
+#
+# Note: scheduled runs execute the DEFAULT BRANCH's copy of this file, and a
+# bare `actions/checkout` there audits main's lockfile - i.e. production
+# dependencies. That left staging's dependency health entirely unmeasured: from
+# 2026-08-05 to 2026-09-16 staging carried a HIGH multer advisory that main had
+# already fixed, and no nightly ever looked. The `audit-staging` job below
+# checks staging out EXPLICITLY so both branches get the same nightly signal.
+#
+# Expect audit-staging to be red until staging's dependency backlog clears -
+# that is the finding, not a flake. Neither job is a required check.
+on:
+  pull_request:
+    paths:
+      - 'package.json'
+      - 'package-lock.json'
+      - 'backend/package.json'
+      - 'frontend/package.json'
+      - 'audit-ci.jsonc'
+      - '.github/workflows/dependencies.yml'
+  schedule:
+    - cron: '17 6 * * *' # 06:17 UTC daily
+  workflow_dispatch:
+
+concurrency:
+  group: deps-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: Audit production dependencies
+    runs-on: [self-hosted, macOS]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          # No `cache: 'npm'` on purpose - see the note at the top of ci.yml.
+      - name: Install deps
+        run: npm ci
+      # Fails on HIGH/CRITICAL advisories in PRODUCTION dependencies.
+      # Dev/build-only tooling is excluded (skip-dev) - see audit-ci.jsonc.
+      - name: Audit production dependencies
+        run: npx audit-ci --config audit-ci.jsonc
+
+  # Same audit, against `staging`. Scheduled/dispatch only: on a PR the
+  # `audit` job above already covers whatever branch the PR is for, and running
+  # both would double-report the same advisory.
+  audit-staging:
+    name: Audit production dependencies (staging)
+    if: github.event_name != 'pull_request'
+    runs-on: [self-hosted, macOS]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: staging
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          # No `cache: 'npm'` on purpose - see the note at the top of ci.yml.
+      - name: Install deps
+        run: npm ci
+      - name: Audit production dependencies
+        run: npx audit-ci --config audit-ci.jsonc

@@ -1,0 +1,243 @@
+name: CI
+
+# The PR gate: four jobs, one `npm ci` per runner, no duplicated work.
+#
+# This sandbox runs on GitHub-HOSTED runners (`ubuntu-latest`). That inverts two
+# decisions that the upstream ServWave repo makes for its self-hosted Mac mini:
+#
+#   1. `cache: 'npm'` is ON here, on purpose. Upstream disables it because its
+#      runners are persistent and ~/.npm is already warm, making the cache action
+#      pure overhead. Hosted runners are ephemeral - every job starts on a clean
+#      VM - so without the cache every job re-downloads the whole dependency tree.
+#
+#   2. No runner-label pinning and no lock directory. Upstream pins every job to a
+#      specific label because its labels are late-bound to ONE physical machine, so
+#      fanning out is oversubscription rather than parallelism. Here each job gets
+#      its own fresh VM, so the jobs genuinely run in parallel and need no mutual
+#      exclusion.
+#
+# The `database` job likewise uses a Postgres service CONTAINER rather than a
+# native install plus a lock directory. Upstream avoids Docker there because of a
+# host port-forward bug specific to Docker Desktop on its mini, and needs the lock
+# because its whole fleet shares one persistent cluster (Postgres ROLES are
+# cluster-wide, and two role-DDL tests running at once race on the system catalog).
+# Neither applies to a throwaway per-job container.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      # Run the gitleaks binary directly rather than gitleaks-action@v2.
+      #
+      # The action scans the push event's commit range as `<first>^..<last>`.
+      # When that range includes the repository's root commit, `<root>^` is not
+      # a valid revision - the root has no parent - so git exits non-zero, the
+      # action reports "scanned ~0 bytes" and then fails the job. Any push
+      # carrying a whole history (the first push of a repo, or a force-push
+      # after a history rewrite) therefore reds the build while having scanned
+      # nothing at all: a failure that looks like a leak but is the opposite.
+      #
+      # Scanning the full history every run is deterministic, strictly broader
+      # than the range scan, and has no edge case at the root commit.
+      # .gitleaks.toml is picked up automatically from the repo root.
+      - name: Install gitleaks
+        env:
+          GITLEAKS_VERSION: 8.30.1
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+      - name: Scan full git history
+        run: gitleaks git --redact --verbose --exit-code 1 .
+
+  backend:
+    name: Backend (build + tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install deps
+        run: npm ci
+      - name: Build (generates Prisma client + tsc -p tsconfig.build.json)
+        working-directory: backend
+        run: npm run build
+      - name: Tests
+        working-directory: backend
+        run: npm test -- --retry=2
+        env:
+          TZ: 'America/New_York'
+          # The suite is heavy and flakes under load - a different test each run,
+          # usually `socket hang up`. Capped workers plus --retry=2 keeps it honest
+          # without masking real failures.
+          VITEST_MAX_WORKERS: 4
+
+  frontend:
+    name: Frontend (lint + type-check + tests + build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install deps
+        run: npm ci
+      - name: Type-check
+        working-directory: frontend
+        run: npx tsc --noEmit
+      - name: Tests
+        working-directory: frontend
+        run: npm test -- --run --retry=2
+        env:
+          VITEST_MAX_WORKERS: 2
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+      # base_ref only exists on pull_request events, so this step is PR-only.
+      - name: Lint changed lines
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --quiet origin "${{ github.base_ref }}"
+          node scripts/lint-changed-lines.mjs "origin/${{ github.base_ref }}"
+
+  database:
+    name: Database (migrations + RLS)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # A throwaway Postgres per job. Nothing is shared between runs, so the
+    # role-DDL tests below (rls-isolation, login-lockout-rls) cannot race each
+    # other and no cross-job mutual exclusion is needed.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: servwave_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PG_URL: postgresql://postgres:postgres@127.0.0.1:5432/servwave_ci
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install deps
+        run: npm ci
+      # Full build, not a bare `prisma generate`: the boot check below runs
+      # `dist/index.js`, the exact artifact Render runs. (`npm run build` =
+      # prisma generate + tsc + copy-pdf-assets.)
+      - name: Build backend
+        working-directory: backend
+        run: npm run build
+      - name: Apply migrations
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ env.PG_URL }}
+          DIRECT_URL: ${{ env.PG_URL }}
+        run: npx prisma migrate deploy
+      - name: Verify no migration drift
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ env.PG_URL }}
+          DIRECT_URL: ${{ env.PG_URL }}
+        run: npx prisma migrate status
+      - name: Boot the built server and hit /health
+        working-directory: backend
+        env:
+          PORT: '3111'
+          DATABASE_URL: ${{ env.PG_URL }}
+          DIRECT_URL: ${{ env.PG_URL }}
+          SUPABASE_URL: https://ci-placeholder.invalid
+          SUPABASE_SERVICE_ROLE_KEY: ci-placeholder-not-a-real-key
+        run: |
+          set -euo pipefail
+          LOG="$RUNNER_TEMP/boot.log"
+          node dist/index.js > "$LOG" 2>&1 &
+          PID=$!
+          for _ in $(seq 1 45); do
+            if ! kill -0 "$PID" 2>/dev/null; then
+              echo "::error::Server exited during boot - it never reached /health"
+              cat "$LOG"
+              exit 1
+            fi
+            if curl -fsS http://127.0.0.1:3111/health -o "$RUNNER_TEMP/health.json"; then
+              echo "Booted OK. /health responded:"
+              cat "$RUNNER_TEMP/health.json"
+              kill "$PID" 2>/dev/null || true
+              wait "$PID" 2>/dev/null || true
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::Timed out after 45s waiting for /health"
+          cat "$LOG"
+          kill "$PID" 2>/dev/null || true
+          exit 1
+      - name: RLS isolation test
+        working-directory: backend
+        env:
+          TEST_DATABASE_URL: ${{ env.PG_URL }}
+        run: npx vitest run src/__tests__/rls-isolation.test.ts
+      - name: Login-not-locked-out under RLS enforcement
+        working-directory: backend
+        env:
+          TEST_DATABASE_URL: ${{ env.PG_URL }}
+        run: npx vitest run src/__tests__/login-lockout-rls.test.ts
+      - name: RLS coverage over every org-scoped table
+        working-directory: backend
+        env:
+          TEST_DATABASE_URL: ${{ env.PG_URL }}
+        run: npx vitest run src/__tests__/rls-coverage.test.ts
+      - name: Seed organization
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ env.PG_URL }}
+          DIRECT_URL: ${{ env.PG_URL }}
+          SEED_ALLOW_DEMO_ORG: 'true'
+        run: npx tsx src/seed-organization.ts
+      - name: Verify seeded organization
+        working-directory: backend
+        env:
+          TEST_DATABASE_URL: ${{ env.PG_URL }}
+        run: npx vitest run src/__tests__/seed-organization-db.test.ts
+      - name: Role-permission drift check
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ env.PG_URL }}
+          DIRECT_URL: ${{ env.PG_URL }}
+        run: npx tsx src/scripts/check-role-permission-drift.ts --strict

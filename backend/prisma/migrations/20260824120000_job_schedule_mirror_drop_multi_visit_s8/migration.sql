@@ -1,0 +1,117 @@
+-- Multi-visit spec slice S8 §2/§3 (D14, A5 RATIFIED 2026-08-24) - DROP the forward-looking
+-- schedule mirror and the two dead job-level milestone stamps.
+-- Spec: md_files/specs/scheduling/2026-08-17-multi-visit.md.
+--
+-- THIS MIGRATION DROPS COLUMNS ONLY. It is the DROP half of the pair
+-- 20260823120000_job_duration_span_multi_visit_s8 (S8 §4) already landed as the ADD half - that
+-- migration's own header explains why the two could not be one file: dropping a column live code
+-- still selects takes the app down at deploy, so §4 shipped first, its own PR repointed every
+-- known reader (JOB_SORT_FIELDS, the dashboard, search's schedule range, the two automation
+-- sweeps), and THIS PR is what verified no reader was missed (its own mandatory Step 0 re-grep
+-- found and fixed two more that were not on record: report.controller.ts's jobs report and the
+-- Alpha demo-org seed script) before this file runs.
+--
+-- SECTION NUMBERING - ANNOTATED, NOT RENUMBERED. 20260820120000_visit_teardown_multi_visit_s8
+-- left its own internal sections at 1, 5 and 6 "so the gap stayed visible" for sections 2-4.
+-- That file is ALREADY APPLIED to staging (and to every environment §4 has shipped to) - editing
+-- an applied migration's SQL would change its checksum and break `prisma migrate deploy`'s drift
+-- detection for anyone who has it recorded, which is a strictly worse outcome than a numbering
+-- gap. So the gap is CLOSED BY ANNOTATION instead: read the four files together as one sequence -
+-- 20260817130000_visits_multi_visit_s1 (§1, table), 20260820120000 (§1 continued: the teardown's
+-- own numbered 1/5/6), 20260823120000 (§4: the span ADD), and THIS file (§2/§3: the mirror DROP).
+-- No file's own numbering is edited after the fact.
+--
+-- PORTABLE: vanilla postgres:16 runs this unchanged. No Supabase-only roles, no auth.*, no
+-- extensions, no SECURITY DEFINER.
+--
+-- IDEMPOTENT: every DROP is guarded with IF EXISTS. A second application (the shared staging DB,
+-- or a CI run) is a no-op - there is no backfill or UPDATE here to guard on state, unlike §4's
+-- migration.
+--
+-- ─────────────────────────────────────────────────────────────────────────────────────────────
+-- WHAT THIS FILE CARRIES, AND WHAT IT DOES NOT.
+--
+-- Carries: DROP of five columns on `jobs` - scheduled_start, scheduled_end, is_all_day,
+-- en_route_at, on_site_at - and the index that named the first of them.
+--
+-- Does NOT carry: `jobs.started_at` survives untouched. `deriveJobStatusFromVisits`
+-- (lib/job-status.ts) opens with `if (jobStartedAt != null) return 'IN_PROGRESS'` for the urgent
+-- workflow (a job created UNSCHEDULED and started on the spot with no visit at all, story 45), and
+-- it is the ACTUAL-start half of the S8 §4 duration span (`jobs.started_at -> last_visit_completed_at`).
+-- Does NOT carry any RLS/GRANT/POLICY work - see below. Does NOT touch `first_visit_start` /
+-- `last_visit_end` / `last_visit_completed_at` (§4, already landed) or any Visit column - `visits`
+-- carries its OWN `scheduled_end` / `is_all_day` / `en_route_at` / `on_site_at`, untouched by this
+-- file; only the JOB-level copies of those four names are dropped here.
+--
+-- ─────────────────────────────────────────────────────────────────────────────────────────────
+-- WHY THIS IS SAFE TO DROP NOW (verified against staging redacted-staging-ref, 2026-08-24, the
+-- day this migration is authored - re-verify at apply time if this file sits for long):
+--
+--   jobs total                                                    9,586
+--   jobs.scheduled_start IS NOT NULL                               9,486
+--   ...of those, with NO live visit (the D16-collapse residue)     7,495   <- the dominant
+--                                                                            population this PR's
+--                                                                            projection fixes,
+--                                                                            not an edge case
+--   jobs.en_route_at IS NOT NULL                                      14
+--   jobs.on_site_at  IS NOT NULL                                      14
+--
+-- The 7,495-row residue is exactly why the read-side projection (lib/job-schedule-projection.ts,
+-- shipped in this same PR before this migration) falls back to the EARLIEST NON-CANCELLED visit
+-- rather than returning null the moment a job's last live visit leaves the live set: those rows
+-- keep a non-blank Scheduled date after this migration runs, computed from the visit set instead
+-- of from the column being dropped here. The 14+14 en_route_at/on_site_at rows have no reader
+-- anywhere in the code tree (S5 repointed the lifecycle bar onto the VISIT's own columns) and are
+-- simply lost - by design, per the S8 teardown migration's own precedent for the analogous
+-- `visit_assignees.lead_id` drop.
+--
+-- ─────────────────────────────────────────────────────────────────────────────────────────────
+-- JSONB re-verified (the S8 teardown migration's own predicate, re-run today because a column
+-- literally named `scheduled_start` is exactly the shape that predicate exists to catch):
+--     SELECT count(*) FROM user_table_preferences
+--      WHERE config::text LIKE '%scheduled_start%' OR config::text LIKE '%is_all_day%'
+--         OR config::text LIKE '%en_route_at%' OR config::text LIKE '%on_site_at%';
+-- -> 0 rows on staging, 2026-08-24. The jobs-list column identity stays `scheduled`
+-- (frontend jobsColumns.tsx `id: 'scheduled'`) and the filter params stay `scheduled_after` /
+-- `scheduled_before` - only the Prisma field NAME these five columns held moves, and none of
+-- those five names ever appears in a saved column-visibility/sort preference. If this query
+-- returns rows at deploy time, add a guarded UPDATE here rather than softening this paragraph.
+--
+-- The automation AnchorKey literal `'job.scheduled_start'` (workflows.trigger_config /
+-- workflow_steps.config / workflow_versions.definition) is UNAFFECTED by this migration and is
+-- NOT re-verified here - it is a frozen opaque vocabulary token (pinned by a z.enum, mirrored in
+-- the frontend) whose RESOLVER already moved off this column in #1704, before this PR. Dropping
+-- the column this migration drops does not touch that string.
+--
+-- ─────────────────────────────────────────────────────────────────────────────────────────────
+-- RLS. No policy or grant work is needed here and none is done. `jobs` already carries its
+-- tenant_isolation policy from 20260703000100_tenant_rls and later coverage migrations; DROPPING
+-- a COLUMN does not touch a policy. Nothing below issues a GRANT or a CREATE POLICY - a duplicate
+-- of either is what would make a re-run non-idempotent, per every S8-slice migration's own
+-- warning on this point.
+
+-- ─── Drop the index before the column it names ─────────────────────────────────────────────────
+-- Dropping the column would take the index with it silently; naming the drop keeps the ledger
+-- honest about what left, matching this file's own house style (see 20260820120000's identical
+-- treatment of visit_assignees_lead_id_idx).
+DROP INDEX IF EXISTS "jobs_scheduled_start_idx";
+
+-- ─── Drop the forward-looking schedule mirror (S8 §2, A5 RATIFIED) ────────────────────────────
+-- The wire keys (scheduled_start/scheduled_end/is_all_day) survive as a computed projection off
+-- `visits[]` - lib/job-schedule-projection.ts, shipped earlier in this same PR. Every known writer
+-- (job.controller.ts create/update/assign/setAssignees/unassign/cancel, service-plan.controller.ts,
+-- walkthrough.service.ts's syncJobFromVisits/syncJobWindowOntoVisits) and every known reader
+-- (jobListSelect/jobDetailSelect, customer.controller.ts, inv-techs-jobs.controller.ts,
+-- search.controller.ts, report.controller.ts, the two seed scripts) was repointed before this
+-- migration runs.
+ALTER TABLE "jobs" DROP COLUMN IF EXISTS "scheduled_start";
+ALTER TABLE "jobs" DROP COLUMN IF EXISTS "scheduled_end";
+ALTER TABLE "jobs" DROP COLUMN IF EXISTS "is_all_day";
+
+-- ─── Drop the two dead job-level milestone stamps (S8 §3) ─────────────────────────────────────
+-- en_route_at / on_site_at: S5 repointed every READER of these two names onto the VISIT's own
+-- columns (`visits.en_route_at` / `visits.on_site_at`, untouched by this migration), leaving the
+-- job-level copies write-only dead weight - 14 non-null rows each on staging, reachable by no
+-- code path. `jobs.started_at` is NOT symmetric and is NOT touched here - see the file header.
+ALTER TABLE "jobs" DROP COLUMN IF EXISTS "en_route_at";
+ALTER TABLE "jobs" DROP COLUMN IF EXISTS "on_site_at";

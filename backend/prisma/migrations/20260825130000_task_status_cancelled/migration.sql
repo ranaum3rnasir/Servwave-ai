@@ -1,0 +1,29 @@
+-- Issue 03 (2026-08-25) -- TaskStatus + CANCELLED.
+--
+-- A task that was abandoned rather than finished had nowhere to go: marking it DONE lies to the
+-- activity log, the completion notification and every report, and deleting it destroys its
+-- history. CANCELLED records the abandonment without claiming the work completed.
+--
+-- Deliberately NOT touched here:
+--   * tasks.completed_at -- CANCELLED never sets it. That column means the work FINISHED, and
+--     nothing in this migration may let a reader infer otherwise. No backfill: there is no way
+--     to tell, after the fact, which existing DONE rows were really cancellations.
+--   * No index, no constraint. Every status filter already goes through the organization_id
+--     index; a partial index on one more enum label would earn nothing.
+--
+-- ADD VALUE, not RENAME VALUE. Postgres forbids USING a value in the same transaction that adds
+-- it (the restriction RENAME VALUE does not have) -- see 20260722010000_payment_method_add_values.
+-- This file only adds the label and references it nowhere else, so there is no same-transaction
+-- conflict and no need to split it in two.
+--
+-- IF NOT EXISTS (PG 12+) so a second run is a no-op: this migration runs in three places (CI's
+-- vanilla Postgres, Render's deploy, and by hand against Supabase) and the enum-label ledger has
+-- drifted from pg_enum here before -- see 20260819190000_jobstatus_enum_repair, where the
+-- migration was recorded applied while the labels were absent. Verify pg_enum, not the ledger:
+--   SELECT enumlabel FROM pg_enum e JOIN pg_type t ON t.oid = e.enumtypid
+--   WHERE t.typname = 'TaskStatus' ORDER BY e.enumsortorder;
+--
+-- Ordering note: this appends after DONE, which is also where schema.prisma puts it. Nothing
+-- orders by status (status is UNORDERED by design) and Prisma matches on the label, so BEFORE/
+-- AFTER is not used -- it would make the statement non-idempotent for no gain.
+ALTER TYPE "TaskStatus" ADD VALUE IF NOT EXISTS 'CANCELLED';

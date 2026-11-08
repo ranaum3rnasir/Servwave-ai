@@ -1,0 +1,1037 @@
+/* =============================================================================
+   CRM UI kit - application shell
+
+   Ported from the kit's own design spec (previews/jobsPagePreview.html, shell
+   section). The preview is AHEAD of the kit's React source, so this file - not
+   the components - is the authority on geometry, colour and motion. The React
+   components below it only supply the markup these rules expect.
+
+   WHY PLAIN CSS AND NOT TAILWIND
+   The shell's behaviour is a set of coupled transitions (sidebar width, label
+   opacity, and one travelling indicator) that have to share exact curves and
+   durations. Expressing that as utility classes spreads four numbers across
+   three components, and the preview's whole point is that they are one number
+   each. It is also the only way the collapsed state can be driven by a single
+   ancestor class (`.app.is-rail`) instead of threading a boolean through every
+   descendant.
+
+   TOKENS ONLY
+   The repo's ratchet guards fail the build on a raw hex or a raw rgb()/rgba()
+   literal in any .css outside the token files, so every colour here resolves
+   through a token. Ours are stored as space-separated RGB CHANNELS, so a colour
+   reads `rgb(var(--token))` and a tint reads `rgb(var(--token) / <alpha>)`.
+   Tokens that are already composed (--sidebar-accent, --elevation-*) are used
+   verbatim.
+
+   Preview name  ->  ours
+     --card        -> --card                  --fg     -> --foreground
+     --mfg         -> --muted-foreground      --sfg    -> --subtle-foreground
+     --brand-sub   -> --brand-subtle          --ib     -> --input
+     --brand-em    -> --brand-emphasis        --border -> --border-color
+     --el-canvas   -> --elevation-canvas      --red    -> --status-red
+     --sb-hover    -> --sidebar-accent        --secondary -> --tonal
+     --sb-fg/-muted/-dim -> --sidebar-{foreground,muted-foreground,subtle-foreground}
+     --sb-active / --sb-active-fg / --sb-rail -> --brand-subtle / --brand / --brand
+   ============================================================================= */
+
+/* ---- app frame ------------------------------------------------------------
+   The topbar spans the full width on the page surface and the shell sits under
+   it. Global controls belong to the app, not to the page, so they live outside
+   the canvas - the canvas IS the page. */
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  background: rgb(var(--app));
+  color: rgb(var(--foreground));
+  font-family: "Figtree", system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  font-variant-numeric: tabular-nums;
+  /* One gutter for the canvas body, so the page title, the breadcrumbs and the
+     table all sit on the same vertical line. */
+  --gutter: 26px;
+
+  /* ---------------------------------------------------------------------
+     GEOMETRY - the kit's scale, not ServWave's.
+
+     ServWave collapses every corner to a single 6px "crisp" rule
+     (tokens.css: --radius-card / --radius-control / --radius-ic), which is a
+     deliberate app-wide decision and stays untouched for the legacy layer.
+     The kit is drawn on a graded scale instead - 14px canvas, 12px panels,
+     10px rows and menus, 8px controls, 7px icon tiles, pills fully round -
+     and flattening that to 6px is most of why the v2 pages read as the old
+     design wearing new components.
+
+     Re-pointing the three primitives HERE rather than editing tokens.css
+     keeps the override inside the shell: Tailwind maps rounded-lg/xl/card to
+     --radius-card and rounded/sm/md to --radius-control, so every kit
+     component inside .app picks up the kit's geometry while nothing outside
+     it changes. Legacy pages never render inside .app.
+     --------------------------------------------------------------------- */
+  --radius-card: 12px;
+  --radius-control: 8px;
+  --radius-ic: 7px;
+
+  /* ELEVATION - likewise the kit's, which is wider and softer than
+     ServWave's. shadow-card is the only app shadow the kit reaches for. */
+  --shadow-card: var(--elevation-card);
+  --shadow-soft: var(--elevation-sm);
+  --shadow-hover: var(--elevation-card-hover);
+}
+
+.shell {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  padding: 0 9px 9px 0;
+}
+
+/* The canvas is the ONLY filled surface in the shell. A bordered sidebar beside
+   a bordered topbar above bordered panels puts four hairlines through every
+   corner and reads as a table; one rounded panel floating on a flat background
+   is the whole idea. */
+.canvas {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: rgb(var(--card));
+  border-radius: 14px;
+  box-shadow: var(--elevation-canvas);
+  overflow: hidden;
+}
+
+/* `clip` on x, not `hidden`. The two look identical - both cut the overflow
+   off - but `hidden` makes the box a SCROLL CONTAINER that simply has no
+   scrollbar, so it still reports a scrollWidth and can still be scrolled
+   programmatically. That is enough for a drag auto-scroller to pick the canvas
+   as its target and slide the page sideways under the pointer, with nothing to
+   scroll it back. `clip` is not a scroll container at all, so the canvas can
+   never move on this axis whatever asks it to. The y axis stays `auto` - the
+   page's vertical scroll is the point of this element. */
+.canvas-body {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: clip;
+  padding: 20px var(--gutter) 32px;
+  scrollbar-gutter: stable;
+}
+
+/* A page that IS the canvas rather than a document sitting on it - the schedule
+   board, and nothing else so far.
+
+   The gutter and the page scroll are both wrong for it. The board scrolls in
+   two axes of its own, so a canvas scrolling underneath puts two scrollbars on
+   the same gesture, and every pixel of the 26px frame is a pixel of schedule
+   that could have been shown. `min-height: 0` is the load-bearing line: without
+   it a flex child refuses to shrink below its content and the board's own
+   scroll never engages, so the whole grid simply overflows the canvas.
+
+   Rounding is inherited from `.canvas` (which clips), so the board's corners
+   still follow the panel. */
+.canvas-body.is-flush {
+  padding: 0;
+  overflow: hidden;
+  min-height: 0;
+  scrollbar-gutter: auto;
+}
+
+/* Scoped to the shell so the legacy app's scrollbars are untouched. */
+.app ::-webkit-scrollbar {
+  width: 11px;
+  height: 11px;
+}
+.app ::-webkit-scrollbar-track,
+.app ::-webkit-scrollbar-corner {
+  background: transparent;
+}
+.app ::-webkit-scrollbar-thumb {
+  background: var(--scroll);
+  border-radius: 99px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  transition: background-color 0.15s;
+}
+.app ::-webkit-scrollbar-thumb:hover {
+  background: var(--scroll-hover);
+  background-clip: padding-box;
+}
+
+/* ---- topbar ---------------------------------------------------------------
+   Fixed. The topbar is app chrome - nothing in it should shift because a page
+   navigation panel underneath it changed width. */
+.topbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 50px;
+  padding: 0 16px;
+  background: transparent;
+}
+
+.tb-brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  text-decoration: none;
+  flex: none;
+  padding-right: 6px;
+  color: inherit;
+}
+
+.brand-mark {
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  /* --primary, not --brand. The mark is the brand's anchor; the livelier teal
+     is for interaction - links, focus rings, selection - out on the canvas. */
+  background: rgb(var(--primary));
+  color: rgb(var(--primary-foreground));
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+.brand-mark svg {
+  width: 15px;
+  height: 15px;
+}
+
+.brand-word {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.022em;
+  color: rgb(var(--sidebar-foreground));
+  white-space: nowrap;
+}
+
+/* ---- the workspace (organisation) name ------------------------------------
+   The space the search field's margin-left:auto leaves open, now occupied. The
+   bar has to say which organisation you are signed in to - it is the one fact
+   about the session that nothing else in the shell states.
+
+   Truncates rather than wraps or pushes: the bar is a fixed 50px row, and a
+   long legal name must cost the search field width, never the row's height. */
+.tb-workspace {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+.tb-workspace-name {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: rgb(var(--sidebar-foreground));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* margin-left:auto pushes the field off the brand and up against the actions,
+   which puts it near the centre on a wide screen and leaves the space to its
+   left free for a workspace/company name later. */
+.tb-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  max-width: 320px;
+  margin-left: auto;
+}
+.tb-search > svg {
+  position: absolute;
+  left: 12px;
+  width: 16px;
+  height: 16px;
+  color: rgb(var(--subtle-foreground));
+  pointer-events: none;
+}
+.tb-search input {
+  width: 100%;
+  height: 32px;
+  padding: 0 58px 0 34px;
+  font: inherit;
+  font-size: 13px;
+  color: rgb(var(--sidebar-foreground));
+  background: var(--sidebar-accent);
+  border: 1px solid transparent;
+  border-radius: 9px;
+  transition: background-color 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+.tb-search input::placeholder {
+  color: rgb(var(--subtle-foreground));
+}
+.tb-search input:focus {
+  outline: none;
+  background: rgb(var(--card));
+  border-color: rgb(var(--brand));
+  box-shadow: 0 0 0 3px rgb(var(--ring) / 0.34);
+}
+
+.tb-kbd {
+  position: absolute;
+  right: 10px;
+  font-size: 10px;
+  font-weight: 700;
+  color: rgb(var(--subtle-foreground));
+  background: rgb(var(--card));
+  border: 1px solid rgb(var(--border-color));
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  padding: 1px 5px;
+  pointer-events: none;
+}
+
+.tb-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* The preview's `.btn.btn--ghost.btn--icon`, inlined here so the shell owns its
+   own chrome and does not depend on the button primitive's variant table. */
+.tb-icon {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: rgb(var(--muted-foreground));
+  font: inherit;
+  cursor: pointer;
+  transition: background-color 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+.tb-icon svg {
+  width: 17px;
+  height: 17px;
+}
+.tb-icon:hover:not(:disabled) {
+  background: rgb(var(--muted));
+  color: rgb(var(--foreground));
+}
+.tb-icon:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgb(var(--ring) / 0.34);
+}
+
+.notif {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: rgb(var(--status-red));
+  color: rgb(var(--text-on-fill));
+  font-size: 9px;
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+  line-height: 1;
+  /* The card-coloured ring cuts the bubble out of the icon behind it. */
+  box-shadow: 0 0 0 2px rgb(var(--card));
+}
+.notif.is-wide {
+  min-width: 22px;
+  font-size: 8.5px;
+}
+
+/* The copilot launcher. A pill, not an icon: it is the one action in the bar
+   that opens a surface rather than a menu. */
+.tb-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  /* Servy and the AI Agentic Farm launcher are the two AI entry points in this
+     shell, so they carry one palette - the same --ai-500 tint and --ai-text
+     that `.sb-item.is-ai` uses in the sidebar footer. On the brand colour Servy
+     read as navigation chrome, a sibling of the search box, rather than as the
+     AI affordance it shares with the launcher. */
+  border: 1px solid rgb(var(--ai-500) / 0.32);
+  background: rgb(var(--ai-500) / 0.1);
+  color: rgb(var(--ai-text));
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+  flex: none;
+  transition: background-color 0.14s;
+}
+.tb-pill svg {
+  width: 14px;
+  height: 14px;
+  color: rgb(var(--ai-500));
+}
+.tb-pill:hover {
+  background: rgb(var(--ai-500) / 0.18);
+}
+.tb-pill:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgb(var(--ai-500) / 0.34);
+}
+
+.tb-div {
+  width: 1px;
+  height: 22px;
+  background: rgb(var(--border-color));
+  flex: none;
+  margin: 0 3px;
+}
+
+.tb-user {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 38px;
+  padding: 0 9px 0 5px;
+  border-radius: 9px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  transition: background-color 0.14s;
+}
+.tb-user:hover {
+  background: rgb(var(--muted));
+}
+.tb-user:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgb(var(--ring) / 0.34);
+}
+.tb-user-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.2;
+}
+.tb-user-name {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: rgb(var(--foreground));
+  white-space: nowrap;
+}
+.tb-user-role {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: rgb(var(--subtle-foreground));
+}
+
+.tb-avatar {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  /* The chip is round, so a logo inside it has to be clipped to the same
+     circle rather than squared off over it. */
+  overflow: hidden;
+  color: rgb(var(--text-on-fill));
+  font-size: 9px;
+  font-weight: 700;
+  flex: none;
+}
+/* contain, not cover: a company logo is rarely square, and cropping one to fill
+   a 24px circle cuts the wordmark in half. The legacy header sets object-contain
+   on the same image for the same reason. */
+.tb-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+/* ---- sidebar: part of the page, not a panel -------------------------------
+   No fill, no border, no radius - the sidebar IS the background. Everything it
+   paints is a tint of that surface.
+
+   One curve and one duration shared by the width, the labels and the brand
+   word. Mismatched timings are what made this feel snappy-then-stuck: the text
+   vanished instantly while the rail was still sliding. */
+.sidebar {
+  width: 192px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  background: transparent;
+  color: rgb(var(--sidebar-foreground));
+  transition: width 0.46s cubic-bezier(0.32, 0.72, 0, 1);
+}
+.app.is-rail .sidebar {
+  width: 60px;
+}
+
+/* ---- sidebar header: the one global create action -------------------------
+   "Create anything" belongs to the navigation column, not to the page and not
+   to the topbar. The topbar's left is reserved for a workspace name and its
+   right is a dense icon row, so a primary CTA in either would sit next to - and
+   compete with - the page header's own primary action ("New Lead"). Two
+   different jobs in two different regions is what stops them reading as
+   duplicates.
+
+   The button rules are scoped `.sidebar .sb-create` on purpose. shell.css loads
+   BEFORE the Tailwind layers, so a single-class rule here loses to the
+   primitive's own `h-8.5 px-3` utilities; two classes outrank them without
+   reaching for !important. */
+.sb-header {
+  flex: none;
+  display: flex;
+  padding: 12px 6px 2px;
+}
+
+/* flex:1 rather than width:100% - the button is inline-flex, and an inline box
+   ignores `margin:auto`, which is what silently parked the collapsed square
+   against the left edge of the rail instead of centring it. */
+/* Sized to its content, like the page's own primary button - not stretched
+   across the column. At flex:1 it filled all 180px of the sidebar and read as a
+   banner rather than as a button, which is what made it look nothing like the
+   New Lead action it is the global twin of. Content width plus the sm height
+   (34px against New Lead's 40px) keeps it clearly the smaller of the two.
+   Gap 8px matches New Lead exactly.
+
+   Full column width, with the glyph and the label centred in it as ONE pair -
+   which is only possible because of the `.sb-label` rule below. Symmetric 12px
+   padding from the primitive, and gap 8px to match New Lead. */
+.sidebar .sb-create {
+  flex: 1;
+  justify-content: center;
+  gap: 8px;
+}
+
+/* THE LABEL MUST NOT STRETCH. `.sb-label` is flex:1 so it can ellipsis-truncate
+   when the column is narrow, which is right for a nav row: the label is the
+   only flexible thing in the row and the text sits left inside it either way.
+
+   In this button it is wrong. Stretched, the span swallowed the whole 136px of
+   leftover width and centred "Create New" inside THAT box rather than inside
+   the button - so the words sat at 71px while their own glyph sat at 15px, a
+   40px gulf that read as two unrelated things. Shrink it to its text and the
+   button's own `justify-content: center` can centre the pair as a unit. */
+.sidebar .sb-create .sb-label {
+  flex: none;
+}
+.sidebar .sb-create svg {
+  flex: none;
+}
+
+/* Collapsed it is the same 38px square as a nav row, so the header does not
+   introduce a second icon size in a 60px column. */
+.app.is-rail .sb-header {
+  justify-content: center;
+  padding: 12px 0 2px;
+}
+.app.is-rail .sidebar .sb-create {
+  flex: none;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  gap: 0;
+  justify-content: center;
+}
+
+/* ---- the list-editing toolbar ---------------------------------------------
+   One right-aligned control over the nav, so the thing that edits the list sits
+   above the list rather than inside it. Gone in rail mode: a 60px column has no
+   room for a labelled control and the rows it edits have no labels to reorder
+   by, so the affordance goes rather than degrade into an unlabelled glyph. */
+.sb-toolbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 8px 8px 0;
+}
+.app.is-rail .sb-toolbar {
+  display: none;
+}
+
+/* Two classes so it outranks the button primitive's own utilities, the same
+   specificity trick `.sidebar .sb-create` above relies on and for the same
+   reason: shell.css loads before the Tailwind layers. */
+.sidebar .sb-customize {
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  gap: 5px;
+}
+.sidebar .sb-customize svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* ---- a row while the list is being edited ---------------------------------
+   The dashed outline is the mode indicator: it says the whole list is editable,
+   which a per-row hover state cannot. Geometry mirrors `.sb-item` so a row does
+   not jump when the mode turns on - the outline is drawn on the wrapper, and
+   the row inside gives up its own margin to it. */
+.sb-edit-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  width: calc(100% - 12px);
+  margin: 0 6px;
+  padding-right: 3px;
+  border: 1px dashed rgb(var(--border-color));
+  border-radius: 10px;
+}
+.sb-edit-row .sb-item {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+  margin: 0;
+  padding-left: 6px;
+}
+
+.sb-grip {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 16px;
+  height: 100%;
+  color: rgb(var(--subtle-foreground));
+  cursor: grab;
+}
+.sb-grip:active {
+  cursor: grabbing;
+}
+.sb-grip svg {
+  width: 13px;
+  height: 13px;
+}
+
+.sidebar .sb-unpin {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  color: rgb(var(--destructive));
+}
+.sidebar .sb-unpin svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* The one dashed control in the column: it adds a row that is not there yet,
+   which is exactly what a dashed outline means everywhere else in the app. */
+.sidebar .sb-add-shortcut {
+  width: calc(100% - 12px);
+  height: 30px;
+  margin: 8px 6px 0;
+  border-style: dashed;
+  font-size: 11.5px;
+  gap: 6px;
+}
+.sidebar .sb-add-shortcut svg {
+  width: 13px;
+  height: 13px;
+}
+
+.sb-nav {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  position: relative;
+  padding: 8px 0 10px;
+  /* The sidebar stays clean - its nav rarely overflows and a bar there would
+     cut across the rail. */
+  scrollbar-width: none;
+}
+.sb-nav::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+/* ---- the active-page indicator -------------------------------------------
+   ONE element, two shapes. It must stay one element: a shared element can
+   travel, nine separate per-item backgrounds can only cross-fade in place.
+
+   left:0 rather than a negative offset - .sb-nav clips horizontally so it can
+   scroll, and anything placed outside its box simply disappears. The nav's
+   padding lives on the items instead, which puts the rail flush against the
+   sidebar edge without reaching outside the scroll container.
+
+   Travels on transform rather than `top`. Animating `top` re-runs layout on
+   every frame; a transform is handed to the compositor, so the motion holds a
+   steady frame rate instead of stuttering against the table re-render. The
+   curve is a plain deceleration - an overshooting one bounced, and the bounce
+   is what read as unsettled.
+
+   520ms on an expo-out curve: most of the distance is covered early, then it
+   glides into place. Long enough to read as motion rather than a jump. */
+.nav-rail {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: rgb(var(--sidebar-rail));
+  pointer-events: none;
+  will-change: transform;
+  transition: transform 0.52s cubic-bezier(0.16, 1, 0.3, 1),
+    height 0.52s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.24s linear;
+}
+.nav-rail.is-hidden {
+  opacity: 0;
+}
+
+/* Collapsed, the rail turns into the square that sits behind the active icon.
+   A 3px edge bar beside an icon centred in its own square leaves a lopsided
+   gap; a square centred on its own icon cannot be asymmetric.
+
+   620ms rather than 520ms on purpose: collapsed, the icons sit closer together,
+   so an identical duration reads as faster. */
+.app.is-rail .nav-rail {
+  left: 50%;
+  width: 38px;
+  margin-left: -19px;
+  border-radius: 11px;
+  /* Collapsed, the square IS the indicator, so it carries the rail colour at a
+     low alpha - solid petrol behind a dark glyph swallows the glyph. */
+  background: rgb(var(--sidebar-rail) / 0.10);
+  transition: transform 0.62s cubic-bezier(0.16, 1, 0.3, 1),
+    height 0.62s cubic-bezier(0.16, 1, 0.3, 1), width 0.3s ease,
+    border-radius 0.3s ease, opacity 0.2s;
+}
+
+/* ---- group headings ------------------------------------------------------ */
+.sb-group {
+  margin: 0 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: rgb(var(--sidebar-subtle-foreground));
+  padding: 13px 10px 5px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+/* A hairline instead of a collapsed empty row: grouping survives the collapse,
+   which is the whole reason the labels exist. */
+.app.is-rail .sb-group {
+  height: 1px;
+  background: rgb(var(--border-color));
+  margin: 9px 6px 6px;
+  padding: 0;
+  color: transparent;
+}
+
+/* The first heading shares its line with the collapse control, so the sidebar
+   opens straight into the nav instead of spending a row on a single button. */
+.sb-group-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 6px;
+  padding: 11px 4px 5px 0;
+}
+.sb-group-row .sb-group {
+  flex: 1;
+  margin: 0;
+  padding: 0 0 0 10px;
+  height: auto;
+  background: none;
+  color: rgb(var(--sidebar-subtle-foreground));
+}
+.sb-group-row .sb-toggle {
+  flex: none;
+  margin: 0;
+}
+.app.is-rail .sb-group-row {
+  justify-content: center;
+  margin: 0;
+  padding: 8px 0 6px;
+}
+.app.is-rail .sb-group-row .sb-group {
+  display: none;
+}
+
+.sb-toggle {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  border: none;
+  background: none;
+  color: rgb(var(--sidebar-muted-foreground));
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  margin-left: auto;
+  flex: none;
+  transition: background-color 0.14s, color 0.14s;
+}
+.sb-toggle svg {
+  width: 15px;
+  height: 15px;
+}
+.sb-toggle:hover {
+  background: var(--sidebar-accent);
+  color: rgb(var(--sidebar-foreground));
+}
+.sb-toggle:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgb(var(--ring) / 0.34);
+}
+.app.is-rail .sb-toggle {
+  margin-left: 0;
+}
+
+/* ---- nav items ----------------------------------------------------------- */
+.sb-item {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: calc(100% - 12px);
+  margin: 0 6px;
+  height: 36px;
+  padding: 0 10px;
+  border-radius: 10px;
+  border: none;
+  background: none;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: rgb(var(--sidebar-muted-foreground));
+  cursor: pointer;
+  text-align: left;
+  text-decoration: none;
+  /* Above the rail, so the collapsed square reads as a backdrop to the icon. */
+  position: relative;
+  z-index: 1;
+  /* The spec declares a width/margin transition first and then overrides it
+     with this one, so this is the rule that actually runs: the box snaps to the
+     rail size while colour cross-fades. Kept as the spec resolves it. */
+  transition: color 0.14s, background-color 0.14s;
+}
+.sb-item:hover {
+  background: var(--sidebar-accent);
+  color: rgb(var(--sidebar-foreground));
+}
+.sb-item:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgb(var(--ring) / 0.34);
+}
+.sb-item.is-active {
+  background: rgb(var(--sidebar-active));
+  color: rgb(var(--sidebar-active-foreground));
+  font-weight: 600;
+}
+.sb-item svg {
+  flex: none;
+  width: 17px;
+  height: 17px;
+}
+.sb-item.is-locked {
+  cursor: not-allowed;
+  color: rgb(var(--subtle-foreground));
+}
+.sb-item.is-locked:hover {
+  background: none;
+  color: rgb(var(--subtle-foreground));
+}
+
+.sb-label {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: opacity 0.3s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.sb-count {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--sidebar-accent);
+  color: rgb(var(--sidebar-muted-foreground));
+  transition: opacity 0.3s cubic-bezier(0.32, 0.72, 0, 1);
+}
+.sb-item.is-active .sb-count {
+  background: rgb(var(--sidebar-active-foreground));
+  color: rgb(var(--text-on-fill));
+}
+
+/* ---- expandable groups ----------------------------------------------------
+   A group's row toggles rather than navigates, so it never carries the active
+   state: the travelling rail stays on whichever child is the current page, and
+   the chevron is what says the row does something else.
+
+   Children are indented, not ruled off. A vertical line beside them would sit
+   3px from the rail and read as a second, competing indicator; the indent plus
+   the shorter row is enough to say what belongs to what.
+
+   `.sb-item .sb-chevron` and not `.sb-chevron` alone - `.sb-item svg` sizes
+   every glyph in the row to 17px and would otherwise win on specificity. */
+.sb-item .sb-chevron {
+  width: 13px;
+  height: 13px;
+  color: rgb(var(--sidebar-subtle-foreground));
+  transition: transform 0.18s ease;
+}
+.sb-item .sb-chevron.is-closed {
+  transform: rotate(-90deg);
+}
+.sb-item.is-nested {
+  width: calc(100% - 30px);
+  margin-left: 24px;
+  height: 32px;
+  font-size: 12px;
+}
+.sb-item.is-nested svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* gap:0 AND flex:none on the label. Zero-width children still reserve their
+   flex gaps - 11px on each side pushed the icon 22px off centre inside its own
+   square - and a label that keeps flex-grow:1 from the expanded state absorbs
+   the leftover space and shoves the icon to the left edge. Both are needed. */
+.app.is-rail .sb-item {
+  justify-content: center;
+  gap: 0;
+  padding: 0;
+  width: 38px;
+  height: 38px;
+  margin: 3px auto;
+}
+.app.is-rail .sb-label {
+  flex: none;
+}
+/* A 60px column has no room to expand anything, so the sidebar renders a group
+   as a plain destination there and the chevron has nothing left to say. */
+.app.is-rail .sb-chevron {
+  display: none;
+}
+.app.is-rail .sb-label,
+.app.is-rail .sb-count {
+  opacity: 0;
+  width: 0;
+  padding: 0;
+  overflow: hidden;
+}
+/* The tinted square IS the indicator when collapsed, and the rail draws it -
+   the item must not paint a second one underneath. */
+.app.is-rail .sb-item.is-active {
+  background: transparent;
+}
+
+/* ---- the pinned footer launcher -------------------------------------------
+   A hairline above it, not a fill. The sidebar owns no border against the
+   canvas, but a rule INSIDE it is already the kit's vocabulary - it is what a
+   group heading collapses into in rail mode - and it is what says the row below
+   is not the next destination in the list.
+
+   Inset by the same 6px as the rows, so the line stops where they stop. */
+.sb-footer {
+  flex: none;
+  margin: 4px 6px 0;
+  padding: 8px 0;
+  border-top: 1px solid rgb(var(--border-color));
+}
+/* The footer already carries the rows' 6px inset, so the row inside must not
+   add its own or it sits a notch right of every destination above it. */
+.sb-footer .sb-item {
+  width: 100%;
+  margin: 0;
+}
+.app.is-rail .sb-footer .sb-item {
+  margin: 0 auto;
+}
+
+/* ---- the AI launcher ------------------------------------------------------
+   Not the 23rd nav row: it opens a surface instead of going anywhere, and the
+   app reserves the lavender AI ramp for exactly those moments. A tinted row
+   plus a lavender glyph is the same pair of signals the legacy sidebar used,
+   in this shell's palette.
+
+   --ai-500 rather than the legacy sidebar's --ai-200: that value is drawn to
+   read against a dark navy column and all but disappears on a light one. */
+.sb-item.is-ai {
+  background: rgb(var(--ai-500) / 0.1);
+  color: rgb(var(--ai-text));
+  font-weight: 600;
+}
+.sb-item.is-ai svg {
+  color: rgb(var(--ai-500));
+}
+.sb-item.is-ai:hover {
+  background: rgb(var(--ai-500) / 0.18);
+  color: rgb(var(--ai-text));
+}
+.sb-item.is-ai:focus-visible {
+  box-shadow: 0 0 0 3px rgb(var(--ai-500) / 0.34);
+}
+
+/* ---- mobile ---------------------------------------------------------------
+   Below the breakpoint the canvas goes edge to edge and the sidebar becomes an
+   overlay drawer rather than a column, since a permanent rail has nowhere to
+   live. `data-drawer` is only present on mobile, so the transform rules below
+   cannot reach the desktop sidebar. */
+.app-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 55;
+  background: rgb(var(--scrim) / 0.45);
+  backdrop-filter: blur(2px);
+  transition: opacity 0.2s;
+}
+.app-scrim[data-open="false"] {
+  opacity: 0;
+  pointer-events: none;
+}
+
+@media (max-width: 760px) {
+  .app {
+    --gutter: 15px;
+  }
+  .shell {
+    padding: 0;
+  }
+  .canvas {
+    border-radius: 0;
+    box-shadow: none;
+  }
+  .sidebar {
+    position: absolute;
+    z-index: 60;
+    height: 100%;
+    width: 240px;
+    background: rgb(var(--app));
+    transition: transform 0.25s cubic-bezier(0.32, 0.72, 0, 1);
+  }
+  .app.is-rail .sidebar {
+    width: 240px;
+  }
+  .sidebar[data-drawer="closed"] {
+    transform: translateX(-100%);
+  }
+  .sidebar[data-drawer="open"] {
+    box-shadow: var(--elevation-rail);
+  }
+  .tb-search {
+    max-width: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app *,
+  .app *::before,
+  .app *::after {
+    transition: none !important;
+    animation: none !important;
+  }
+}

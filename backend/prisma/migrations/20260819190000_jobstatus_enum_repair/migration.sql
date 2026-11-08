@@ -1,0 +1,35 @@
+-- Repair: JobStatus is missing EN_ROUTE / ON_SITE on at least one live database.
+--
+-- schema.prisma declares seven JobStatus values, and 20260420143624_technician_mobile added
+-- EN_ROUTE and ON_SITE to the type. That migration is recorded as applied on staging, and the
+-- columns it added in the same file (jobs.en_route_at, jobs.on_site_at) are present - but the
+-- two enum labels are not:
+--
+--   staging  UNSCHEDULED, SCHEDULED, IN_PROGRESS, COMPLETED, CANCELLED
+--   prod     UNASSIGNED, SCHEDULED, IN_PROGRESS, COMPLETED, CANCELLED, EN_ROUTE, ON_SITE
+--
+-- AttachmentContext's four labels, added by the very same file, ARE present on staging, so the
+-- type was rebuilt out from under the ledger at some point rather than the migration failing.
+-- Whatever the history, the ledger cannot be trusted to have delivered them, so this states the
+-- requirement directly instead.
+--
+-- What it costs today: every query naming those labels errors with 22P02, and two of them are
+-- load-bearing.
+--
+--   * useScheduleData asks /api/jobs for status in (SCHEDULED, EN_ROUTE, ON_SITE, IN_PROGRESS,
+--     COMPLETED). The whole schedule board therefore renders ZERO jobs, for every org, every
+--     week - not merely the multi-day ones.
+--   * detectCrewConflicts filters the same four active states, so every assign carrying a
+--     schedule AND a crew 500s. Crew-only assigns and force:true both skip it, which is what
+--     made this look like a multi-day problem rather than a total one.
+--
+-- Idempotent: ADD VALUE IF NOT EXISTS is a no-op where the label already exists, so this is
+-- inert on prod and on any environment that took the 2026-04-20 migration cleanly. Portable:
+-- no Supabase-only roles or auth.* references, so vanilla postgres:16 in CI runs it unchanged.
+--
+-- Ordering note: these append after CANCELLED rather than sitting beside SCHEDULED as they do
+-- in schema.prisma. Enum sort order is not part of the contract - nothing orders by status, and
+-- Prisma matches on label - so BEFORE/AFTER is deliberately not used, since it would make the
+-- statement non-idempotent for no gain.
+ALTER TYPE "JobStatus" ADD VALUE IF NOT EXISTS 'EN_ROUTE';
+ALTER TYPE "JobStatus" ADD VALUE IF NOT EXISTS 'ON_SITE';

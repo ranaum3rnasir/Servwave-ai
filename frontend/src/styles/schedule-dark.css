@@ -1,0 +1,683 @@
+/* ─── react-big-calendar overrides (scoped to .schedule-cal) ─────────────── */
+/* Google Calendar visual style                                                */
+
+/* ── Base ─────────────────────────────────────────────────────────────────── */
+.schedule-cal .rbc-calendar {
+  background: rgb(var(--surface-light));
+  color: rgb(var(--text-primary));
+  height: 100%;
+}
+
+/* ── Time-view container ──────────────────────────────────────────────────── */
+.schedule-cal .rbc-time-view {
+  border: none;
+  background: rgb(var(--surface-light));
+}
+
+/* ── Day column headers ───────────────────────────────────────────────────── */
+.schedule-cal .rbc-time-header {
+  border-bottom: 1px solid rgb(var(--border-color));
+}
+.schedule-cal .rbc-time-header-content {
+  border-left: 1px solid rgb(var(--border-color));
+}
+
+/* Header cell — custom DayHeader renders abbreviation + date number (GCal style) */
+.schedule-cal .rbc-header {
+  background: rgb(var(--surface-light));
+  border-bottom: 1px solid rgb(var(--border-color));
+  color: rgb(var(--text-secondary));
+  font-size: 0.75rem;
+  font-weight: 500;
+  padding: 8px 4px;
+  text-align: center;
+  white-space: nowrap;
+  position: relative;
+  z-index: 2;
+}
+.schedule-cal .rbc-header a,
+.schedule-cal .rbc-header .rbc-button-link {
+  color: inherit;
+  text-decoration: none;
+}
+.schedule-cal .rbc-header + .rbc-header {
+  border-left: 1px solid rgb(var(--border-color));
+}
+
+/* Fix: RBC hides header in Day view — override to show it */
+.schedule-cal .rbc-time-header-cell-single-day {
+  display: flex !important;
+}
+
+/* Date number sizing — scales with view */
+.schedule-cal .schedule-day-num {
+  font-size: 1.125rem;
+}
+/* Day view: larger header + date number since there's only one column */
+.schedule-cal .rbc-time-header-cell-single-day .rbc-header {
+  padding: 12px 8px;
+}
+.schedule-cal .rbc-time-header-cell-single-day .schedule-day-num {
+  font-size: 1.5rem;
+  width: 2.25rem !important;
+  height: 2.25rem !important;
+}
+
+/* ── Double-click to expand a day column (week view) ──────────────────
+   react-big-calendar sizes the two halves differently, so the focused day
+   must be widened with DIFFERENT properties that yield the SAME share:
+     • Header cells use `flex: 1 0 0%`  → override flex-grow.
+     • Body columns use `width: 100%` and shrink to an equal share → override width.
+   flex-grow:4 (header) and width:400% (body) both resolve to ~40% of the row,
+   so the header cell stays aligned with its body column.
+   Header cells are nth-child 1–7; body columns are nth-child 2–8 (the time
+   gutter is the first child of .rbc-time-content). */
+.schedule-cal .rbc-header {
+  transition: flex-grow 0.18s ease;
+}
+.schedule-cal .rbc-time-content > .rbc-day-slot {
+  transition: width 0.18s ease;
+}
+
+/* Header half — flex-grow */
+.schedule-cal[data-focus-day="0"] .rbc-time-header-content .rbc-header:nth-child(1),
+.schedule-cal[data-focus-day="1"] .rbc-time-header-content .rbc-header:nth-child(2),
+.schedule-cal[data-focus-day="2"] .rbc-time-header-content .rbc-header:nth-child(3),
+.schedule-cal[data-focus-day="3"] .rbc-time-header-content .rbc-header:nth-child(4),
+.schedule-cal[data-focus-day="4"] .rbc-time-header-content .rbc-header:nth-child(5),
+.schedule-cal[data-focus-day="5"] .rbc-time-header-content .rbc-header:nth-child(6),
+.schedule-cal[data-focus-day="6"] .rbc-time-header-content .rbc-header:nth-child(7) {
+  flex-grow: 4 !important;
+}
+
+/* Body half — width */
+.schedule-cal[data-focus-day="0"] .rbc-time-content > .rbc-day-slot:nth-child(2),
+.schedule-cal[data-focus-day="1"] .rbc-time-content > .rbc-day-slot:nth-child(3),
+.schedule-cal[data-focus-day="2"] .rbc-time-content > .rbc-day-slot:nth-child(4),
+.schedule-cal[data-focus-day="3"] .rbc-time-content > .rbc-day-slot:nth-child(5),
+.schedule-cal[data-focus-day="4"] .rbc-time-content > .rbc-day-slot:nth-child(6),
+.schedule-cal[data-focus-day="5"] .rbc-time-content > .rbc-day-slot:nth-child(7),
+.schedule-cal[data-focus-day="6"] .rbc-time-content > .rbc-day-slot:nth-child(8) {
+  width: 400% !important;
+}
+
+/* ── All-day strip: the header must never be crushed ──────────────────────────
+   Spec: md_files/plans/scheduler/2026-08-24-allday-strip-overflow-spec.md
+
+   `.rbc-time-header-content` is a column flex container with indefinite height.
+   react-big-calendar gives `.rbc-allday-cell` `height: 100%` - a large
+   hypothetical size - and grants `flex-shrink: 0` to `.rbc-row-resource` only,
+   so the day-header row absorbed the whole shortfall: 66.5px -> 43.9px, and the
+   w-8 h-8 date circle then overflowed its own cell by 13.6px into the strip,
+   where rbc's `.rbc-allday-events { z-index: 4 }` painted the pills over the
+   digits. Raising the header's z-index is NOT a fix - measured, it changes no
+   layout at all, it only flips paint order.
+
+   What bounds the strip's HEIGHT is the row cap (`allDayMaxRows` on the
+   calendar): three 22px rows, ~77px. The max-height/scroll below stays as the
+   backstop for anything the cap does not catch. */
+
+/* The header row is chrome, not content - it never gives up height. */
+.schedule-cal .rbc-time-header-content > .rbc-row.rbc-time-header-cell {
+  flex-shrink: 0;
+}
+/* Overrides rbc's own `.rbc-time-view .rbc-allday-cell { height: 100% }`, which
+   is what generates the shortfall above. */
+.schedule-cal .rbc-time-view .rbc-allday-cell {
+  height: auto;
+}
+
+/* Default: collapse all-day strip when empty */
+.schedule-cal .rbc-allday-cell {
+  max-height: 0;
+  overflow: hidden;
+  padding: 0;
+  border: none;
+  transition: max-height 0.2s ease-out;
+}
+/* Show when all-day events exist. Scrolls rather than spilling: a busy week can put
+   more pills in here than 200px holds, and `overflow: visible` let them run over the
+   grid below. Clipping is not an option either - a hidden job is the bug this strip
+   exists to fix - so the overflow scrolls inside the strip. */
+.schedule-cal.has-allday-events .rbc-allday-cell {
+  max-height: 200px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 2px 0;
+  border-bottom: 1px solid rgb(var(--border-color));
+}
+/* All-day event pill styling. The 22px clamp is why the pill must render one line
+   (see the all-day branch in ScheduleEvent) - anything taller is clipped here. */
+.schedule-cal .rbc-allday-cell .rbc-event {
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  height: 22px;
+  line-height: 18px;
+  overflow: hidden;
+  /* The strip pill is the containing block for the needs-crew notch (NeedsCrewMark,
+     `absolute top-0 right-0`). Unlike a timed card, which react-big-calendar positions
+     absolutely inside its day slot, a strip pill is static by default - and seen live on
+     2026-09-14, that sent the notch to the far right edge of the whole all-day ROW, 900px
+     from its pill. */
+  position: relative;
+}
+
+/* ── Today column highlight ───────────────────────────────────────────────── */
+.schedule-cal .rbc-today {
+  background: rgb(var(--primary) / 0.04);
+}
+
+/* ── Time gutter (left axis) ──────────────────────────────────────────────── */
+.schedule-cal .rbc-time-gutter {
+  background: rgb(var(--surface-light));
+}
+.schedule-cal .rbc-time-gutter .rbc-timeslot-group {
+  border-bottom: none;
+  background: rgb(var(--surface-light));
+}
+.schedule-cal .rbc-label {
+  color: rgb(var(--text-secondary));
+  font-size: 0.75rem;
+  font-weight: 400;
+}
+
+/* ── Grid lines ───────────────────────────────────────────────────────────── */
+.schedule-cal .rbc-time-content {
+  border-top: 1px solid rgb(var(--border-color));
+  background: rgb(var(--surface-light));
+}
+.schedule-cal .rbc-time-content > * + * > * {
+  border-left: 1px solid rgb(var(--border-color));
+}
+/* One hour's height. The page sets --hour-height so that the focus window
+   (the -/+ control in the toolbar) exactly fills the visible grid: fewer hours
+   in focus means a taller hour. The grid still spans the WHOLE day either way
+   and still scrolls to any of it - the window moves the viewport, it does not
+   clip the day. 40px is the fallback for any surface that sets no variable. */
+.schedule-cal .rbc-timeslot-group {
+  border-bottom: 1px solid rgb(var(--border-color));
+  min-height: var(--hour-height, 40px);
+}
+.schedule-cal .rbc-day-slot .rbc-time-slot {
+  border-top: 1px solid rgb(var(--border-soft));
+}
+
+/* ── Current time indicator - was Google red, now the --danger token ─────── */
+.schedule-cal .rbc-current-time-indicator {
+  background: rgb(var(--danger));
+  height: 2px;
+  opacity: 1;
+}
+/* Red dot at the left edge */
+.schedule-cal .rbc-current-time-indicator::before {
+  content: '';
+  display: block;
+  position: absolute;
+  left: -4px;
+  top: -4px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: rgb(var(--danger));
+}
+
+/* ── Events — solid pill style ────────────────────────────────────────────── */
+.schedule-cal .rbc-event {
+  border-radius: 6px;
+  border: none;
+  box-shadow: 0 1px 3px rgb(var(--scrim) / 0.12);
+  color: rgb(var(--text-on-fill));
+  padding: 4px 8px;
+  font-size: 0.75rem;
+  padding: 2px 6px;
+  cursor: grab;
+  transition: filter 0.1s ease-out, box-shadow 0.1s ease-out, transform 0.1s ease-out;
+}
+/* Hide RBC default time label — our ScheduleEvent component handles content */
+.schedule-cal .rbc-event-label {
+  display: none;
+}
+/* Day view: constrain event width during drag so it doesn't fill the entire column */
+.schedule-cal .rbc-day-slot .rbc-addons-dnd-drag-preview .rbc-event {
+  max-width: 95%;
+}
+/* Constrain resize handle target area */
+.schedule-cal .rbc-day-slot .rbc-event {
+  max-width: 95%;
+}
+.schedule-cal .rbc-event:focus {
+  outline: none;
+}
+/* No brightness/filter effects on hover or selected state — prevents double-hover visual */
+.schedule-cal .rbc-event:hover,
+.schedule-cal .rbc-event.rbc-selected,
+.schedule-cal .rbc-selected {
+  filter: none;
+  box-shadow: 0 1px 3px rgb(var(--scrim) / 0.12);
+}
+
+/* ── Overlap layout support ────────────────────────────────────────────────
+   dayLayoutAlgorithm="overlap" (SchedulePage.tsx) draws cards over one another
+   instead of slicing the column, so two things have to hold that "no-overlap"
+   never needed.
+
+   1. A hairline of the surface colour around every card, so the boundary
+      between two stacked cards of the SAME status is visible - without it a
+      cluster of SCHEDULED jobs reads as one continuous block of pale blue.
+      `outline` rather than `border`: the event classes set `!border-0`. The
+      double-booked card replaces this hairline with its own 2px amber outline
+      (an `!important` class, boardEventPaint.ts), so the hairline never paints
+      over the frame.
+   2. Whatever the pointer is on comes to the front, because a card behind is
+      only a left-edge sliver and a sliver you cannot click is no better than a
+      card that was never drawn. `:focus-within` gives keyboard users the same.
+      Must clear zIndex 10, which the search highlight sets inline.
+   Both are scoped to `.rbc-day-slot` so the month grid and the all-day strip,
+   which have no overlap geometry, are untouched. */
+.schedule-cal .rbc-day-slot .rbc-event {
+  outline: 1px solid rgb(var(--surface-light));
+  outline-offset: -1px;
+}
+.schedule-cal .rbc-day-slot .rbc-event:hover,
+.schedule-cal .rbc-day-slot .rbc-event:focus-within {
+  z-index: 20;
+  box-shadow: 0 4px 12px rgb(var(--scrim) / 0.22);
+}
+
+/* ── Drag — ghost outline at original position (GCal style) ─────────────── */
+.schedule-cal .rbc-addons-dnd-dragged-event {
+  opacity: 0.3 !important;
+  background: transparent !important;
+  border: 2px dashed currentColor !important;
+  box-shadow: none !important;
+  cursor: grabbing;
+}
+.schedule-cal .rbc-addons-dnd-dragged-event * {
+  opacity: 0 !important; /* Hide text inside ghost */
+}
+
+/* Apply grabbing cursor to everything while a drag is in progress */
+body.is-dragging * {
+  cursor: grabbing !important;
+}
+
+/* ── Drag preview — matches original event width + position via CSS vars ── */
+.schedule-cal .rbc-addons-dnd-drag-preview {
+  width: var(--drag-preview-width, 95%) !important;
+  max-width: var(--drag-preview-width, 95%) !important;
+  left: var(--drag-preview-left, 0) !important;
+  opacity: 0.85;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgb(var(--scrim) / 0.15);
+  transform: scale(1.02);
+}
+.schedule-cal .rbc-addons-dnd-droppable-over {
+  background: rgb(var(--primary) / 0.04);
+}
+
+/* ── Resize handles ──────────────────────────────────────────────────────── */
+/* Top anchor: functional but invisible — 8px hit zone, cursor only */
+.schedule-cal .rbc-addons-dnd-resize-ns-anchor:first-child {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 8px;
+  cursor: ns-resize;
+}
+.schedule-cal .rbc-addons-dnd-resize-ns-anchor:first-child::after {
+  display: none;
+}
+/* Bottom anchor: visible white pill on hover */
+.schedule-cal .rbc-addons-dnd-resize-ns-anchor:last-child {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 8px;
+  cursor: ns-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.schedule-cal .rbc-addons-dnd-resize-ns-anchor:last-child::after {
+  content: '';
+  width: 24px;
+  height: 3px;
+  border-radius: 2px;
+  background: rgb(var(--text-on-fill) / 0.6);
+}
+.schedule-cal .rbc-event:hover .rbc-addons-dnd-resize-ns-anchor:last-child {
+  opacity: 1;
+}
+/* Hide default RBC resize icon */
+.schedule-cal .rbc-addons-dnd-resize-ns-icon {
+  display: none !important;
+}
+
+/* ── Slot selection ───────────────────────────────────────────────────────── */
+.schedule-cal .rbc-slot-selection {
+  background: rgb(var(--primary) / 0.08);
+  border: 1px solid rgb(var(--primary));
+  color: rgb(var(--primary-dark));
+  font-size: 0.75rem;
+}
+
+/* ── Month view ───────────────────────────────────────────────────────────── */
+.schedule-cal .rbc-month-view {
+  border: 1px solid rgb(var(--border-color));
+  background: rgb(var(--surface-light));
+}
+.schedule-cal .rbc-month-header {
+  border-bottom: 1px solid rgb(var(--border-color));
+}
+.schedule-cal .rbc-month-row + .rbc-month-row {
+  border-top: 1px solid rgb(var(--border-color));
+}
+.schedule-cal .rbc-day-bg + .rbc-day-bg {
+  border-left: 1px solid rgb(var(--border-color));
+}
+.schedule-cal .rbc-off-range-bg {
+  background: rgb(var(--background-light));
+}
+.schedule-cal .rbc-date-cell {
+  color: rgb(var(--text-secondary));
+  padding: 4px 8px;
+}
+.schedule-cal .rbc-date-cell.rbc-now > a {
+  color: rgb(var(--text-on-fill));
+  background: rgb(var(--primary));
+  border-radius: 50%;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+}
+.schedule-cal .rbc-date-cell > a {
+  color: rgb(var(--text-secondary));
+}
+.schedule-cal .rbc-date-cell > a:hover {
+  color: rgb(var(--text-primary));
+}
+
+/* ── Month view: SLIM event rows ──────────────────────────────────────────────
+   A month cell is a list, not a timeline. The shared `.rbc-event` rule above is
+   sized for the week grid, where an event's height carries meaning (it is how
+   long the job takes) and the pill has real estate to fill. In a month cell
+   that height is spent on nothing: it says the same thing a single line does,
+   at three times the cost, so a day with four jobs immediately overflows into
+   "+2 more" and the month stops showing the month.
+
+   These match the Tasks calendar's month chips exactly - 10px text, 2px/6px
+   inset, one line, ellipsis - so the two month grids in the product read as one
+   component. Scoped to `.rbc-month-view` so the week and day grids are
+   untouched. */
+.schedule-cal .rbc-month-view .rbc-event {
+  padding: 1px 6px;
+  font-size: 10px;
+  line-height: 1.35;
+  border-radius: 4px;
+  box-shadow: none;
+  min-height: 0;
+  /* The needs-crew notch (NeedsCrewMark, `absolute top-0 right-0`) anchors to the nearest
+     positioned ancestor. Timed cards get that from rbc's own `.rbc-day-slot .rbc-event`;
+     month pills, like the all-day strip pills above, are static by default, and the notch
+     would land on the corner of the whole WEEK ROW (`.rbc-row-content`). Same fix as the
+     strip: the pill is its own containing block. */
+  position: relative;
+}
+
+/* One line, and a clean end to it. RBC's own content wrapper is what actually
+   holds the text, so the clamp has to land there as well as on the event. */
+.schedule-cal .rbc-month-view .rbc-event,
+.schedule-cal .rbc-month-view .rbc-event-content {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The gap between rows, which RBC expresses as a margin on the segment. */
+.schedule-cal .rbc-month-view .rbc-row-segment {
+  padding: 0 2px 1px;
+}
+
+/* ONE LINE of content, whatever the event thinks it wants.
+
+   `ScheduleEvent` builds a height-driven stack - title, then time, then crew,
+   then address - choosing how many rows to show from the event's DURATION. That
+   is exactly right in the week grid, where a three-hour job really is three
+   hours tall and has the room. In a month cell it is meaningless: every event
+   gets the same slim row no matter how long the job is, so a stack sized for
+   144px of grid simply overflows and gets sheared off mid-word, which is what
+   the cut-off two-line blocks were.
+
+   So in month view everything after the first row is hidden and the title is
+   what remains - the one line that is always populated on every branch of that
+   component (job, walkthrough, all-day and ghost alike). */
+.schedule-cal .rbc-month-view .rbc-event-content > div {
+  display: block;
+  height: auto;
+}
+.schedule-cal .rbc-month-view .rbc-event-content > div > *:not(:first-child) {
+  display: none;
+}
+.schedule-cal .rbc-month-view .rbc-event-content > div > *:first-child {
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+/* The one exception: the needs-crew notch (NeedsCrewMark). It sits AFTER the title so the
+   title keeps first-child status - mounted first, it was the row kept and the title the row
+   hidden, which collapsed every crewless pill to a bare red sliver. As a later child the rule
+   above would hide it, and the month pill was made its containing block (above) precisely so it
+   shows here. It is absolutely positioned, so letting it through costs the one line no room.
+   Sized as on the all-day strip pill (`sm`): the month pill is shorter still, and the timed
+   card's 12px would cover most of its height. `svg` in the selector is load-bearing: without
+   it this ties the hide rule above on specificity and wins on source order alone. */
+.schedule-cal .rbc-month-view .rbc-event-content > div > svg[data-needs-crew-mark] {
+  display: block;
+  width: 0.625rem;
+  height: 0.625rem;
+}
+/* The plan-mode "draft" badge, for the same reason: it sits after a draft's title (mounted first,
+   it was the row kept and the pill rendered empty) and is absolutely positioned, so it costs the
+   one line no room. `span` keeps it above the hide rule on specificity, as `svg` does above. */
+.schedule-cal .rbc-month-view .rbc-event-content > div > span[data-draft-badge] {
+  display: block;
+}
+
+/* A slimmer row needs a shorter date header above it, or the cell's height is
+   spent on the number instead of the events. */
+.schedule-cal .rbc-month-view .rbc-date-cell {
+  padding: 3px 6px;
+}
+.schedule-cal .rbc-month-view .rbc-date-cell.rbc-now > a {
+  width: 22px;
+  height: 22px;
+  font-size: 11px;
+}
+
+.schedule-cal .rbc-month-view .rbc-show-more {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 0 6px;
+}
+
+/* ── Show-more link ───────────────────────────────────────────────────────── */
+.schedule-cal .rbc-show-more {
+  color: rgb(var(--primary));
+  font-size: 0.75rem;
+}
+.schedule-cal .rbc-show-more:hover {
+  color: rgb(var(--primary-dark));
+}
+
+/* The all-day "+N more" chip - a disclosure, so it reads as a control rather
+   than as another pill. Same 22px as the pills so it sits on the row pitch. */
+.schedule-cal .schedule-allday-more {
+  display: inline-block;
+  padding: 0 6px;
+  height: 22px;
+  line-height: 22px;
+  border-radius: 4px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.schedule-cal .schedule-allday-more:hover {
+  background: rgb(var(--primary) / 0.1);
+}
+.schedule-cal .schedule-allday-more:focus-visible {
+  outline: 2px solid rgb(var(--primary));
+  outline-offset: 1px;
+}
+
+/* ── Popup overlay ────────────────────────────────────────────────────────── */
+.schedule-cal .rbc-overlay {
+  background: rgb(var(--surface-light));
+  border: 1px solid rgb(var(--border-color));
+  box-shadow: 0 10px 30px rgb(var(--scrim) / 0.12);
+  border-radius: 8px;
+}
+.schedule-cal .rbc-overlay-header {
+  color: rgb(var(--text-secondary));
+  border-bottom: 1px solid rgb(var(--border-color));
+}
+
+/* ── Resource (grouped / by-tech) view headers ────────────────────────────── */
+.schedule-cal .rbc-resource-header {
+  background: rgb(var(--table-header));
+  color: rgb(var(--text-secondary));
+  border-left: 1px solid rgb(var(--border-color));
+  font-size: 0.75rem;
+  font-weight: 500;
+  padding: 6px 8px;
+}
+
+/* ── Plan Mode — amber tint overlay ──────────────────────────────────────── */
+.schedule-cal.plan-mode-active .rbc-time-content,
+.schedule-cal.plan-mode-active .rbc-month-view,
+.schedule-cal.plan-mode-active .rbc-time-view {
+  background: linear-gradient(
+    180deg,
+    rgb(var(--warning-surface) / 0.5) 0%,
+    rgb(var(--warning-surface)) 100%
+  );
+  border: 2px dashed rgb(var(--warning-border));
+  transition: all 0.2s ease-in-out;
+}
+
+/* ── Search highlight pulse ───────────────────────────────────────────────── */
+@keyframes search-highlight {
+  0%, 100% { box-shadow: 0 0 0 3px rgb(var(--primary) / 0.5); }
+  50%       { box-shadow: 0 0 0 5px rgb(var(--primary) / 0.25); }
+}
+
+/* ── Reduced motion ───────────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  .schedule-cal .rbc-event {
+    transition: opacity 0.1s ease-out;
+    /* disable transform + filter transitions */
+  }
+  .schedule-cal .rbc-addons-dnd-dragged-event {
+    transform: none;
+  }
+  .schedule-cal.plan-mode-active .rbc-time-content,
+  .schedule-cal.plan-mode-active .rbc-month-view,
+  .schedule-cal.plan-mode-active .rbc-time-view {
+    transition: none;
+  }
+  @keyframes search-highlight {
+    0%, 100% { box-shadow: 0 0 0 3px rgb(var(--primary) / 0.5); }
+  }
+}
+
+/* ─── Animations ──────────────────────────────────────── */
+
+/* Event hover lift */
+.schedule-cal .rbc-event {
+  transition: filter 0.1s ease-out, box-shadow 0.1s ease-out, transform 0.1s ease-out;
+}
+
+/* Plan Mode activate/deactivate transition */
+.schedule-cal.plan-mode-active .rbc-time-view,
+.schedule-cal.plan-mode-active .rbc-month-view {
+  transition: background 0.3s ease-in-out;
+}
+
+/* Popup/card enter animation */
+@keyframes popup-enter {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
+}
+.schedule-popup-enter {
+  animation: popup-enter 0.2s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/* Modal dialog enter */
+@keyframes dialog-enter {
+  from { opacity: 0; transform: scale(0.95) translateY(4px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+.schedule-dialog-enter {
+  animation: dialog-enter 0.25s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/* Backdrop fade */
+@keyframes backdrop-enter {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.schedule-backdrop-enter {
+  animation: backdrop-enter 0.2s ease-out;
+}
+
+/* Toast slide-in from bottom */
+@keyframes toast-enter {
+  from { opacity: 0; transform: translateY(100%); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.schedule-toast-enter {
+  animation: toast-enter 0.25s ease-out;
+}
+
+/* Sidebar section collapse — use max-height transition */
+.schedule-sidebar-section {
+  transition: max-height 0.3s ease-in-out, opacity 0.2s ease-in-out;
+  overflow: hidden;
+}
+.schedule-sidebar-section.collapsed {
+  max-height: 0 !important;
+  opacity: 0;
+}
+
+/* Chevron rotation */
+.schedule-chevron {
+  transition: transform 0.2s ease-in-out;
+}
+.schedule-chevron.rotated {
+  transform: rotate(180deg);
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .schedule-cal .rbc-event,
+  .schedule-cal.plan-mode-active .rbc-time-view,
+  .schedule-cal.plan-mode-active .rbc-month-view {
+    transition: none !important;
+  }
+  .schedule-popup-enter,
+  .schedule-dialog-enter,
+  .schedule-backdrop-enter,
+  .schedule-toast-enter {
+    animation: none !important;
+  }
+  .schedule-sidebar-section {
+    transition: none !important;
+  }
+}

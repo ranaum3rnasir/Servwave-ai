@@ -1,0 +1,77 @@
+{
+  // Dependency-vulnerability gate for CI (see .github/workflows/ci.yml).
+  // Fails the build on HIGH or CRITICAL advisories in PRODUCTION dependencies.
+  // Dev/build-only tooling (vitest, cpx→braces/micromatch, esbuild, jsdom→undici)
+  // is excluded via skip-dev so test-tooling advisories don't block a deploy;
+  // Dependabot still opens PRs for those.
+  "high": true,
+  "skip-dev": true,
+  "report-type": "important",
+  // Documented, time-boxed exceptions go here as advisory IDs, e.g. "GHSA-xxxx".
+  // Keep empty by default so nothing is silently ignored.
+  "allowlist": [
+    // GHSA-f88m-g3jw-g9cj (sharp <0.35.0, inherited libvips CVEs) — 2026-07-21. The only fix is
+    // sharp 0.35.3 (semver-major); confirmed during this pass that its bundled libvips/libpng is
+    // stricter and rejects at least one PNG the current version decodes fine (real, not
+    // hypothetical — repro: multipart-org-context.test.ts's logo-upload fixture throws "vipspng:
+    // libpng read error" under 0.35.3 but passes under 0.34.5). sharp is used only for the org
+    // logo upload (organization.controller.ts), which already gates on MIME sniff + a
+    // decompression-bomb pixel limit before ever calling sharp. Revisit once lovell/sharp's
+    // stricter-decode behavior is either configurable or confirmed safe against real-world
+    // uploads, not just synthetic test fixtures.
+    "GHSA-f88m-g3jw-g9cj",
+    // GHSA-qwww-vcr4-c8h2 (react-router 7.12.0-8.2.x, RSC-mode CSRF bypass) - 2026-07-24. The
+    // advisory text is explicit: "This only affects your application if you are using the
+    // unstable RSC APIs." This app is a Vite SPA using classic client-side routing
+    // (react-router-dom's BrowserRouter in frontend/src/App.tsx) - no RSC/framework mode, no
+    // server actions, anywhere in the codebase. No patched version exists yet (npm's only
+    // "fixAvailable" is a semver-major downgrade to 7.11.0, i.e. no forward fix). Revisit once
+    // react-router ships a real >=7.x patch for this advisory.
+    "GHSA-qwww-vcr4-c8h2",
+    // GHSA-mh99-v99m-4gvg (brace-expansion <=5.0.7, DoS via unbounded expansion / OOM) - 2026-07-27.
+    // DORMANT since the Gmail deletion (email slice 0). The path this entry was written for was
+    // @googleapis/gmail > googleapis-common > gaxios > rimraf@5 > glob@10 > minimatch@9 >
+    // brace-expansion, and @googleapis/gmail is no longer a dependency: rimraf, glob, minimatch and
+    // that brace-expansion copy are all gone from package-lock.json. audit-ci now reports this id
+    // under "consider not allowlisting". Note it was ALREADY dormant before that deletion, because
+    // the scoped `rimraf > minimatch > brace-expansion@^2.1.4` override in the root package.json
+    // floored it to a patched 2.x - so the deletion removed the path, not the mitigation.
+    // Kept as a dormant, defensive entry rather than removed: brace-expansion still cannot be
+    // overridden FORWARD (the only patched release is 5.0.8, and 5.x replaced the callable CommonJS
+    // export with an object ({ EXPANSION_MAX, EXPANSION_MAX_LENGTH, expand }), so a minimatch@9 that
+    // calls the default import directly dies with "(0 , brace_expansion_1.default) is not a
+    // function" on any brace pattern - reproduced, not theoretical). If a future dependency pulls
+    // that shape back in, this entry plus the ^2.1.4 override are what keep the gate honest.
+    // Safe to DELETE outright once someone confirms no prod path can reach brace-expansion <=5.0.7.
+    "GHSA-mh99-v99m-4gvg",
+    // GHSA-7p8r-x3mc-p8w7 (fast-uri <3.1.5, host confusion via backslash authority
+    // introducer) - 2026-08-04. Pre-existing, unrelated to whatever PR trips it: fast-uri's
+    // only path here is frontend's dev-only vite-plugin-pwa > workbox-build > ajv@8.18.0 >
+    // fast-uri (confirmed via `npm ls fast-uri --all` - zero production paths, backend has
+    // no fast-uri/ajv at all). skip-dev should exclude this outright, and intermittently
+    // does - `npx audit-ci` reproduced both a pass and this exact failure against an
+    // unchanged dependency tree in the same sitting, consistent with querying the live
+    // advisory DB rather than a deterministic local check. Ported from the same fix on
+    // main (PR #1166). Revisit if ajv (or workbox-build) bumps its own fast-uri floor past
+    // 3.1.5.
+    "GHSA-7p8r-x3mc-p8w7",
+    // GHSA-ggr8-5vv4-36mx (deepmerge-ts <8.0.0, stack exhaustion when merging recursive object
+    // graphs) - 2026-08-19. Reddened the nightly audit on `main` from 2026-08-18 and every PR
+    // that touches a manifest. Three facts, each checked rather than assumed:
+    //   1. The only path is `prisma > @prisma/config > deepmerge-ts` (`npm ls @prisma/config
+    //      --all`), and `prisma` is a backend devDependency - `@prisma/client`, the package the
+    //      server actually runs on, has no dependencies at all. skip-dev should exclude this,
+    //      and for the same reason as GHSA-7p8r-x3mc-p8w7 above it intermittently does not.
+    //   2. There is no forward fix to take. @prisma/config@7.9.1 (latest, ahead of our 6.19.3)
+    //      still depends on deepmerge-ts 7.1.5, so bumping prisma changes nothing.
+    //   3. An override cannot reach it: @prisma/config pins deepmerge-ts to the EXACT version
+    //      7.1.5, not a range, so forcing ^8.0.1 does not re-resolve the subtree - it drops the
+    //      package out of the tree entirely (reproduced, lockfile left with @prisma/config
+    //      requiring a dependency that is no longer installed).
+    // Reachability: @prisma/config is read by the prisma CLI at build time (`prisma generate`,
+    // `prisma migrate deploy` in Render's build command) and merges OUR OWN schema/config files.
+    // No request-path code, no user-supplied input, so the recursive-graph DoS has nothing to
+    // stand on here. Revisit when @prisma/config bumps its deepmerge-ts pin past 8.0.0.
+    "GHSA-ggr8-5vv4-36mx"
+  ]
+}

@@ -1,0 +1,61 @@
+-- Archive a location instead of deleting it (spec
+-- md_files/specs/scheduling/2026-09-10-visit-location-and-performer-phone.md, D9; slice 2).
+--
+-- Slice 1 made a location UNDELETABLE once a visit points at it: `visits.location_id` is
+-- ON DELETE RESTRICT, because nulling the reference would silently move a booked visit back to
+-- the customer's own address after the customer had been told to come to the showroom. That is
+-- the safe direction, but a restriction with no escape is not a finished design - a branch that
+-- genuinely closes still has to leave the picker.
+--
+-- These are THE SAME TWO COLUMNS `service_locations` already carries for exactly this problem,
+-- under the same entity-redesign rule (§10: archive instead of delete when referenced), so an
+-- admin learns the concept once and a developer reads one pattern. An archived location leaves
+-- every booking picker but STAYS A LIVE ROW, which is the whole point: every past and booked
+-- visit that points at it keeps resolving, on the card and in the confirmation email alike.
+--
+-- EXISTING ROWS GET `true`, and that is the correct default rather than a convenience. Every
+-- location in every organisation today is one somebody can still book at; a `false` default (or
+-- a nullable column read as "unknown") would empty every picker in the product on deploy. The
+-- column is NOT NULL with a DEFAULT, so Postgres 11+ records the default in the catalogue and
+-- back-fills nothing - no table rewrite, no long ACCESS EXCLUSIVE lock - and `archived_at` stays
+-- NULL for every one of them, which is what "was never archived" means.
+--
+-- PURE EXPAND, so the deploy overlap is safe in the one direction that matters. Prisma
+-- enumerates its BUILD-TIME column list on every select-less query, so the instance still
+-- running the old client simply never names these two; adding is invisible to it, where a DROP
+-- would 500 it (see 20260831120000_drop_manual_comm_outcome). Nothing reads the columns until
+-- the code that declares them is serving.
+--
+-- IDEMPOTENT: both adds are IF NOT EXISTS, so a second application on the shared staging DB is a
+-- no-op and cannot reset a location somebody has already archived. PORTABLE: plain DDL, no
+-- Supabase-only objects - no `auth.*`, no TO authenticated / anon / service_role - so it runs
+-- unchanged in all three places it runs: CI's vanilla postgres:16, Render's deploy, and by hand.
+--
+-- NO RLS CHANGE. `locations` already carries the canonical `tenant_isolation` policy on
+-- organization_id under FORCE ROW LEVEL SECURITY; a new column is inside that policy's reach
+-- automatically, and archiving is not something the policy filters on. Tenant scoping of the
+-- archive and unarchive doors themselves is the application's `tenantWhere(req)` on the update,
+-- exactly as it is for edit and delete.
+--
+-- NO NEW INDEX. The only new access pattern is "the active locations of one organisation", and
+-- `locations_organization_id_idx` already answers the organisation half; the residual filter is
+-- over a handful of branches per tenant. An index on a two-valued column whose rows are almost
+-- all `true` would not be chosen anyway.
+
+-- ─── 1. Is this location still bookable? ──────────────────────────────────────
+
+ALTER TABLE "locations" ADD COLUMN IF NOT EXISTS "is_active" BOOLEAN NOT NULL DEFAULT true;
+
+-- ─── 2. When it stopped being ─────────────────────────────────────────────────
+--
+-- Nullable, and NULL is a fact rather than a gap: this location has never been archived. Kept
+-- alongside the boolean rather than derived from it because "when did the yard close" is a
+-- question an admin asks, and because it is what `service_locations` carries.
+--
+-- TIMESTAMP(3) is what Prisma's bare `DateTime?` maps to on Postgres, and what every other
+-- timestamp on this table already is (`created_at`, `updated_at`). `service_locations.archived_at`
+-- is a plain TIMESTAMP - pre-existing drift from a hand-written migration, deliberately NOT
+-- copied here, because matching it would make this table read as drifted against the schema for
+-- ever.
+
+ALTER TABLE "locations" ADD COLUMN IF NOT EXISTS "archived_at" TIMESTAMP(3);

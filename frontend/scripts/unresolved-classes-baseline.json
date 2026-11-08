@@ -1,0 +1,238 @@
+{
+  "bg-amber-50": [
+    "src/components/ui/badge.tsx",
+    "src/design-system/__tests__/layering-guard.test.ts"
+  ],
+  "bg-black/NN": [
+    "src/design-system/__tests__/tokens-guard.test.ts"
+  ],
+  "bg-blend)/.test(cls": [
+    "src/design-system/__tests__/layering-guard.test.ts"
+  ],
+  "bg-cyan-50": [
+    "src/components/schedule/TechnicianGridView.test.tsx"
+  ],
+  "bg-emerald-500": [
+    "src/design-system/__tests__/tokens-guard.test.ts"
+  ],
+  "bg-import-": [
+    "src/lib/placeholders.ts"
+  ],
+  "bg-import-v2": [
+    "src/__tests__/placeholders.test.ts"
+  ],
+  "bg-import-v2-abc": [
+    "src/__tests__/placeholders.test.ts"
+  ],
+  "bg-scrim/NN": [
+    "src/design-system/__tests__/tokens-guard.test.ts"
+  ],
+  "bg-slate-100": [
+    "src/__tests__/select-item-highlight.test.tsx",
+    "src/design-system/__tests__/tokens-guard.test.ts"
+  ],
+  "bg-slate-1000": [
+    "src/design-system/__tests__/tokens-guard.test.ts"
+  ],
+  "bg-slate-500": [
+    "src/design-system/__tests__/tokens-guard.test.ts"
+  ],
+  "bg-slate-800": [
+    "src/design-system/__tests__/tokens-guard.test.ts"
+  ],
+  "bg-slate-950": [
+    "src/design-system/__tests__/tokens-guard.test.ts"
+  ],
+  "bg-x": [
+    "src/design-system/__tests__/tokens-guard.test.ts"
+  ],
+  "border-": [
+    "src/design-system/__tests__/layering-guard.test.ts"
+  ],
+  "border-(solid": [
+    "src/design-system/__tests__/layering-guard.test.ts"
+  ],
+  "border-amber-200": [
+    "src/components/ui/badge.tsx"
+  ],
+  "border-color": [
+    "src/components/charts/chartTheme.ts",
+    "src/components/ui/card.tsx"
+  ],
+  "border-slate-800": [
+    "src/design-system/__tests__/tokens-guard.test.ts"
+  ],
+  "border-soft": [
+    "src/components/charts/CapsuleBar.tsx",
+    "src/components/charts/Donut.tsx",
+    "src/components/charts/GaugeArc.tsx",
+    "src/components/charts/chartTheme.ts"
+  ],
+  "caret-aware": [
+    "src/components/workflows/useMergeInsert.ts"
+  ],
+  "decoration-)/.test(cls": [
+    "src/design-system/__tests__/layering-guard.test.ts"
+  ],
+  "divide-": [
+    "src/design-system/__tests__/layering-guard.test.ts"
+  ],
+  "divide-by-zero/negative-cost": [
+    "src/components/jobs/items/AddLineDialog.tsx"
+  ],
+  "from-": [
+    "src/design-system/__tests__/layering-guard.test.ts"
+  ],
+  "from-account": [
+    "src/components/communication/inbox/ComposeWindow.tsx"
+  ],
+  "from-lane": [
+    "src/components/schedule/scheduleModel.ts",
+    "src/pages/SchedulePage.tsx"
+  ],
+  "from-member": [
+    "src/components/schedule/MemberWeekBoard.test.tsx",
+    "src/components/schedule/MemberWeekBoard.tsx",
+    "src/components/schedule/TechnicianGridView.test.tsx",
+    "src/components/schedule/TechnicianGridView.tsx",
+    "src/components/schedule/dragChannels.ts",
+    "src/components/schedule/scheduleModel.test.ts",
+    "src/components/schedule/scheduleModel.ts",
+    "src/design-system/__tests__/tokens-guard.test.ts",
+    "src/pages/SchedulePage.tsx"
+  ],
+  "from-number": [
+    "src/components/communication/phone/Softphone.tsx",
+    "src/components/communication/phone/__tests__/softphone-dialfrom.test.tsx",
+    "src/lib/api/myOutboundNumber.ts",
+    "src/lib/api/phoneNumbers.ts"
+  ],
+  "from-scratch": [
+    "src/pages/JobDetailPage.tsx"
+  ],
+  "from-to": [
+    "src/components/filters/AppliedChips.test.tsx"
+  ],
+  "outline-)/.test(cls": [
+    "src/design-system/__tests__/layering-guard.test.ts"
+  ],
+  "placeholder-": [
+    "src/design-system/__tests__/layering-guard.test.ts"
+  ],
+  "placeholder-looking": [
+    "src/components/crm/CustomerPickerWithCreate.tsx"
+  ],
+  "ring-all": [
+    "src/components/communication/phone/CallGroups.tsx"
+  ],
+  "ring-offset": [
+    "src/design-system/__tests__/tokens-guard.test.ts"
+  ],
+  "ring-slate-300": [
+    "src/design-system/__tests__/tokens-guard.test.ts"
+  ],
+  "ring-slate-950": [
+    "src/design-system/__tests__/tokens-guard.test.ts"
+  ],
+  "rounded-3xl": [
+    "src/design-system/__tests__/tokens-guard.test.ts"
+  ],
+  "rounded-br-3xl": [
+    "src/design-system/__tests__/tokens-guard.test.ts"
+  ],
+  "rounded-rect": [
+    "src/lib/filters/registries/customers.ts",
+    "src/lib/filters/registries/estimates.ts",
+    "src/lib/filters/registries/jobs.ts"
+  ],
+  "rounded-tl-3xl": [
+    "src/design-system/__tests__/tokens-guard.test.ts"
+  ],
+  "shadow-component": [
+    "src/design-system/__tests__/shadow-component-guard.test.ts"
+  ],
+  "shadow-component-guard": [
+    "src/design-system/__tests__/shadow-component-guard.test.ts"
+  ],
+  "shadow-implements": [
+    "src/design-system/__tests__/shadow-component-guard.test.ts"
+  ],
+  "stroke-": [
+    "src/design-system/__tests__/layering-guard.test.ts"
+  ],
+  "stroke-width": [
+    "src/lib/api/_mock/inventory/staging.ts"
+  ],
+  "text-": [
+    "src/design-system/__tests__/layering-guard.test.ts"
+  ],
+  "text-(left": [
+    "src/design-system/__tests__/layering-guard.test.ts"
+  ],
+  "text-(xs": [
+    "src/design-system/__tests__/layering-guard.test.ts"
+  ],
+  "text-/.test(cls": [
+    "src/design-system/__tests__/layering-guard.test.ts"
+  ],
+  "text-amber-700": [
+    "src/components/ui/badge.tsx"
+  ],
+  "text-anchor": [
+    "src/lib/api/_mock/inventory/inventory.ts",
+    "src/lib/api/_mock/inventory/staging.ts"
+  ],
+  "text-back": [
+    "src/components/communication/phone/SmsInboxView.tsx",
+    "src/lib/api/communication-shared/phone-messages.ts",
+    "src/lib/reports/call-tracking-seed.ts"
+  ],
+  "text-body": [
+    "src/components/workflows/SendTextForm.tsx"
+  ],
+  "text-cyan-600": [
+    "src/design-system/__tests__/layering-guard.test.ts"
+  ],
+  "text-red-300": [
+    "src/design-system/__tests__/tokens-guard.test.ts"
+  ],
+  "text-red-600": [
+    "src/components/ui/button.tsx"
+  ],
+  "text-red-700": [
+    "src/design-system/__tests__/layering-guard.test.ts"
+  ],
+  "text-rose-600": [
+    "src/components/data/table.tsx"
+  ],
+  "text-slate-500": [
+    "src/design-system/__tests__/tokens-guard.test.ts"
+  ],
+  "text-soft": [
+    "src/pages/SchedulePage.tsx",
+    "src/pages/design-system/DesignSystemPage.tsx"
+  ],
+  "text-to-speech": [
+    "src/components/communication/phone/CallMaskingView.tsx",
+    "src/lib/api/communication-shared/phone-training.ts"
+  ],
+  "text-width": [
+    "src/components/ui/tabs.tsx"
+  ],
+  "to-)/.test(cls": [
+    "src/design-system/__tests__/layering-guard.test.ts"
+  ],
+  "to-do": [
+    "src/components/payments/StripePaymentsStatusCard.tsx",
+    "src/components/tasks/TaskCard.tsx"
+  ],
+  "to-location": [
+    "src/__tests__/inventory-action-log.test.tsx"
+  ],
+  "to-member": [
+    "src/components/schedule/scheduleModel.test.ts"
+  ],
+  "via-": [
+    "src/design-system/__tests__/layering-guard.test.ts"
+  ]
+}

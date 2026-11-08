@@ -1,0 +1,56 @@
+{
+  "name": "alpha-crm",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "scripts": {
+    "dev:backend": "npm run dev --workspace=backend",
+    "dev:frontend": "npm run dev --workspace=frontend",
+    "build:backend": "npm run build --workspace=backend",
+    "build:frontend": "npm run build --workspace=frontend",
+    "lint": "npm run lint --workspaces --if-present",
+    "prisma:validate": "npm run prisma:validate --workspace=backend",
+    "prisma:migrate": "npm run prisma:migrate --workspace=backend",
+    "prisma:generate": "npm run prisma:generate --workspace=backend",
+    "test:e2e": "npm run test:e2e --workspace=frontend",
+    "verify:overrides": "node scripts/verify-overrides.js"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.125.0"
+  },
+  "devDependencies": {
+    "audit-ci": "^7.1.0",
+    "semver": "^7.8.5"
+  },
+  "comments": {
+    "overrides": "Security floors for transitive deps flagged by npm audit. Keep >= the patched version; remove an entry only once no dependency pulls the vulnerable range. path-to-regexp is scoped under express (its only consumer) so a future major of another consumer is not clobbered. brace-expansion has NO blanket floor on purpose: the only release patching GHSA-mh99-v99m-4gvg is 5.0.8, and 5.x replaced the callable CommonJS export with an object ({ expand, ... }), so any consumer that calls the import directly throws 'is not a function' under it - reproduced with minimatch@9.0.9, which is what the now-deleted Gmail path (@googleapis/gmail > googleapis-common > gaxios > rimraf > glob > minimatch) used to resolve. That path is gone as of email slice 0: @googleapis/gmail is no longer a dependency, so rimraf resolves nowhere in the tree and its scoped entry below is now DORMANT (verify:overrides reports 'rimraf not found under <root> (nothing to enforce)' and passes). It is kept as a defensive floor in case a future dependency reintroduces rimraf; filelist's entry is still live and enforced. The scoped ^2.1.4 entries below therefore hold filelist's and rimraf's minimatch (both declare ^2.x) on the 2.x line, which still clears the older GHSA-3jxr-9vmj-r5cp (>=2.0.0 <2.1.2) and GHSA-mh99-v99m-4gvg (>=2.0.0 <2.1.3), and now also GHSA-rgw5-rvv9-x895 (>=2.0.0 <2.1.4, the bypass of the mh99 mitigation) - 2.1.4 is the first 2.x release patching all three, still exporting the same callable CommonJS default (verified: `module.exports = expandTop`, unchanged from 2.1.2), so minimatch@9 keeps working. Consumers that already declare ^5 (glob's and @sentry/bundler-plugin-core's minimatch@10) need no override - they float to 5.0.9 naturally.",
+    "overrides-types-react": "NOT a security floor, unlike every entry above. @types/react and @types/react-dom are pinned to 19 because the frontend moved to React 19 while a transitive @types/react-dom@18 kept dragging @types/react@18 back to the workspace root. The hoisted Radix packages then typed against React 18 while app code typed against 19, producing ~50 spurious ReactNode assignability errors. The backend declares no react dependency, so these two entries only reach the frontend workspace."
+  },
+  "overrides": {
+    "undici": "^7.28.0",
+    "form-data": "^4.0.6",
+    "nanoid": "^3.3.18",
+    "shell-quote": "^1.9.0",
+    "express": {
+      "path-to-regexp": "0.1.13"
+    },
+    "filelist": {
+      "minimatch": {
+        "brace-expansion": "^2.1.4"
+      }
+    },
+    "rimraf": {
+      "minimatch": {
+        "brace-expansion": "^2.1.4"
+      }
+    },
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0"
+  }
+}

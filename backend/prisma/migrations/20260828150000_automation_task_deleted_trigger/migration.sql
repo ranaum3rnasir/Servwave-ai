@@ -1,0 +1,15 @@
+-- Spec B slice 4: a task was deleted, and the people who were on it should be told.
+--
+-- ONE value again, for the reason the TASK_CREATED migration states: a Postgres enum
+-- value can never be removed, so the smaller irreversible step is the safer one, and an
+-- admin must never be able to author a workflow against a trigger that has not shipped.
+-- The remaining task trigger (date-anchored) lands with the slice that dispatches it.
+--
+-- Bare ADD VALUE, following 20260828140000_automation_task_comment_added_trigger.
+-- No backfill and nothing destructive in this file.
+--
+-- Nothing is added to the ENTITY side: task deletion is a hard delete, so the enrollment's
+-- entity_id points at a row that no longer exists. entity_id carries no foreign key (see
+-- WorkflowEnrollment in schema.prisma), which is what makes that legal without a schema
+-- change; the identity the email renders rides the enrollment's event_payload instead.
+ALTER TYPE "AutomationTriggerType" ADD VALUE IF NOT EXISTS 'TASK_DELETED';

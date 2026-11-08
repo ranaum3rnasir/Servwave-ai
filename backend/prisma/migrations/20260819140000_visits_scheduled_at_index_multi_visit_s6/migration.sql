@@ -1,0 +1,36 @@
+-- Multi-visit spec (md_files/specs/scheduling/2026-08-17-multi-visit.md) slice S6, decision D33:
+-- the schedule board's date window stops asking the `Job.scheduled_start` mirror and asks the
+-- job's VISIT set instead. This migration ships the index that repointing needs.
+--
+-- WHY IT IS NOT OPTIONAL. Before S6 the window was `jobs.scheduled_start BETWEEN ...`, served by
+-- the existing `jobs_scheduled_start_idx`. After S6 it is a relation filter that Prisma renders
+-- as `jobs.id IN (SELECT job_id FROM visits WHERE scheduled_at BETWEEN $1 AND $2 AND status <>
+-- 'CANCELLED')`, and `visits` carried indexes on (id), (job_id), (lead_id), (organization_id) and
+-- (organization_id, status) - nothing on `scheduled_at`. With no way to drive from the handful of
+-- in-window visit rows, the planner nested-loops `visits_job_id_idx` once per candidate job, so
+-- the cost became O(live jobs in the org) rather than O(jobs in the window): measured on staging
+-- (9,056 jobs) the same seven-day window went from 0.630 ms / 76 shared buffers to 26.078 ms /
+-- 26,553 shared buffers for the identical 81 rows - 41x the time, 350x the I/O, growing every
+-- month. `buildJobListWhere` is shared, so the board (limit 500, re-fired on every week change),
+-- the office Jobs list, its count query and the CSV export all pay it.
+--
+-- Leading column is `scheduled_at`, deliberately NOT (organization_id, scheduled_at): the
+-- subquery above carries no `organization_id` predicate at all - the tenant filter sits on the
+-- OUTER `jobs` row - so an org-leading composite could not drive the scan and the planner would
+-- fall straight back to the nested loop this index exists to remove.
+--
+-- Portable: vanilla postgres:16 runs it unchanged - no Supabase-only role, no auth.* reference.
+-- Idempotent: IF NOT EXISTS, so a second application against the shared staging DB is a no-op.
+--
+-- NOT CONCURRENTLY: Prisma's migrate runs each migration inside a transaction, and CREATE INDEX
+-- CONCURRENTLY cannot run in one. `visits` is a small table (one row per trip), so the ordinary
+-- build's brief write lock is the right trade here.
+--
+-- RLS: no table is created, renamed or replaced, so the `tenant_isolation` policy and the grants
+-- created by 20260703000100_tenant_rls stay attached to `visits` untouched. An index is invisible
+-- to row-level security.
+--
+-- No JSONB rewrite needed, checked rather than assumed: this migration renames nothing, so
+-- neither `user_table_preferences.config` (column layout only) nor `role_permissions.conditions`
+-- (OWN_JOB / OWN_WALKTHROUGH name relations and user ids) holds a string this touches.
+CREATE INDEX IF NOT EXISTS "visits_scheduled_at_idx" ON "visits"("scheduled_at");

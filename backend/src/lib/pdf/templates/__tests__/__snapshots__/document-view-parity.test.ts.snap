@@ -1,0 +1,8222 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`alpha-classic renders identically after the view-model extraction > for a document-level discount > alpha-classic — a document-level discount 1`] = `
+{
+  "content": [
+    {
+      "columns": [
+        {
+          "bold": true,
+          "color": "#E11D2E",
+          "fontSize": 24,
+          "text": "Northwind Services LLC",
+          "width": 200,
+        },
+        {
+          "alignment": "right",
+          "bold": true,
+          "color": "#666",
+          "fontSize": 32,
+          "text": "ESTIMATE",
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        20,
+      ],
+    },
+    {
+      "columns": [
+        {
+          "stack": [
+            "Northwind Services LLC",
+            "1001 Willow Avenue, Hoboken, NJ, 07030",
+            "info@northwind.example.com",
+            "https://northwind.example.com/",
+          ],
+        },
+        {
+          "columns": [
+            {
+              "text": "",
+              "width": "*",
+            },
+            {
+              "layout": "noBorders",
+              "table": {
+                "body": [
+                  [
+                    {
+                      "alignment": "right",
+                      "bold": true,
+                      "text": "Estimate #",
+                    },
+                    {
+                      "alignment": "right",
+                      "text": "E00001",
+                    },
+                  ],
+                  [
+                    {
+                      "alignment": "right",
+                      "bold": true,
+                      "text": "Date",
+                    },
+                    {
+                      "alignment": "right",
+                      "text": "Wed, Apr 22, 2026",
+                    },
+                  ],
+                  [
+                    {
+                      "alignment": "right",
+                      "bold": true,
+                      "text": "Total",
+                    },
+                    {
+                      "alignment": "right",
+                      "text": "$1,266.81",
+                    },
+                  ],
+                ],
+                "widths": [
+                  "auto",
+                  100,
+                ],
+              },
+              "width": "auto",
+            },
+          ],
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        30,
+      ],
+    },
+    {
+      "columns": [
+        {
+          "stack": [
+            {
+              "bold": true,
+              "margin": [
+                0,
+                0,
+                0,
+                4,
+              ],
+              "text": "Prepared For:",
+            },
+            "Jane Doe",
+            "123 Main Street
+Hoboken, NJ 07030",
+            "(555) 123-4567",
+            "jane.doe@example.com",
+          ],
+        },
+        {
+          "stack": [
+            {
+              "bold": true,
+              "margin": [
+                0,
+                0,
+                0,
+                4,
+              ],
+              "text": "Service Location:",
+            },
+            "Same as billing",
+          ],
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        20,
+      ],
+    },
+    {
+      "layout": {},
+      "table": {
+        "body": [
+          [
+            {
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "Description",
+            },
+            {
+              "alignment": "center",
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "QTY",
+            },
+            {
+              "alignment": "right",
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "Price",
+            },
+            {
+              "alignment": "right",
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "Amount",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 1",
+                },
+                {
+                  "color": "#666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "1",
+            },
+            {
+              "alignment": "right",
+              "text": "$499.00",
+            },
+            {
+              "alignment": "right",
+              "text": "$499.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 2",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "2",
+            },
+            {
+              "alignment": "right",
+              "text": "$225.00",
+            },
+            {
+              "alignment": "right",
+              "text": "$450.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 3",
+                },
+                {
+                  "color": "#666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "1",
+            },
+            {
+              "alignment": "right",
+              "text": "$99.00",
+            },
+            {
+              "alignment": "right",
+              "stack": [
+                {
+                  "color": "#999999",
+                  "decoration": "lineThrough",
+                  "fontSize": 9,
+                  "text": "$99.00",
+                },
+                {
+                  "text": "$89.10",
+                },
+              ],
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Additional Service",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "1",
+            },
+            {
+              "alignment": "right",
+              "text": "$150.00",
+            },
+            {
+              "alignment": "right",
+              "text": "$150.00",
+            },
+          ],
+        ],
+        "headerRows": 1,
+        "widths": [
+          "*",
+          40,
+          70,
+          70,
+        ],
+      },
+    },
+    {
+      "columns": [
+        {
+          "text": "",
+          "width": "*",
+        },
+        {
+          "layout": "noBorders",
+          "table": {
+            "body": [
+              [
+                {
+                  "alignment": "right",
+                  "text": "Sub total",
+                },
+                {
+                  "alignment": "right",
+                  "text": "$1,188.10",
+                },
+              ],
+              [
+                {
+                  "alignment": "right",
+                  "text": "Repeat customer",
+                },
+                {
+                  "alignment": "right",
+                  "text": "−$150.00",
+                },
+              ],
+              [
+                {
+                  "alignment": "right",
+                  "text": "Tax (6.625%)",
+                },
+                {
+                  "alignment": "right",
+                  "text": "$78.71",
+                },
+              ],
+              [
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "Total",
+                },
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "$1,266.81",
+                },
+              ],
+            ],
+            "widths": [
+              75,
+              75,
+            ],
+          },
+          "width": "auto",
+        },
+      ],
+      "margin": [
+        0,
+        10,
+        0,
+        20,
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        10,
+        0,
+        4,
+      ],
+      "text": "Terms:",
+    },
+    {
+      "style": "paragraph",
+      "text": "Sample terms.",
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "Notes:",
+    },
+    {
+      "ul": [
+        "Note A",
+        "Note B",
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "PAYMENT TERMS:",
+    },
+    {
+      "ul": [
+        "70% on acceptance",
+      ],
+    },
+    {
+      "alignment": "center",
+      "bold": true,
+      "fontSize": 18,
+      "margin": [
+        0,
+        30,
+        0,
+        0,
+      ],
+      "text": "Thank You For Your Business",
+    },
+  ],
+  "defaultStyle": {
+    "font": "Inter",
+    "fontSize": 10,
+  },
+  "images": {},
+  "pageMargins": [
+    40,
+    40,
+    40,
+    40,
+  ],
+  "pageSize": "LETTER",
+  "styles": {
+    "paragraph": {
+      "fontSize": 10,
+      "lineHeight": 1.3,
+    },
+  },
+}
+`;
+
+exports[`alpha-classic renders identically after the view-model extraction > for a draft, which reads the org's live copy > alpha-classic — a draft, which reads the org's live copy 1`] = `
+{
+  "content": [
+    {
+      "columns": [
+        {
+          "bold": true,
+          "color": "#E11D2E",
+          "fontSize": 24,
+          "text": "Northwind Services LLC",
+          "width": 200,
+        },
+        {
+          "alignment": "right",
+          "bold": true,
+          "color": "#666",
+          "fontSize": 32,
+          "text": "ESTIMATE",
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        20,
+      ],
+    },
+    {
+      "columns": [
+        {
+          "stack": [
+            "Northwind Services LLC",
+            "1001 Willow Avenue, Hoboken, NJ, 07030",
+            "info@northwind.example.com",
+            "https://northwind.example.com/",
+          ],
+        },
+        {
+          "columns": [
+            {
+              "text": "",
+              "width": "*",
+            },
+            {
+              "layout": "noBorders",
+              "table": {
+                "body": [
+                  [
+                    {
+                      "alignment": "right",
+                      "bold": true,
+                      "text": "Estimate #",
+                    },
+                    {
+                      "alignment": "right",
+                      "text": "E00001",
+                    },
+                  ],
+                  [
+                    {
+                      "alignment": "right",
+                      "bold": true,
+                      "text": "Date",
+                    },
+                    {
+                      "alignment": "right",
+                      "text": "Wed, Apr 22, 2026",
+                    },
+                  ],
+                  [
+                    {
+                      "alignment": "right",
+                      "bold": true,
+                      "text": "Total",
+                    },
+                    {
+                      "alignment": "right",
+                      "text": "$1,266.81",
+                    },
+                  ],
+                ],
+                "widths": [
+                  "auto",
+                  100,
+                ],
+              },
+              "width": "auto",
+            },
+          ],
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        30,
+      ],
+    },
+    {
+      "columns": [
+        {
+          "stack": [
+            {
+              "bold": true,
+              "margin": [
+                0,
+                0,
+                0,
+                4,
+              ],
+              "text": "Prepared For:",
+            },
+            "Jane Doe",
+            "123 Main Street
+Hoboken, NJ 07030",
+            "(555) 123-4567",
+            "jane.doe@example.com",
+          ],
+        },
+        {
+          "stack": [
+            {
+              "bold": true,
+              "margin": [
+                0,
+                0,
+                0,
+                4,
+              ],
+              "text": "Service Location:",
+            },
+            "Same as billing",
+          ],
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        20,
+      ],
+    },
+    {
+      "layout": {},
+      "table": {
+        "body": [
+          [
+            {
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "Description",
+            },
+            {
+              "alignment": "center",
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "QTY",
+            },
+            {
+              "alignment": "right",
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "Price",
+            },
+            {
+              "alignment": "right",
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "Amount",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 1",
+                },
+                {
+                  "color": "#666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "1",
+            },
+            {
+              "alignment": "right",
+              "text": "$499.00",
+            },
+            {
+              "alignment": "right",
+              "text": "$499.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 2",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "2",
+            },
+            {
+              "alignment": "right",
+              "text": "$225.00",
+            },
+            {
+              "alignment": "right",
+              "text": "$450.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 3",
+                },
+                {
+                  "color": "#666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "1",
+            },
+            {
+              "alignment": "right",
+              "text": "$99.00",
+            },
+            {
+              "alignment": "right",
+              "stack": [
+                {
+                  "color": "#999999",
+                  "decoration": "lineThrough",
+                  "fontSize": 9,
+                  "text": "$99.00",
+                },
+                {
+                  "text": "$89.10",
+                },
+              ],
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Additional Service",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "1",
+            },
+            {
+              "alignment": "right",
+              "text": "$150.00",
+            },
+            {
+              "alignment": "right",
+              "text": "$150.00",
+            },
+          ],
+        ],
+        "headerRows": 1,
+        "widths": [
+          "*",
+          40,
+          70,
+          70,
+        ],
+      },
+    },
+    {
+      "columns": [
+        {
+          "text": "",
+          "width": "*",
+        },
+        {
+          "layout": "noBorders",
+          "table": {
+            "body": [
+              [
+                {
+                  "alignment": "right",
+                  "text": "Sub total",
+                },
+                {
+                  "alignment": "right",
+                  "text": "$1,188.10",
+                },
+              ],
+              [
+                {
+                  "alignment": "right",
+                  "text": "Tax (6.625%)",
+                },
+                {
+                  "alignment": "right",
+                  "text": "$78.71",
+                },
+              ],
+              [
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "Total",
+                },
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "$1,266.81",
+                },
+              ],
+            ],
+            "widths": [
+              75,
+              75,
+            ],
+          },
+          "width": "auto",
+        },
+      ],
+      "margin": [
+        0,
+        10,
+        0,
+        20,
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        10,
+        0,
+        4,
+      ],
+      "text": "Terms:",
+    },
+    {
+      "style": "paragraph",
+      "text": "Sample terms.",
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "Notes:",
+    },
+    {
+      "ul": [
+        "Note A",
+        "Note B",
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "PAYMENT TERMS:",
+    },
+    {
+      "ul": [
+        "70% on acceptance",
+      ],
+    },
+    {
+      "alignment": "center",
+      "bold": true,
+      "fontSize": 18,
+      "margin": [
+        0,
+        30,
+        0,
+        0,
+      ],
+      "text": "Thank You For Your Business",
+    },
+  ],
+  "defaultStyle": {
+    "font": "Inter",
+    "fontSize": 10,
+  },
+  "images": {},
+  "pageMargins": [
+    40,
+    40,
+    40,
+    40,
+  ],
+  "pageSize": "LETTER",
+  "styles": {
+    "paragraph": {
+      "fontSize": 10,
+      "lineHeight": 1.3,
+    },
+  },
+}
+`;
+
+exports[`alpha-classic renders identically after the view-model extraction > for a plain estimate with no scopes and no discounts > alpha-classic — a plain estimate with no scopes and no discounts 1`] = `
+{
+  "content": [
+    {
+      "columns": [
+        {
+          "bold": true,
+          "color": "#E11D2E",
+          "fontSize": 24,
+          "text": "Northwind Services LLC",
+          "width": 200,
+        },
+        {
+          "alignment": "right",
+          "bold": true,
+          "color": "#666",
+          "fontSize": 32,
+          "text": "ESTIMATE",
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        20,
+      ],
+    },
+    {
+      "columns": [
+        {
+          "stack": [
+            "Northwind Services LLC",
+            "1001 Willow Avenue, Hoboken, NJ, 07030",
+            "info@northwind.example.com",
+            "https://northwind.example.com/",
+          ],
+        },
+        {
+          "columns": [
+            {
+              "text": "",
+              "width": "*",
+            },
+            {
+              "layout": "noBorders",
+              "table": {
+                "body": [
+                  [
+                    {
+                      "alignment": "right",
+                      "bold": true,
+                      "text": "Estimate #",
+                    },
+                    {
+                      "alignment": "right",
+                      "text": "E00001",
+                    },
+                  ],
+                  [
+                    {
+                      "alignment": "right",
+                      "bold": true,
+                      "text": "Date",
+                    },
+                    {
+                      "alignment": "right",
+                      "text": "Wed, Apr 22, 2026",
+                    },
+                  ],
+                  [
+                    {
+                      "alignment": "right",
+                      "bold": true,
+                      "text": "Total",
+                    },
+                    {
+                      "alignment": "right",
+                      "text": "$1,266.81",
+                    },
+                  ],
+                ],
+                "widths": [
+                  "auto",
+                  100,
+                ],
+              },
+              "width": "auto",
+            },
+          ],
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        30,
+      ],
+    },
+    {
+      "columns": [
+        {
+          "stack": [
+            {
+              "bold": true,
+              "margin": [
+                0,
+                0,
+                0,
+                4,
+              ],
+              "text": "Prepared For:",
+            },
+            "Jane Doe",
+            "123 Main Street
+Hoboken, NJ 07030",
+            "(555) 123-4567",
+            "jane.doe@example.com",
+          ],
+        },
+        {
+          "stack": [
+            {
+              "bold": true,
+              "margin": [
+                0,
+                0,
+                0,
+                4,
+              ],
+              "text": "Service Location:",
+            },
+            "Same as billing",
+          ],
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        20,
+      ],
+    },
+    {
+      "layout": {},
+      "table": {
+        "body": [
+          [
+            {
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "Description",
+            },
+            {
+              "alignment": "center",
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "QTY",
+            },
+            {
+              "alignment": "right",
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "Price",
+            },
+            {
+              "alignment": "right",
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "Amount",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 1",
+                },
+                {
+                  "color": "#666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "1",
+            },
+            {
+              "alignment": "right",
+              "text": "$499.00",
+            },
+            {
+              "alignment": "right",
+              "text": "$499.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 2",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "2",
+            },
+            {
+              "alignment": "right",
+              "text": "$225.00",
+            },
+            {
+              "alignment": "right",
+              "text": "$450.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 3",
+                },
+                {
+                  "color": "#666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "1",
+            },
+            {
+              "alignment": "right",
+              "text": "$99.00",
+            },
+            {
+              "alignment": "right",
+              "stack": [
+                {
+                  "color": "#999999",
+                  "decoration": "lineThrough",
+                  "fontSize": 9,
+                  "text": "$99.00",
+                },
+                {
+                  "text": "$89.10",
+                },
+              ],
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Additional Service",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "1",
+            },
+            {
+              "alignment": "right",
+              "text": "$150.00",
+            },
+            {
+              "alignment": "right",
+              "text": "$150.00",
+            },
+          ],
+        ],
+        "headerRows": 1,
+        "widths": [
+          "*",
+          40,
+          70,
+          70,
+        ],
+      },
+    },
+    {
+      "columns": [
+        {
+          "text": "",
+          "width": "*",
+        },
+        {
+          "layout": "noBorders",
+          "table": {
+            "body": [
+              [
+                {
+                  "alignment": "right",
+                  "text": "Sub total",
+                },
+                {
+                  "alignment": "right",
+                  "text": "$1,188.10",
+                },
+              ],
+              [
+                {
+                  "alignment": "right",
+                  "text": "Tax (6.625%)",
+                },
+                {
+                  "alignment": "right",
+                  "text": "$78.71",
+                },
+              ],
+              [
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "Total",
+                },
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "$1,266.81",
+                },
+              ],
+            ],
+            "widths": [
+              75,
+              75,
+            ],
+          },
+          "width": "auto",
+        },
+      ],
+      "margin": [
+        0,
+        10,
+        0,
+        20,
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        10,
+        0,
+        4,
+      ],
+      "text": "Terms:",
+    },
+    {
+      "style": "paragraph",
+      "text": "Sample terms.",
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "Notes:",
+    },
+    {
+      "ul": [
+        "Note A",
+        "Note B",
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "PAYMENT TERMS:",
+    },
+    {
+      "ul": [
+        "70% on acceptance",
+      ],
+    },
+    {
+      "alignment": "center",
+      "bold": true,
+      "fontSize": 18,
+      "margin": [
+        0,
+        30,
+        0,
+        0,
+      ],
+      "text": "Thank You For Your Business",
+    },
+  ],
+  "defaultStyle": {
+    "font": "Inter",
+    "fontSize": 10,
+  },
+  "images": {},
+  "pageMargins": [
+    40,
+    40,
+    40,
+    40,
+  ],
+  "pageSize": "LETTER",
+  "styles": {
+    "paragraph": {
+      "fontSize": 10,
+      "lineHeight": 1.3,
+    },
+  },
+}
+`;
+
+exports[`alpha-classic renders identically after the view-model extraction > for a priced scope block > alpha-classic — a priced scope block 1`] = `
+{
+  "content": [
+    {
+      "columns": [
+        {
+          "bold": true,
+          "color": "#E11D2E",
+          "fontSize": 24,
+          "text": "Northwind Services LLC",
+          "width": 200,
+        },
+        {
+          "alignment": "right",
+          "bold": true,
+          "color": "#666",
+          "fontSize": 32,
+          "text": "ESTIMATE",
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        20,
+      ],
+    },
+    {
+      "columns": [
+        {
+          "stack": [
+            "Northwind Services LLC",
+            "1001 Willow Avenue, Hoboken, NJ, 07030",
+            "info@northwind.example.com",
+            "https://northwind.example.com/",
+          ],
+        },
+        {
+          "columns": [
+            {
+              "text": "",
+              "width": "*",
+            },
+            {
+              "layout": "noBorders",
+              "table": {
+                "body": [
+                  [
+                    {
+                      "alignment": "right",
+                      "bold": true,
+                      "text": "Estimate #",
+                    },
+                    {
+                      "alignment": "right",
+                      "text": "E00001",
+                    },
+                  ],
+                  [
+                    {
+                      "alignment": "right",
+                      "bold": true,
+                      "text": "Date",
+                    },
+                    {
+                      "alignment": "right",
+                      "text": "Wed, Apr 22, 2026",
+                    },
+                  ],
+                  [
+                    {
+                      "alignment": "right",
+                      "bold": true,
+                      "text": "Total",
+                    },
+                    {
+                      "alignment": "right",
+                      "text": "$1,266.81",
+                    },
+                  ],
+                ],
+                "widths": [
+                  "auto",
+                  100,
+                ],
+              },
+              "width": "auto",
+            },
+          ],
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        30,
+      ],
+    },
+    {
+      "columns": [
+        {
+          "stack": [
+            {
+              "bold": true,
+              "margin": [
+                0,
+                0,
+                0,
+                4,
+              ],
+              "text": "Prepared For:",
+            },
+            "Jane Doe",
+            "123 Main Street
+Hoboken, NJ 07030",
+            "(555) 123-4567",
+            "jane.doe@example.com",
+          ],
+        },
+        {
+          "stack": [
+            {
+              "bold": true,
+              "margin": [
+                0,
+                0,
+                0,
+                4,
+              ],
+              "text": "Service Location:",
+            },
+            "Same as billing",
+          ],
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        20,
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        0,
+        0,
+        4,
+      ],
+      "text": "Scope of Work:",
+    },
+    {
+      "layout": {},
+      "table": {
+        "body": [
+          [
+            {
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "Description",
+            },
+            {
+              "alignment": "right",
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "Amount",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Install 3 commercial storefront doors",
+                },
+                {
+                  "color": "#666",
+                  "fontSize": 9,
+                  "text": "Remove existing units, install new frames and hardware.",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "text": "$2,000.00",
+            },
+          ],
+        ],
+        "headerRows": 1,
+        "widths": [
+          "*",
+          70,
+        ],
+      },
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "Line Items:",
+    },
+    {
+      "layout": {},
+      "table": {
+        "body": [
+          [
+            {
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "Description",
+            },
+            {
+              "alignment": "center",
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "QTY",
+            },
+            {
+              "alignment": "right",
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "Price",
+            },
+            {
+              "alignment": "right",
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "Amount",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 1",
+                },
+                {
+                  "color": "#666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "1",
+            },
+            {
+              "alignment": "right",
+              "text": "$499.00",
+            },
+            {
+              "alignment": "right",
+              "text": "$499.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 2",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "2",
+            },
+            {
+              "alignment": "right",
+              "text": "$225.00",
+            },
+            {
+              "alignment": "right",
+              "text": "$450.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 3",
+                },
+                {
+                  "color": "#666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "1",
+            },
+            {
+              "alignment": "right",
+              "text": "$99.00",
+            },
+            {
+              "alignment": "right",
+              "stack": [
+                {
+                  "color": "#999999",
+                  "decoration": "lineThrough",
+                  "fontSize": 9,
+                  "text": "$99.00",
+                },
+                {
+                  "text": "$89.10",
+                },
+              ],
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Additional Service",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "1",
+            },
+            {
+              "alignment": "right",
+              "text": "$150.00",
+            },
+            {
+              "alignment": "right",
+              "text": "$150.00",
+            },
+          ],
+        ],
+        "headerRows": 1,
+        "widths": [
+          "*",
+          40,
+          70,
+          70,
+        ],
+      },
+    },
+    {
+      "columns": [
+        {
+          "text": "",
+          "width": "*",
+        },
+        {
+          "layout": "noBorders",
+          "table": {
+            "body": [
+              [
+                {
+                  "alignment": "right",
+                  "text": "Sub total",
+                },
+                {
+                  "alignment": "right",
+                  "text": "$1,188.10",
+                },
+              ],
+              [
+                {
+                  "alignment": "right",
+                  "text": "Tax (6.625%)",
+                },
+                {
+                  "alignment": "right",
+                  "text": "$78.71",
+                },
+              ],
+              [
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "Total",
+                },
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "$1,266.81",
+                },
+              ],
+            ],
+            "widths": [
+              75,
+              75,
+            ],
+          },
+          "width": "auto",
+        },
+      ],
+      "margin": [
+        0,
+        10,
+        0,
+        20,
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        10,
+        0,
+        4,
+      ],
+      "text": "Terms:",
+    },
+    {
+      "style": "paragraph",
+      "text": "Sample terms.",
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "Notes:",
+    },
+    {
+      "ul": [
+        "Note A",
+        "Note B",
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "PAYMENT TERMS:",
+    },
+    {
+      "ul": [
+        "70% on acceptance",
+      ],
+    },
+    {
+      "alignment": "center",
+      "bold": true,
+      "fontSize": 18,
+      "margin": [
+        0,
+        30,
+        0,
+        0,
+      ],
+      "text": "Thank You For Your Business",
+    },
+  ],
+  "defaultStyle": {
+    "font": "Inter",
+    "fontSize": 10,
+  },
+  "images": {},
+  "pageMargins": [
+    40,
+    40,
+    40,
+    40,
+  ],
+  "pageSize": "LETTER",
+  "styles": {
+    "paragraph": {
+      "fontSize": 10,
+      "lineHeight": 1.3,
+    },
+  },
+}
+`;
+
+exports[`alpha-classic renders identically after the view-model extraction > for a sent estimate reading its own snapshot > alpha-classic — a sent estimate reading its own snapshot 1`] = `
+{
+  "content": [
+    {
+      "columns": [
+        {
+          "bold": true,
+          "color": "#E11D2E",
+          "fontSize": 24,
+          "text": "Northwind Services LLC",
+          "width": 200,
+        },
+        {
+          "alignment": "right",
+          "bold": true,
+          "color": "#666",
+          "fontSize": 32,
+          "text": "ESTIMATE",
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        20,
+      ],
+    },
+    {
+      "columns": [
+        {
+          "stack": [
+            "Northwind Services LLC",
+            "1001 Willow Avenue, Hoboken, NJ, 07030",
+            "info@northwind.example.com",
+            "https://northwind.example.com/",
+          ],
+        },
+        {
+          "columns": [
+            {
+              "text": "",
+              "width": "*",
+            },
+            {
+              "layout": "noBorders",
+              "table": {
+                "body": [
+                  [
+                    {
+                      "alignment": "right",
+                      "bold": true,
+                      "text": "Estimate #",
+                    },
+                    {
+                      "alignment": "right",
+                      "text": "E00001",
+                    },
+                  ],
+                  [
+                    {
+                      "alignment": "right",
+                      "bold": true,
+                      "text": "Date",
+                    },
+                    {
+                      "alignment": "right",
+                      "text": "Wed, Apr 22, 2026",
+                    },
+                  ],
+                  [
+                    {
+                      "alignment": "right",
+                      "bold": true,
+                      "text": "Total",
+                    },
+                    {
+                      "alignment": "right",
+                      "text": "$1,266.81",
+                    },
+                  ],
+                ],
+                "widths": [
+                  "auto",
+                  100,
+                ],
+              },
+              "width": "auto",
+            },
+          ],
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        30,
+      ],
+    },
+    {
+      "columns": [
+        {
+          "stack": [
+            {
+              "bold": true,
+              "margin": [
+                0,
+                0,
+                0,
+                4,
+              ],
+              "text": "Prepared For:",
+            },
+            "Jane Doe",
+            "123 Main Street
+Hoboken, NJ 07030",
+            "(555) 123-4567",
+            "jane.doe@example.com",
+          ],
+        },
+        {
+          "stack": [
+            {
+              "bold": true,
+              "margin": [
+                0,
+                0,
+                0,
+                4,
+              ],
+              "text": "Service Location:",
+            },
+            "Same as billing",
+          ],
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        20,
+      ],
+    },
+    {
+      "layout": {},
+      "table": {
+        "body": [
+          [
+            {
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "Description",
+            },
+            {
+              "alignment": "center",
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "QTY",
+            },
+            {
+              "alignment": "right",
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "Price",
+            },
+            {
+              "alignment": "right",
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "Amount",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 1",
+                },
+                {
+                  "color": "#666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "1",
+            },
+            {
+              "alignment": "right",
+              "text": "$499.00",
+            },
+            {
+              "alignment": "right",
+              "text": "$499.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 2",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "2",
+            },
+            {
+              "alignment": "right",
+              "text": "$225.00",
+            },
+            {
+              "alignment": "right",
+              "text": "$450.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 3",
+                },
+                {
+                  "color": "#666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "1",
+            },
+            {
+              "alignment": "right",
+              "text": "$99.00",
+            },
+            {
+              "alignment": "right",
+              "stack": [
+                {
+                  "color": "#999999",
+                  "decoration": "lineThrough",
+                  "fontSize": 9,
+                  "text": "$99.00",
+                },
+                {
+                  "text": "$89.10",
+                },
+              ],
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Additional Service",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "1",
+            },
+            {
+              "alignment": "right",
+              "text": "$150.00",
+            },
+            {
+              "alignment": "right",
+              "text": "$150.00",
+            },
+          ],
+        ],
+        "headerRows": 1,
+        "widths": [
+          "*",
+          40,
+          70,
+          70,
+        ],
+      },
+    },
+    {
+      "columns": [
+        {
+          "text": "",
+          "width": "*",
+        },
+        {
+          "layout": "noBorders",
+          "table": {
+            "body": [
+              [
+                {
+                  "alignment": "right",
+                  "text": "Sub total",
+                },
+                {
+                  "alignment": "right",
+                  "text": "$1,188.10",
+                },
+              ],
+              [
+                {
+                  "alignment": "right",
+                  "text": "Tax (6.625%)",
+                },
+                {
+                  "alignment": "right",
+                  "text": "$78.71",
+                },
+              ],
+              [
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "Total",
+                },
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "$1,266.81",
+                },
+              ],
+            ],
+            "widths": [
+              75,
+              75,
+            ],
+          },
+          "width": "auto",
+        },
+      ],
+      "margin": [
+        0,
+        10,
+        0,
+        20,
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        10,
+        0,
+        4,
+      ],
+      "text": "Terms:",
+    },
+    {
+      "style": "paragraph",
+      "text": "Terms as sent.",
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "Notes:",
+    },
+    {
+      "style": "paragraph",
+      "text": "Notes as sent.",
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "PAYMENT TERMS:",
+    },
+    {
+      "style": "paragraph",
+      "text": "Payment terms as sent.",
+    },
+    {
+      "alignment": "center",
+      "bold": true,
+      "fontSize": 18,
+      "margin": [
+        0,
+        30,
+        0,
+        0,
+      ],
+      "text": "Thank You For Your Business",
+    },
+  ],
+  "defaultStyle": {
+    "font": "Inter",
+    "fontSize": 10,
+  },
+  "images": {},
+  "pageMargins": [
+    40,
+    40,
+    40,
+    40,
+  ],
+  "pageSize": "LETTER",
+  "styles": {
+    "paragraph": {
+      "fontSize": 10,
+      "lineHeight": 1.3,
+    },
+  },
+}
+`;
+
+exports[`alpha-classic renders identically after the view-model extraction > for a signature > alpha-classic — a signature 1`] = `
+{
+  "content": [
+    {
+      "columns": [
+        {
+          "bold": true,
+          "color": "#E11D2E",
+          "fontSize": 24,
+          "text": "Northwind Services LLC",
+          "width": 200,
+        },
+        {
+          "alignment": "right",
+          "bold": true,
+          "color": "#666",
+          "fontSize": 32,
+          "text": "ESTIMATE",
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        20,
+      ],
+    },
+    {
+      "columns": [
+        {
+          "stack": [
+            "Northwind Services LLC",
+            "1001 Willow Avenue, Hoboken, NJ, 07030",
+            "info@northwind.example.com",
+            "https://northwind.example.com/",
+          ],
+        },
+        {
+          "columns": [
+            {
+              "text": "",
+              "width": "*",
+            },
+            {
+              "layout": "noBorders",
+              "table": {
+                "body": [
+                  [
+                    {
+                      "alignment": "right",
+                      "bold": true,
+                      "text": "Estimate #",
+                    },
+                    {
+                      "alignment": "right",
+                      "text": "E00001",
+                    },
+                  ],
+                  [
+                    {
+                      "alignment": "right",
+                      "bold": true,
+                      "text": "Date",
+                    },
+                    {
+                      "alignment": "right",
+                      "text": "Wed, Apr 22, 2026",
+                    },
+                  ],
+                  [
+                    {
+                      "alignment": "right",
+                      "bold": true,
+                      "text": "Total",
+                    },
+                    {
+                      "alignment": "right",
+                      "text": "$1,266.81",
+                    },
+                  ],
+                ],
+                "widths": [
+                  "auto",
+                  100,
+                ],
+              },
+              "width": "auto",
+            },
+          ],
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        30,
+      ],
+    },
+    {
+      "columns": [
+        {
+          "stack": [
+            {
+              "bold": true,
+              "margin": [
+                0,
+                0,
+                0,
+                4,
+              ],
+              "text": "Prepared For:",
+            },
+            "Jane Doe",
+            "123 Main Street
+Hoboken, NJ 07030",
+            "(555) 123-4567",
+            "jane.doe@example.com",
+          ],
+        },
+        {
+          "stack": [
+            {
+              "bold": true,
+              "margin": [
+                0,
+                0,
+                0,
+                4,
+              ],
+              "text": "Service Location:",
+            },
+            "Same as billing",
+          ],
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        20,
+      ],
+    },
+    {
+      "layout": {},
+      "table": {
+        "body": [
+          [
+            {
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "Description",
+            },
+            {
+              "alignment": "center",
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "QTY",
+            },
+            {
+              "alignment": "right",
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "Price",
+            },
+            {
+              "alignment": "right",
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "Amount",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 1",
+                },
+                {
+                  "color": "#666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "1",
+            },
+            {
+              "alignment": "right",
+              "text": "$499.00",
+            },
+            {
+              "alignment": "right",
+              "text": "$499.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 2",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "2",
+            },
+            {
+              "alignment": "right",
+              "text": "$225.00",
+            },
+            {
+              "alignment": "right",
+              "text": "$450.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 3",
+                },
+                {
+                  "color": "#666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "1",
+            },
+            {
+              "alignment": "right",
+              "text": "$99.00",
+            },
+            {
+              "alignment": "right",
+              "stack": [
+                {
+                  "color": "#999999",
+                  "decoration": "lineThrough",
+                  "fontSize": 9,
+                  "text": "$99.00",
+                },
+                {
+                  "text": "$89.10",
+                },
+              ],
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Additional Service",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "1",
+            },
+            {
+              "alignment": "right",
+              "text": "$150.00",
+            },
+            {
+              "alignment": "right",
+              "text": "$150.00",
+            },
+          ],
+        ],
+        "headerRows": 1,
+        "widths": [
+          "*",
+          40,
+          70,
+          70,
+        ],
+      },
+    },
+    {
+      "columns": [
+        {
+          "text": "",
+          "width": "*",
+        },
+        {
+          "layout": "noBorders",
+          "table": {
+            "body": [
+              [
+                {
+                  "alignment": "right",
+                  "text": "Sub total",
+                },
+                {
+                  "alignment": "right",
+                  "text": "$1,188.10",
+                },
+              ],
+              [
+                {
+                  "alignment": "right",
+                  "text": "Tax (6.625%)",
+                },
+                {
+                  "alignment": "right",
+                  "text": "$78.71",
+                },
+              ],
+              [
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "Total",
+                },
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "$1,266.81",
+                },
+              ],
+            ],
+            "widths": [
+              75,
+              75,
+            ],
+          },
+          "width": "auto",
+        },
+      ],
+      "margin": [
+        0,
+        10,
+        0,
+        20,
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        10,
+        0,
+        4,
+      ],
+      "text": "Terms:",
+    },
+    {
+      "style": "paragraph",
+      "text": "Sample terms.",
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "Notes:",
+    },
+    {
+      "ul": [
+        "Note A",
+        "Note B",
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "PAYMENT TERMS:",
+    },
+    {
+      "ul": [
+        "70% on acceptance",
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        20,
+        0,
+        8,
+      ],
+      "text": "Customer Signature:",
+    },
+    {
+      "height": 60,
+      "image": "data:image/png;base64,iVBORw0KGgo=",
+      "width": 150,
+    },
+    {
+      "color": "#666",
+      "fontSize": 9,
+      "text": "Approved on Fri, Sep 4, 2026",
+    },
+    {
+      "alignment": "center",
+      "bold": true,
+      "fontSize": 18,
+      "margin": [
+        0,
+        30,
+        0,
+        0,
+      ],
+      "text": "Thank You For Your Business",
+    },
+  ],
+  "defaultStyle": {
+    "font": "Inter",
+    "fontSize": 10,
+  },
+  "images": {},
+  "pageMargins": [
+    40,
+    40,
+    40,
+    40,
+  ],
+  "pageSize": "LETTER",
+  "styles": {
+    "paragraph": {
+      "fontSize": 10,
+      "lineHeight": 1.3,
+    },
+  },
+}
+`;
+
+exports[`alpha-classic renders identically after the view-model extraction > for an unnamed document-level discount > alpha-classic — an unnamed document-level discount 1`] = `
+{
+  "content": [
+    {
+      "columns": [
+        {
+          "bold": true,
+          "color": "#E11D2E",
+          "fontSize": 24,
+          "text": "Northwind Services LLC",
+          "width": 200,
+        },
+        {
+          "alignment": "right",
+          "bold": true,
+          "color": "#666",
+          "fontSize": 32,
+          "text": "ESTIMATE",
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        20,
+      ],
+    },
+    {
+      "columns": [
+        {
+          "stack": [
+            "Northwind Services LLC",
+            "1001 Willow Avenue, Hoboken, NJ, 07030",
+            "info@northwind.example.com",
+            "https://northwind.example.com/",
+          ],
+        },
+        {
+          "columns": [
+            {
+              "text": "",
+              "width": "*",
+            },
+            {
+              "layout": "noBorders",
+              "table": {
+                "body": [
+                  [
+                    {
+                      "alignment": "right",
+                      "bold": true,
+                      "text": "Estimate #",
+                    },
+                    {
+                      "alignment": "right",
+                      "text": "E00001",
+                    },
+                  ],
+                  [
+                    {
+                      "alignment": "right",
+                      "bold": true,
+                      "text": "Date",
+                    },
+                    {
+                      "alignment": "right",
+                      "text": "Wed, Apr 22, 2026",
+                    },
+                  ],
+                  [
+                    {
+                      "alignment": "right",
+                      "bold": true,
+                      "text": "Total",
+                    },
+                    {
+                      "alignment": "right",
+                      "text": "$1,266.81",
+                    },
+                  ],
+                ],
+                "widths": [
+                  "auto",
+                  100,
+                ],
+              },
+              "width": "auto",
+            },
+          ],
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        30,
+      ],
+    },
+    {
+      "columns": [
+        {
+          "stack": [
+            {
+              "bold": true,
+              "margin": [
+                0,
+                0,
+                0,
+                4,
+              ],
+              "text": "Prepared For:",
+            },
+            "Jane Doe",
+            "123 Main Street
+Hoboken, NJ 07030",
+            "(555) 123-4567",
+            "jane.doe@example.com",
+          ],
+        },
+        {
+          "stack": [
+            {
+              "bold": true,
+              "margin": [
+                0,
+                0,
+                0,
+                4,
+              ],
+              "text": "Service Location:",
+            },
+            "Same as billing",
+          ],
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        20,
+      ],
+    },
+    {
+      "layout": {},
+      "table": {
+        "body": [
+          [
+            {
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "Description",
+            },
+            {
+              "alignment": "center",
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "QTY",
+            },
+            {
+              "alignment": "right",
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "Price",
+            },
+            {
+              "alignment": "right",
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "Amount",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 1",
+                },
+                {
+                  "color": "#666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "1",
+            },
+            {
+              "alignment": "right",
+              "text": "$499.00",
+            },
+            {
+              "alignment": "right",
+              "text": "$499.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 2",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "2",
+            },
+            {
+              "alignment": "right",
+              "text": "$225.00",
+            },
+            {
+              "alignment": "right",
+              "text": "$450.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 3",
+                },
+                {
+                  "color": "#666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "1",
+            },
+            {
+              "alignment": "right",
+              "text": "$99.00",
+            },
+            {
+              "alignment": "right",
+              "stack": [
+                {
+                  "color": "#999999",
+                  "decoration": "lineThrough",
+                  "fontSize": 9,
+                  "text": "$99.00",
+                },
+                {
+                  "text": "$89.10",
+                },
+              ],
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Additional Service",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "1",
+            },
+            {
+              "alignment": "right",
+              "text": "$150.00",
+            },
+            {
+              "alignment": "right",
+              "text": "$150.00",
+            },
+          ],
+        ],
+        "headerRows": 1,
+        "widths": [
+          "*",
+          40,
+          70,
+          70,
+        ],
+      },
+    },
+    {
+      "columns": [
+        {
+          "text": "",
+          "width": "*",
+        },
+        {
+          "layout": "noBorders",
+          "table": {
+            "body": [
+              [
+                {
+                  "alignment": "right",
+                  "text": "Sub total",
+                },
+                {
+                  "alignment": "right",
+                  "text": "$1,188.10",
+                },
+              ],
+              [
+                {
+                  "alignment": "right",
+                  "text": "Discount",
+                },
+                {
+                  "alignment": "right",
+                  "text": "−$150.00",
+                },
+              ],
+              [
+                {
+                  "alignment": "right",
+                  "text": "Tax (6.625%)",
+                },
+                {
+                  "alignment": "right",
+                  "text": "$78.71",
+                },
+              ],
+              [
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "Total",
+                },
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "$1,266.81",
+                },
+              ],
+            ],
+            "widths": [
+              75,
+              75,
+            ],
+          },
+          "width": "auto",
+        },
+      ],
+      "margin": [
+        0,
+        10,
+        0,
+        20,
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        10,
+        0,
+        4,
+      ],
+      "text": "Terms:",
+    },
+    {
+      "style": "paragraph",
+      "text": "Sample terms.",
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "Notes:",
+    },
+    {
+      "ul": [
+        "Note A",
+        "Note B",
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "PAYMENT TERMS:",
+    },
+    {
+      "ul": [
+        "70% on acceptance",
+      ],
+    },
+    {
+      "alignment": "center",
+      "bold": true,
+      "fontSize": 18,
+      "margin": [
+        0,
+        30,
+        0,
+        0,
+      ],
+      "text": "Thank You For Your Business",
+    },
+  ],
+  "defaultStyle": {
+    "font": "Inter",
+    "fontSize": 10,
+  },
+  "images": {},
+  "pageMargins": [
+    40,
+    40,
+    40,
+    40,
+  ],
+  "pageSize": "LETTER",
+  "styles": {
+    "paragraph": {
+      "fontSize": 10,
+      "lineHeight": 1.3,
+    },
+  },
+}
+`;
+
+exports[`alpha-classic renders identically after the view-model extraction > for an unpriced scope block > alpha-classic — an unpriced scope block 1`] = `
+{
+  "content": [
+    {
+      "columns": [
+        {
+          "bold": true,
+          "color": "#E11D2E",
+          "fontSize": 24,
+          "text": "Northwind Services LLC",
+          "width": 200,
+        },
+        {
+          "alignment": "right",
+          "bold": true,
+          "color": "#666",
+          "fontSize": 32,
+          "text": "ESTIMATE",
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        20,
+      ],
+    },
+    {
+      "columns": [
+        {
+          "stack": [
+            "Northwind Services LLC",
+            "1001 Willow Avenue, Hoboken, NJ, 07030",
+            "info@northwind.example.com",
+            "https://northwind.example.com/",
+          ],
+        },
+        {
+          "columns": [
+            {
+              "text": "",
+              "width": "*",
+            },
+            {
+              "layout": "noBorders",
+              "table": {
+                "body": [
+                  [
+                    {
+                      "alignment": "right",
+                      "bold": true,
+                      "text": "Estimate #",
+                    },
+                    {
+                      "alignment": "right",
+                      "text": "E00001",
+                    },
+                  ],
+                  [
+                    {
+                      "alignment": "right",
+                      "bold": true,
+                      "text": "Date",
+                    },
+                    {
+                      "alignment": "right",
+                      "text": "Wed, Apr 22, 2026",
+                    },
+                  ],
+                  [
+                    {
+                      "alignment": "right",
+                      "bold": true,
+                      "text": "Total",
+                    },
+                    {
+                      "alignment": "right",
+                      "text": "$1,266.81",
+                    },
+                  ],
+                ],
+                "widths": [
+                  "auto",
+                  100,
+                ],
+              },
+              "width": "auto",
+            },
+          ],
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        30,
+      ],
+    },
+    {
+      "columns": [
+        {
+          "stack": [
+            {
+              "bold": true,
+              "margin": [
+                0,
+                0,
+                0,
+                4,
+              ],
+              "text": "Prepared For:",
+            },
+            "Jane Doe",
+            "123 Main Street
+Hoboken, NJ 07030",
+            "(555) 123-4567",
+            "jane.doe@example.com",
+          ],
+        },
+        {
+          "stack": [
+            {
+              "bold": true,
+              "margin": [
+                0,
+                0,
+                0,
+                4,
+              ],
+              "text": "Service Location:",
+            },
+            "Same as billing",
+          ],
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        20,
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        0,
+        0,
+        4,
+      ],
+      "text": "Scope of Work:",
+    },
+    {
+      "layout": {},
+      "table": {
+        "body": [
+          [
+            {
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "Description",
+            },
+            {
+              "alignment": "right",
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "Amount",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Install 3 commercial storefront doors",
+                },
+                {
+                  "color": "#666",
+                  "fontSize": 9,
+                  "text": "Remove existing units, install new frames and hardware.",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "text": "",
+            },
+          ],
+        ],
+        "headerRows": 1,
+        "widths": [
+          "*",
+          70,
+        ],
+      },
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "Line Items:",
+    },
+    {
+      "layout": {},
+      "table": {
+        "body": [
+          [
+            {
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "Description",
+            },
+            {
+              "alignment": "center",
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "QTY",
+            },
+            {
+              "alignment": "right",
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "Price",
+            },
+            {
+              "alignment": "right",
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "Amount",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 1",
+                },
+                {
+                  "color": "#666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "1",
+            },
+            {
+              "alignment": "right",
+              "text": "$499.00",
+            },
+            {
+              "alignment": "right",
+              "text": "$499.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 2",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "2",
+            },
+            {
+              "alignment": "right",
+              "text": "$225.00",
+            },
+            {
+              "alignment": "right",
+              "text": "$450.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 3",
+                },
+                {
+                  "color": "#666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "1",
+            },
+            {
+              "alignment": "right",
+              "text": "$99.00",
+            },
+            {
+              "alignment": "right",
+              "stack": [
+                {
+                  "color": "#999999",
+                  "decoration": "lineThrough",
+                  "fontSize": 9,
+                  "text": "$99.00",
+                },
+                {
+                  "text": "$89.10",
+                },
+              ],
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Additional Service",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "1",
+            },
+            {
+              "alignment": "right",
+              "text": "$150.00",
+            },
+            {
+              "alignment": "right",
+              "text": "$150.00",
+            },
+          ],
+        ],
+        "headerRows": 1,
+        "widths": [
+          "*",
+          40,
+          70,
+          70,
+        ],
+      },
+    },
+    {
+      "columns": [
+        {
+          "text": "",
+          "width": "*",
+        },
+        {
+          "layout": "noBorders",
+          "table": {
+            "body": [
+              [
+                {
+                  "alignment": "right",
+                  "text": "Sub total",
+                },
+                {
+                  "alignment": "right",
+                  "text": "$1,188.10",
+                },
+              ],
+              [
+                {
+                  "alignment": "right",
+                  "text": "Tax (6.625%)",
+                },
+                {
+                  "alignment": "right",
+                  "text": "$78.71",
+                },
+              ],
+              [
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "Total",
+                },
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "$1,266.81",
+                },
+              ],
+            ],
+            "widths": [
+              75,
+              75,
+            ],
+          },
+          "width": "auto",
+        },
+      ],
+      "margin": [
+        0,
+        10,
+        0,
+        20,
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        10,
+        0,
+        4,
+      ],
+      "text": "Terms:",
+    },
+    {
+      "style": "paragraph",
+      "text": "Sample terms.",
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "Notes:",
+    },
+    {
+      "ul": [
+        "Note A",
+        "Note B",
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "PAYMENT TERMS:",
+    },
+    {
+      "ul": [
+        "70% on acceptance",
+      ],
+    },
+    {
+      "alignment": "center",
+      "bold": true,
+      "fontSize": 18,
+      "margin": [
+        0,
+        30,
+        0,
+        0,
+      ],
+      "text": "Thank You For Your Business",
+    },
+  ],
+  "defaultStyle": {
+    "font": "Inter",
+    "fontSize": 10,
+  },
+  "images": {},
+  "pageMargins": [
+    40,
+    40,
+    40,
+    40,
+  ],
+  "pageSize": "LETTER",
+  "styles": {
+    "paragraph": {
+      "fontSize": 10,
+      "lineHeight": 1.3,
+    },
+  },
+}
+`;
+
+exports[`alpha-classic renders identically after the view-model extraction > for priced and unpriced scopes together > alpha-classic — priced and unpriced scopes together 1`] = `
+{
+  "content": [
+    {
+      "columns": [
+        {
+          "bold": true,
+          "color": "#E11D2E",
+          "fontSize": 24,
+          "text": "Northwind Services LLC",
+          "width": 200,
+        },
+        {
+          "alignment": "right",
+          "bold": true,
+          "color": "#666",
+          "fontSize": 32,
+          "text": "ESTIMATE",
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        20,
+      ],
+    },
+    {
+      "columns": [
+        {
+          "stack": [
+            "Northwind Services LLC",
+            "1001 Willow Avenue, Hoboken, NJ, 07030",
+            "info@northwind.example.com",
+            "https://northwind.example.com/",
+          ],
+        },
+        {
+          "columns": [
+            {
+              "text": "",
+              "width": "*",
+            },
+            {
+              "layout": "noBorders",
+              "table": {
+                "body": [
+                  [
+                    {
+                      "alignment": "right",
+                      "bold": true,
+                      "text": "Estimate #",
+                    },
+                    {
+                      "alignment": "right",
+                      "text": "E00001",
+                    },
+                  ],
+                  [
+                    {
+                      "alignment": "right",
+                      "bold": true,
+                      "text": "Date",
+                    },
+                    {
+                      "alignment": "right",
+                      "text": "Wed, Apr 22, 2026",
+                    },
+                  ],
+                  [
+                    {
+                      "alignment": "right",
+                      "bold": true,
+                      "text": "Total",
+                    },
+                    {
+                      "alignment": "right",
+                      "text": "$1,266.81",
+                    },
+                  ],
+                ],
+                "widths": [
+                  "auto",
+                  100,
+                ],
+              },
+              "width": "auto",
+            },
+          ],
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        30,
+      ],
+    },
+    {
+      "columns": [
+        {
+          "stack": [
+            {
+              "bold": true,
+              "margin": [
+                0,
+                0,
+                0,
+                4,
+              ],
+              "text": "Prepared For:",
+            },
+            "Jane Doe",
+            "123 Main Street
+Hoboken, NJ 07030",
+            "(555) 123-4567",
+            "jane.doe@example.com",
+          ],
+        },
+        {
+          "stack": [
+            {
+              "bold": true,
+              "margin": [
+                0,
+                0,
+                0,
+                4,
+              ],
+              "text": "Service Location:",
+            },
+            "Same as billing",
+          ],
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        20,
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        0,
+        0,
+        4,
+      ],
+      "text": "Scope of Work:",
+    },
+    {
+      "layout": {},
+      "table": {
+        "body": [
+          [
+            {
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "Description",
+            },
+            {
+              "alignment": "right",
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "Amount",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Install 3 commercial storefront doors",
+                },
+                {
+                  "color": "#666",
+                  "fontSize": 9,
+                  "text": "Remove existing units, install new frames and hardware.",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "text": "$2,000.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Site survey",
+                },
+                {
+                  "color": "#666",
+                  "fontSize": 9,
+                  "text": "Remove existing units, install new frames and hardware.",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "text": "",
+            },
+          ],
+        ],
+        "headerRows": 1,
+        "widths": [
+          "*",
+          70,
+        ],
+      },
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "Line Items:",
+    },
+    {
+      "layout": {},
+      "table": {
+        "body": [
+          [
+            {
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "Description",
+            },
+            {
+              "alignment": "center",
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "QTY",
+            },
+            {
+              "alignment": "right",
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "Price",
+            },
+            {
+              "alignment": "right",
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "Amount",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 1",
+                },
+                {
+                  "color": "#666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "1",
+            },
+            {
+              "alignment": "right",
+              "text": "$499.00",
+            },
+            {
+              "alignment": "right",
+              "text": "$499.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 2",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "2",
+            },
+            {
+              "alignment": "right",
+              "text": "$225.00",
+            },
+            {
+              "alignment": "right",
+              "text": "$450.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 3",
+                },
+                {
+                  "color": "#666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "1",
+            },
+            {
+              "alignment": "right",
+              "text": "$99.00",
+            },
+            {
+              "alignment": "right",
+              "stack": [
+                {
+                  "color": "#999999",
+                  "decoration": "lineThrough",
+                  "fontSize": 9,
+                  "text": "$99.00",
+                },
+                {
+                  "text": "$89.10",
+                },
+              ],
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Additional Service",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "1",
+            },
+            {
+              "alignment": "right",
+              "text": "$150.00",
+            },
+            {
+              "alignment": "right",
+              "text": "$150.00",
+            },
+          ],
+        ],
+        "headerRows": 1,
+        "widths": [
+          "*",
+          40,
+          70,
+          70,
+        ],
+      },
+    },
+    {
+      "columns": [
+        {
+          "text": "",
+          "width": "*",
+        },
+        {
+          "layout": "noBorders",
+          "table": {
+            "body": [
+              [
+                {
+                  "alignment": "right",
+                  "text": "Sub total",
+                },
+                {
+                  "alignment": "right",
+                  "text": "$1,188.10",
+                },
+              ],
+              [
+                {
+                  "alignment": "right",
+                  "text": "Tax (6.625%)",
+                },
+                {
+                  "alignment": "right",
+                  "text": "$78.71",
+                },
+              ],
+              [
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "Total",
+                },
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "$1,266.81",
+                },
+              ],
+            ],
+            "widths": [
+              75,
+              75,
+            ],
+          },
+          "width": "auto",
+        },
+      ],
+      "margin": [
+        0,
+        10,
+        0,
+        20,
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        10,
+        0,
+        4,
+      ],
+      "text": "Terms:",
+    },
+    {
+      "style": "paragraph",
+      "text": "Sample terms.",
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "Notes:",
+    },
+    {
+      "ul": [
+        "Note A",
+        "Note B",
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "PAYMENT TERMS:",
+    },
+    {
+      "ul": [
+        "70% on acceptance",
+      ],
+    },
+    {
+      "alignment": "center",
+      "bold": true,
+      "fontSize": 18,
+      "margin": [
+        0,
+        30,
+        0,
+        0,
+      ],
+      "text": "Thank You For Your Business",
+    },
+  ],
+  "defaultStyle": {
+    "font": "Inter",
+    "fontSize": 10,
+  },
+  "images": {},
+  "pageMargins": [
+    40,
+    40,
+    40,
+    40,
+  ],
+  "pageSize": "LETTER",
+  "styles": {
+    "paragraph": {
+      "fontSize": 10,
+      "lineHeight": 1.3,
+    },
+  },
+}
+`;
+
+exports[`alpha-classic renders identically after the view-model extraction > for scope notes > alpha-classic — scope notes 1`] = `
+{
+  "content": [
+    {
+      "columns": [
+        {
+          "bold": true,
+          "color": "#E11D2E",
+          "fontSize": 24,
+          "text": "Northwind Services LLC",
+          "width": 200,
+        },
+        {
+          "alignment": "right",
+          "bold": true,
+          "color": "#666",
+          "fontSize": 32,
+          "text": "ESTIMATE",
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        20,
+      ],
+    },
+    {
+      "columns": [
+        {
+          "stack": [
+            "Northwind Services LLC",
+            "1001 Willow Avenue, Hoboken, NJ, 07030",
+            "info@northwind.example.com",
+            "https://northwind.example.com/",
+          ],
+        },
+        {
+          "columns": [
+            {
+              "text": "",
+              "width": "*",
+            },
+            {
+              "layout": "noBorders",
+              "table": {
+                "body": [
+                  [
+                    {
+                      "alignment": "right",
+                      "bold": true,
+                      "text": "Estimate #",
+                    },
+                    {
+                      "alignment": "right",
+                      "text": "E00001",
+                    },
+                  ],
+                  [
+                    {
+                      "alignment": "right",
+                      "bold": true,
+                      "text": "Date",
+                    },
+                    {
+                      "alignment": "right",
+                      "text": "Wed, Apr 22, 2026",
+                    },
+                  ],
+                  [
+                    {
+                      "alignment": "right",
+                      "bold": true,
+                      "text": "Total",
+                    },
+                    {
+                      "alignment": "right",
+                      "text": "$1,266.81",
+                    },
+                  ],
+                ],
+                "widths": [
+                  "auto",
+                  100,
+                ],
+              },
+              "width": "auto",
+            },
+          ],
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        30,
+      ],
+    },
+    {
+      "columns": [
+        {
+          "stack": [
+            {
+              "bold": true,
+              "margin": [
+                0,
+                0,
+                0,
+                4,
+              ],
+              "text": "Prepared For:",
+            },
+            "Jane Doe",
+            "123 Main Street
+Hoboken, NJ 07030",
+            "(555) 123-4567",
+            "jane.doe@example.com",
+          ],
+        },
+        {
+          "stack": [
+            {
+              "bold": true,
+              "margin": [
+                0,
+                0,
+                0,
+                4,
+              ],
+              "text": "Service Location:",
+            },
+            "Same as billing",
+          ],
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        20,
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        0,
+        0,
+        4,
+      ],
+      "text": "Scope of Work:",
+    },
+    {
+      "margin": [
+        0,
+        0,
+        0,
+        0,
+      ],
+      "style": "paragraph",
+      "text": "Work is performed during business hours.",
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "Line Items:",
+    },
+    {
+      "layout": {},
+      "table": {
+        "body": [
+          [
+            {
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "Description",
+            },
+            {
+              "alignment": "center",
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "QTY",
+            },
+            {
+              "alignment": "right",
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "Price",
+            },
+            {
+              "alignment": "right",
+              "bold": true,
+              "fillColor": "#f5f5f5",
+              "text": "Amount",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 1",
+                },
+                {
+                  "color": "#666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "1",
+            },
+            {
+              "alignment": "right",
+              "text": "$499.00",
+            },
+            {
+              "alignment": "right",
+              "text": "$499.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 2",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "2",
+            },
+            {
+              "alignment": "right",
+              "text": "$225.00",
+            },
+            {
+              "alignment": "right",
+              "text": "$450.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 3",
+                },
+                {
+                  "color": "#666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "1",
+            },
+            {
+              "alignment": "right",
+              "text": "$99.00",
+            },
+            {
+              "alignment": "right",
+              "stack": [
+                {
+                  "color": "#999999",
+                  "decoration": "lineThrough",
+                  "fontSize": 9,
+                  "text": "$99.00",
+                },
+                {
+                  "text": "$89.10",
+                },
+              ],
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Additional Service",
+                },
+              ],
+            },
+            {
+              "alignment": "center",
+              "text": "1",
+            },
+            {
+              "alignment": "right",
+              "text": "$150.00",
+            },
+            {
+              "alignment": "right",
+              "text": "$150.00",
+            },
+          ],
+        ],
+        "headerRows": 1,
+        "widths": [
+          "*",
+          40,
+          70,
+          70,
+        ],
+      },
+    },
+    {
+      "columns": [
+        {
+          "text": "",
+          "width": "*",
+        },
+        {
+          "layout": "noBorders",
+          "table": {
+            "body": [
+              [
+                {
+                  "alignment": "right",
+                  "text": "Sub total",
+                },
+                {
+                  "alignment": "right",
+                  "text": "$1,188.10",
+                },
+              ],
+              [
+                {
+                  "alignment": "right",
+                  "text": "Tax (6.625%)",
+                },
+                {
+                  "alignment": "right",
+                  "text": "$78.71",
+                },
+              ],
+              [
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "Total",
+                },
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "$1,266.81",
+                },
+              ],
+            ],
+            "widths": [
+              75,
+              75,
+            ],
+          },
+          "width": "auto",
+        },
+      ],
+      "margin": [
+        0,
+        10,
+        0,
+        20,
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        10,
+        0,
+        4,
+      ],
+      "text": "Terms:",
+    },
+    {
+      "style": "paragraph",
+      "text": "Sample terms.",
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "Notes:",
+    },
+    {
+      "ul": [
+        "Note A",
+        "Note B",
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "PAYMENT TERMS:",
+    },
+    {
+      "ul": [
+        "70% on acceptance",
+      ],
+    },
+    {
+      "alignment": "center",
+      "bold": true,
+      "fontSize": 18,
+      "margin": [
+        0,
+        30,
+        0,
+        0,
+      ],
+      "text": "Thank You For Your Business",
+    },
+  ],
+  "defaultStyle": {
+    "font": "Inter",
+    "fontSize": 10,
+  },
+  "images": {},
+  "pageMargins": [
+    40,
+    40,
+    40,
+    40,
+  ],
+  "pageSize": "LETTER",
+  "styles": {
+    "paragraph": {
+      "fontSize": 10,
+      "lineHeight": 1.3,
+    },
+  },
+}
+`;
+
+exports[`crm-default renders identically after the view-model extraction > for a document-level discount > crm-default — a document-level discount 1`] = `
+{
+  "content": [
+    {
+      "alignment": "center",
+      "bold": true,
+      "color": "#E11D2E",
+      "fontSize": 22,
+      "text": "Northwind Services LLC",
+    },
+    {
+      "margin": [
+        0,
+        16,
+        0,
+        20,
+      ],
+      "stack": [
+        {
+          "alignment": "center",
+          "bold": true,
+          "fontSize": 22,
+          "text": "Estimate E00001",
+        },
+        {
+          "alignment": "center",
+          "color": "#666666",
+          "fontSize": 10,
+          "margin": [
+            0,
+            4,
+            0,
+            0,
+          ],
+          "text": "Prepared for Jane Doe",
+        },
+      ],
+    },
+    {
+      "layout": {},
+      "margin": [
+        0,
+        0,
+        0,
+        16,
+      ],
+      "table": {
+        "body": [
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 1",
+                },
+                {
+                  "color": "#666666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 1 @ $499.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "text": "$499.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 2",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 2 @ $225.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "text": "$450.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 3",
+                },
+                {
+                  "color": "#666666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 1 @ $99.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "stack": [
+                {
+                  "color": "#999999",
+                  "decoration": "lineThrough",
+                  "fontSize": 9,
+                  "text": "$99.00",
+                },
+                {
+                  "bold": true,
+                  "text": "$89.10",
+                },
+              ],
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Additional Service",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 1 @ $150.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "text": "$150.00",
+            },
+          ],
+        ],
+        "widths": [
+          "*",
+          80,
+        ],
+      },
+    },
+    {
+      "columns": [
+        {
+          "text": "",
+          "width": "*",
+        },
+        {
+          "stack": [
+            {
+              "columns": [
+                {
+                  "alignment": "right",
+                  "text": "Subtotal",
+                  "width": 80,
+                },
+                {
+                  "alignment": "right",
+                  "text": "$1,188.10",
+                  "width": 80,
+                },
+              ],
+              "margin": [
+                0,
+                2,
+                0,
+                2,
+              ],
+            },
+            {
+              "columns": [
+                {
+                  "alignment": "right",
+                  "text": "Repeat customer",
+                  "width": 80,
+                },
+                {
+                  "alignment": "right",
+                  "text": "−$150.00",
+                  "width": 80,
+                },
+              ],
+              "margin": [
+                0,
+                2,
+                0,
+                2,
+              ],
+            },
+            {
+              "columns": [
+                {
+                  "alignment": "right",
+                  "text": "Tax (6.625%)",
+                  "width": 80,
+                },
+                {
+                  "alignment": "right",
+                  "text": "$78.71",
+                  "width": 80,
+                },
+              ],
+              "margin": [
+                0,
+                2,
+                0,
+                2,
+              ],
+            },
+            {
+              "columns": [
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "Total",
+                  "width": 80,
+                },
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "$1,266.81",
+                  "width": 80,
+                },
+              ],
+              "margin": [
+                0,
+                4,
+                0,
+                0,
+              ],
+            },
+          ],
+          "width": "auto",
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        24,
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        0,
+        0,
+        4,
+      ],
+      "text": "Terms:",
+    },
+    {
+      "style": "paragraph",
+      "text": "Sample terms.",
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "Notes:",
+    },
+    {
+      "ul": [
+        "Note A",
+        "Note B",
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "Payment Terms:",
+    },
+    {
+      "ul": [
+        "70% on acceptance",
+      ],
+    },
+    {
+      "alignment": "center",
+      "bold": true,
+      "fontSize": 18,
+      "margin": [
+        0,
+        30,
+        0,
+        0,
+      ],
+      "text": "Thank You For Your Business",
+    },
+  ],
+  "defaultStyle": {
+    "font": "Inter",
+    "fontSize": 10,
+  },
+  "images": {},
+  "pageMargins": [
+    40,
+    40,
+    40,
+    40,
+  ],
+  "pageSize": "LETTER",
+  "styles": {
+    "paragraph": {
+      "fontSize": 10,
+      "lineHeight": 1.3,
+    },
+  },
+}
+`;
+
+exports[`crm-default renders identically after the view-model extraction > for a draft, which reads the org's live copy > crm-default — a draft, which reads the org's live copy 1`] = `
+{
+  "content": [
+    {
+      "alignment": "center",
+      "bold": true,
+      "color": "#E11D2E",
+      "fontSize": 22,
+      "text": "Northwind Services LLC",
+    },
+    {
+      "margin": [
+        0,
+        16,
+        0,
+        20,
+      ],
+      "stack": [
+        {
+          "alignment": "center",
+          "bold": true,
+          "fontSize": 22,
+          "text": "Estimate E00001",
+        },
+        {
+          "alignment": "center",
+          "color": "#666666",
+          "fontSize": 10,
+          "margin": [
+            0,
+            4,
+            0,
+            0,
+          ],
+          "text": "Prepared for Jane Doe",
+        },
+      ],
+    },
+    {
+      "layout": {},
+      "margin": [
+        0,
+        0,
+        0,
+        16,
+      ],
+      "table": {
+        "body": [
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 1",
+                },
+                {
+                  "color": "#666666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 1 @ $499.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "text": "$499.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 2",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 2 @ $225.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "text": "$450.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 3",
+                },
+                {
+                  "color": "#666666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 1 @ $99.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "stack": [
+                {
+                  "color": "#999999",
+                  "decoration": "lineThrough",
+                  "fontSize": 9,
+                  "text": "$99.00",
+                },
+                {
+                  "bold": true,
+                  "text": "$89.10",
+                },
+              ],
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Additional Service",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 1 @ $150.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "text": "$150.00",
+            },
+          ],
+        ],
+        "widths": [
+          "*",
+          80,
+        ],
+      },
+    },
+    {
+      "columns": [
+        {
+          "text": "",
+          "width": "*",
+        },
+        {
+          "stack": [
+            {
+              "columns": [
+                {
+                  "alignment": "right",
+                  "text": "Subtotal",
+                  "width": 80,
+                },
+                {
+                  "alignment": "right",
+                  "text": "$1,188.10",
+                  "width": 80,
+                },
+              ],
+              "margin": [
+                0,
+                2,
+                0,
+                2,
+              ],
+            },
+            {
+              "columns": [
+                {
+                  "alignment": "right",
+                  "text": "Tax (6.625%)",
+                  "width": 80,
+                },
+                {
+                  "alignment": "right",
+                  "text": "$78.71",
+                  "width": 80,
+                },
+              ],
+              "margin": [
+                0,
+                2,
+                0,
+                2,
+              ],
+            },
+            {
+              "columns": [
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "Total",
+                  "width": 80,
+                },
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "$1,266.81",
+                  "width": 80,
+                },
+              ],
+              "margin": [
+                0,
+                4,
+                0,
+                0,
+              ],
+            },
+          ],
+          "width": "auto",
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        24,
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        0,
+        0,
+        4,
+      ],
+      "text": "Terms:",
+    },
+    {
+      "style": "paragraph",
+      "text": "Sample terms.",
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "Notes:",
+    },
+    {
+      "ul": [
+        "Note A",
+        "Note B",
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "Payment Terms:",
+    },
+    {
+      "ul": [
+        "70% on acceptance",
+      ],
+    },
+    {
+      "alignment": "center",
+      "bold": true,
+      "fontSize": 18,
+      "margin": [
+        0,
+        30,
+        0,
+        0,
+      ],
+      "text": "Thank You For Your Business",
+    },
+  ],
+  "defaultStyle": {
+    "font": "Inter",
+    "fontSize": 10,
+  },
+  "images": {},
+  "pageMargins": [
+    40,
+    40,
+    40,
+    40,
+  ],
+  "pageSize": "LETTER",
+  "styles": {
+    "paragraph": {
+      "fontSize": 10,
+      "lineHeight": 1.3,
+    },
+  },
+}
+`;
+
+exports[`crm-default renders identically after the view-model extraction > for a plain estimate with no scopes and no discounts > crm-default — a plain estimate with no scopes and no discounts 1`] = `
+{
+  "content": [
+    {
+      "alignment": "center",
+      "bold": true,
+      "color": "#E11D2E",
+      "fontSize": 22,
+      "text": "Northwind Services LLC",
+    },
+    {
+      "margin": [
+        0,
+        16,
+        0,
+        20,
+      ],
+      "stack": [
+        {
+          "alignment": "center",
+          "bold": true,
+          "fontSize": 22,
+          "text": "Estimate E00001",
+        },
+        {
+          "alignment": "center",
+          "color": "#666666",
+          "fontSize": 10,
+          "margin": [
+            0,
+            4,
+            0,
+            0,
+          ],
+          "text": "Prepared for Jane Doe",
+        },
+      ],
+    },
+    {
+      "layout": {},
+      "margin": [
+        0,
+        0,
+        0,
+        16,
+      ],
+      "table": {
+        "body": [
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 1",
+                },
+                {
+                  "color": "#666666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 1 @ $499.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "text": "$499.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 2",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 2 @ $225.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "text": "$450.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 3",
+                },
+                {
+                  "color": "#666666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 1 @ $99.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "stack": [
+                {
+                  "color": "#999999",
+                  "decoration": "lineThrough",
+                  "fontSize": 9,
+                  "text": "$99.00",
+                },
+                {
+                  "bold": true,
+                  "text": "$89.10",
+                },
+              ],
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Additional Service",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 1 @ $150.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "text": "$150.00",
+            },
+          ],
+        ],
+        "widths": [
+          "*",
+          80,
+        ],
+      },
+    },
+    {
+      "columns": [
+        {
+          "text": "",
+          "width": "*",
+        },
+        {
+          "stack": [
+            {
+              "columns": [
+                {
+                  "alignment": "right",
+                  "text": "Subtotal",
+                  "width": 80,
+                },
+                {
+                  "alignment": "right",
+                  "text": "$1,188.10",
+                  "width": 80,
+                },
+              ],
+              "margin": [
+                0,
+                2,
+                0,
+                2,
+              ],
+            },
+            {
+              "columns": [
+                {
+                  "alignment": "right",
+                  "text": "Tax (6.625%)",
+                  "width": 80,
+                },
+                {
+                  "alignment": "right",
+                  "text": "$78.71",
+                  "width": 80,
+                },
+              ],
+              "margin": [
+                0,
+                2,
+                0,
+                2,
+              ],
+            },
+            {
+              "columns": [
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "Total",
+                  "width": 80,
+                },
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "$1,266.81",
+                  "width": 80,
+                },
+              ],
+              "margin": [
+                0,
+                4,
+                0,
+                0,
+              ],
+            },
+          ],
+          "width": "auto",
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        24,
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        0,
+        0,
+        4,
+      ],
+      "text": "Terms:",
+    },
+    {
+      "style": "paragraph",
+      "text": "Sample terms.",
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "Notes:",
+    },
+    {
+      "ul": [
+        "Note A",
+        "Note B",
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "Payment Terms:",
+    },
+    {
+      "ul": [
+        "70% on acceptance",
+      ],
+    },
+    {
+      "alignment": "center",
+      "bold": true,
+      "fontSize": 18,
+      "margin": [
+        0,
+        30,
+        0,
+        0,
+      ],
+      "text": "Thank You For Your Business",
+    },
+  ],
+  "defaultStyle": {
+    "font": "Inter",
+    "fontSize": 10,
+  },
+  "images": {},
+  "pageMargins": [
+    40,
+    40,
+    40,
+    40,
+  ],
+  "pageSize": "LETTER",
+  "styles": {
+    "paragraph": {
+      "fontSize": 10,
+      "lineHeight": 1.3,
+    },
+  },
+}
+`;
+
+exports[`crm-default renders identically after the view-model extraction > for a priced scope block > crm-default — a priced scope block 1`] = `
+{
+  "content": [
+    {
+      "alignment": "center",
+      "bold": true,
+      "color": "#E11D2E",
+      "fontSize": 22,
+      "text": "Northwind Services LLC",
+    },
+    {
+      "margin": [
+        0,
+        16,
+        0,
+        20,
+      ],
+      "stack": [
+        {
+          "alignment": "center",
+          "bold": true,
+          "fontSize": 22,
+          "text": "Estimate E00001",
+        },
+        {
+          "alignment": "center",
+          "color": "#666666",
+          "fontSize": 10,
+          "margin": [
+            0,
+            4,
+            0,
+            0,
+          ],
+          "text": "Prepared for Jane Doe",
+        },
+      ],
+    },
+    {
+      "bold": true,
+      "fontSize": 11,
+      "margin": [
+        0,
+        0,
+        0,
+        4,
+      ],
+      "text": "Scope of Work",
+    },
+    {
+      "layout": {},
+      "margin": [
+        0,
+        0,
+        0,
+        16,
+      ],
+      "table": {
+        "body": [
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Install 3 commercial storefront doors",
+                },
+                {
+                  "color": "#666666",
+                  "fontSize": 9,
+                  "text": "Remove existing units, install new frames and hardware.",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "text": "$2,000.00",
+            },
+          ],
+        ],
+        "widths": [
+          "*",
+          80,
+        ],
+      },
+    },
+    {
+      "bold": true,
+      "fontSize": 11,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "Line Items",
+    },
+    {
+      "layout": {},
+      "margin": [
+        0,
+        0,
+        0,
+        16,
+      ],
+      "table": {
+        "body": [
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 1",
+                },
+                {
+                  "color": "#666666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 1 @ $499.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "text": "$499.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 2",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 2 @ $225.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "text": "$450.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 3",
+                },
+                {
+                  "color": "#666666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 1 @ $99.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "stack": [
+                {
+                  "color": "#999999",
+                  "decoration": "lineThrough",
+                  "fontSize": 9,
+                  "text": "$99.00",
+                },
+                {
+                  "bold": true,
+                  "text": "$89.10",
+                },
+              ],
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Additional Service",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 1 @ $150.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "text": "$150.00",
+            },
+          ],
+        ],
+        "widths": [
+          "*",
+          80,
+        ],
+      },
+    },
+    {
+      "columns": [
+        {
+          "text": "",
+          "width": "*",
+        },
+        {
+          "stack": [
+            {
+              "columns": [
+                {
+                  "alignment": "right",
+                  "text": "Subtotal",
+                  "width": 80,
+                },
+                {
+                  "alignment": "right",
+                  "text": "$1,188.10",
+                  "width": 80,
+                },
+              ],
+              "margin": [
+                0,
+                2,
+                0,
+                2,
+              ],
+            },
+            {
+              "columns": [
+                {
+                  "alignment": "right",
+                  "text": "Tax (6.625%)",
+                  "width": 80,
+                },
+                {
+                  "alignment": "right",
+                  "text": "$78.71",
+                  "width": 80,
+                },
+              ],
+              "margin": [
+                0,
+                2,
+                0,
+                2,
+              ],
+            },
+            {
+              "columns": [
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "Total",
+                  "width": 80,
+                },
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "$1,266.81",
+                  "width": 80,
+                },
+              ],
+              "margin": [
+                0,
+                4,
+                0,
+                0,
+              ],
+            },
+          ],
+          "width": "auto",
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        24,
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        0,
+        0,
+        4,
+      ],
+      "text": "Terms:",
+    },
+    {
+      "style": "paragraph",
+      "text": "Sample terms.",
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "Notes:",
+    },
+    {
+      "ul": [
+        "Note A",
+        "Note B",
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "Payment Terms:",
+    },
+    {
+      "ul": [
+        "70% on acceptance",
+      ],
+    },
+    {
+      "alignment": "center",
+      "bold": true,
+      "fontSize": 18,
+      "margin": [
+        0,
+        30,
+        0,
+        0,
+      ],
+      "text": "Thank You For Your Business",
+    },
+  ],
+  "defaultStyle": {
+    "font": "Inter",
+    "fontSize": 10,
+  },
+  "images": {},
+  "pageMargins": [
+    40,
+    40,
+    40,
+    40,
+  ],
+  "pageSize": "LETTER",
+  "styles": {
+    "paragraph": {
+      "fontSize": 10,
+      "lineHeight": 1.3,
+    },
+  },
+}
+`;
+
+exports[`crm-default renders identically after the view-model extraction > for a sent estimate reading its own snapshot > crm-default — a sent estimate reading its own snapshot 1`] = `
+{
+  "content": [
+    {
+      "alignment": "center",
+      "bold": true,
+      "color": "#E11D2E",
+      "fontSize": 22,
+      "text": "Northwind Services LLC",
+    },
+    {
+      "margin": [
+        0,
+        16,
+        0,
+        20,
+      ],
+      "stack": [
+        {
+          "alignment": "center",
+          "bold": true,
+          "fontSize": 22,
+          "text": "Estimate E00001",
+        },
+        {
+          "alignment": "center",
+          "color": "#666666",
+          "fontSize": 10,
+          "margin": [
+            0,
+            4,
+            0,
+            0,
+          ],
+          "text": "Prepared for Jane Doe",
+        },
+      ],
+    },
+    {
+      "layout": {},
+      "margin": [
+        0,
+        0,
+        0,
+        16,
+      ],
+      "table": {
+        "body": [
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 1",
+                },
+                {
+                  "color": "#666666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 1 @ $499.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "text": "$499.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 2",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 2 @ $225.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "text": "$450.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 3",
+                },
+                {
+                  "color": "#666666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 1 @ $99.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "stack": [
+                {
+                  "color": "#999999",
+                  "decoration": "lineThrough",
+                  "fontSize": 9,
+                  "text": "$99.00",
+                },
+                {
+                  "bold": true,
+                  "text": "$89.10",
+                },
+              ],
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Additional Service",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 1 @ $150.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "text": "$150.00",
+            },
+          ],
+        ],
+        "widths": [
+          "*",
+          80,
+        ],
+      },
+    },
+    {
+      "columns": [
+        {
+          "text": "",
+          "width": "*",
+        },
+        {
+          "stack": [
+            {
+              "columns": [
+                {
+                  "alignment": "right",
+                  "text": "Subtotal",
+                  "width": 80,
+                },
+                {
+                  "alignment": "right",
+                  "text": "$1,188.10",
+                  "width": 80,
+                },
+              ],
+              "margin": [
+                0,
+                2,
+                0,
+                2,
+              ],
+            },
+            {
+              "columns": [
+                {
+                  "alignment": "right",
+                  "text": "Tax (6.625%)",
+                  "width": 80,
+                },
+                {
+                  "alignment": "right",
+                  "text": "$78.71",
+                  "width": 80,
+                },
+              ],
+              "margin": [
+                0,
+                2,
+                0,
+                2,
+              ],
+            },
+            {
+              "columns": [
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "Total",
+                  "width": 80,
+                },
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "$1,266.81",
+                  "width": 80,
+                },
+              ],
+              "margin": [
+                0,
+                4,
+                0,
+                0,
+              ],
+            },
+          ],
+          "width": "auto",
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        24,
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        0,
+        0,
+        4,
+      ],
+      "text": "Terms:",
+    },
+    {
+      "style": "paragraph",
+      "text": "Terms as sent.",
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "Notes:",
+    },
+    {
+      "style": "paragraph",
+      "text": "Notes as sent.",
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "Payment Terms:",
+    },
+    {
+      "style": "paragraph",
+      "text": "Payment terms as sent.",
+    },
+    {
+      "alignment": "center",
+      "bold": true,
+      "fontSize": 18,
+      "margin": [
+        0,
+        30,
+        0,
+        0,
+      ],
+      "text": "Thank You For Your Business",
+    },
+  ],
+  "defaultStyle": {
+    "font": "Inter",
+    "fontSize": 10,
+  },
+  "images": {},
+  "pageMargins": [
+    40,
+    40,
+    40,
+    40,
+  ],
+  "pageSize": "LETTER",
+  "styles": {
+    "paragraph": {
+      "fontSize": 10,
+      "lineHeight": 1.3,
+    },
+  },
+}
+`;
+
+exports[`crm-default renders identically after the view-model extraction > for a signature > crm-default — a signature 1`] = `
+{
+  "content": [
+    {
+      "alignment": "center",
+      "bold": true,
+      "color": "#E11D2E",
+      "fontSize": 22,
+      "text": "Northwind Services LLC",
+    },
+    {
+      "margin": [
+        0,
+        16,
+        0,
+        20,
+      ],
+      "stack": [
+        {
+          "alignment": "center",
+          "bold": true,
+          "fontSize": 22,
+          "text": "Estimate E00001",
+        },
+        {
+          "alignment": "center",
+          "color": "#666666",
+          "fontSize": 10,
+          "margin": [
+            0,
+            4,
+            0,
+            0,
+          ],
+          "text": "Prepared for Jane Doe",
+        },
+      ],
+    },
+    {
+      "layout": {},
+      "margin": [
+        0,
+        0,
+        0,
+        16,
+      ],
+      "table": {
+        "body": [
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 1",
+                },
+                {
+                  "color": "#666666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 1 @ $499.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "text": "$499.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 2",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 2 @ $225.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "text": "$450.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 3",
+                },
+                {
+                  "color": "#666666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 1 @ $99.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "stack": [
+                {
+                  "color": "#999999",
+                  "decoration": "lineThrough",
+                  "fontSize": 9,
+                  "text": "$99.00",
+                },
+                {
+                  "bold": true,
+                  "text": "$89.10",
+                },
+              ],
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Additional Service",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 1 @ $150.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "text": "$150.00",
+            },
+          ],
+        ],
+        "widths": [
+          "*",
+          80,
+        ],
+      },
+    },
+    {
+      "columns": [
+        {
+          "text": "",
+          "width": "*",
+        },
+        {
+          "stack": [
+            {
+              "columns": [
+                {
+                  "alignment": "right",
+                  "text": "Subtotal",
+                  "width": 80,
+                },
+                {
+                  "alignment": "right",
+                  "text": "$1,188.10",
+                  "width": 80,
+                },
+              ],
+              "margin": [
+                0,
+                2,
+                0,
+                2,
+              ],
+            },
+            {
+              "columns": [
+                {
+                  "alignment": "right",
+                  "text": "Tax (6.625%)",
+                  "width": 80,
+                },
+                {
+                  "alignment": "right",
+                  "text": "$78.71",
+                  "width": 80,
+                },
+              ],
+              "margin": [
+                0,
+                2,
+                0,
+                2,
+              ],
+            },
+            {
+              "columns": [
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "Total",
+                  "width": 80,
+                },
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "$1,266.81",
+                  "width": 80,
+                },
+              ],
+              "margin": [
+                0,
+                4,
+                0,
+                0,
+              ],
+            },
+          ],
+          "width": "auto",
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        24,
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        0,
+        0,
+        4,
+      ],
+      "text": "Terms:",
+    },
+    {
+      "style": "paragraph",
+      "text": "Sample terms.",
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "Notes:",
+    },
+    {
+      "ul": [
+        "Note A",
+        "Note B",
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "Payment Terms:",
+    },
+    {
+      "ul": [
+        "70% on acceptance",
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        20,
+        0,
+        8,
+      ],
+      "pageBreak": "before",
+      "text": "Customer Signature:",
+    },
+    {
+      "height": 60,
+      "image": "data:image/png;base64,iVBORw0KGgo=",
+      "width": 150,
+    },
+    {
+      "color": "#666666",
+      "fontSize": 9,
+      "text": "Approved on Fri, Sep 4, 2026",
+    },
+    {
+      "alignment": "center",
+      "bold": true,
+      "fontSize": 18,
+      "margin": [
+        0,
+        30,
+        0,
+        0,
+      ],
+      "text": "Thank You For Your Business",
+    },
+  ],
+  "defaultStyle": {
+    "font": "Inter",
+    "fontSize": 10,
+  },
+  "images": {},
+  "pageMargins": [
+    40,
+    40,
+    40,
+    40,
+  ],
+  "pageSize": "LETTER",
+  "styles": {
+    "paragraph": {
+      "fontSize": 10,
+      "lineHeight": 1.3,
+    },
+  },
+}
+`;
+
+exports[`crm-default renders identically after the view-model extraction > for an unnamed document-level discount > crm-default — an unnamed document-level discount 1`] = `
+{
+  "content": [
+    {
+      "alignment": "center",
+      "bold": true,
+      "color": "#E11D2E",
+      "fontSize": 22,
+      "text": "Northwind Services LLC",
+    },
+    {
+      "margin": [
+        0,
+        16,
+        0,
+        20,
+      ],
+      "stack": [
+        {
+          "alignment": "center",
+          "bold": true,
+          "fontSize": 22,
+          "text": "Estimate E00001",
+        },
+        {
+          "alignment": "center",
+          "color": "#666666",
+          "fontSize": 10,
+          "margin": [
+            0,
+            4,
+            0,
+            0,
+          ],
+          "text": "Prepared for Jane Doe",
+        },
+      ],
+    },
+    {
+      "layout": {},
+      "margin": [
+        0,
+        0,
+        0,
+        16,
+      ],
+      "table": {
+        "body": [
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 1",
+                },
+                {
+                  "color": "#666666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 1 @ $499.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "text": "$499.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 2",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 2 @ $225.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "text": "$450.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 3",
+                },
+                {
+                  "color": "#666666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 1 @ $99.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "stack": [
+                {
+                  "color": "#999999",
+                  "decoration": "lineThrough",
+                  "fontSize": 9,
+                  "text": "$99.00",
+                },
+                {
+                  "bold": true,
+                  "text": "$89.10",
+                },
+              ],
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Additional Service",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 1 @ $150.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "text": "$150.00",
+            },
+          ],
+        ],
+        "widths": [
+          "*",
+          80,
+        ],
+      },
+    },
+    {
+      "columns": [
+        {
+          "text": "",
+          "width": "*",
+        },
+        {
+          "stack": [
+            {
+              "columns": [
+                {
+                  "alignment": "right",
+                  "text": "Subtotal",
+                  "width": 80,
+                },
+                {
+                  "alignment": "right",
+                  "text": "$1,188.10",
+                  "width": 80,
+                },
+              ],
+              "margin": [
+                0,
+                2,
+                0,
+                2,
+              ],
+            },
+            {
+              "columns": [
+                {
+                  "alignment": "right",
+                  "text": "Discount",
+                  "width": 80,
+                },
+                {
+                  "alignment": "right",
+                  "text": "−$150.00",
+                  "width": 80,
+                },
+              ],
+              "margin": [
+                0,
+                2,
+                0,
+                2,
+              ],
+            },
+            {
+              "columns": [
+                {
+                  "alignment": "right",
+                  "text": "Tax (6.625%)",
+                  "width": 80,
+                },
+                {
+                  "alignment": "right",
+                  "text": "$78.71",
+                  "width": 80,
+                },
+              ],
+              "margin": [
+                0,
+                2,
+                0,
+                2,
+              ],
+            },
+            {
+              "columns": [
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "Total",
+                  "width": 80,
+                },
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "$1,266.81",
+                  "width": 80,
+                },
+              ],
+              "margin": [
+                0,
+                4,
+                0,
+                0,
+              ],
+            },
+          ],
+          "width": "auto",
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        24,
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        0,
+        0,
+        4,
+      ],
+      "text": "Terms:",
+    },
+    {
+      "style": "paragraph",
+      "text": "Sample terms.",
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "Notes:",
+    },
+    {
+      "ul": [
+        "Note A",
+        "Note B",
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "Payment Terms:",
+    },
+    {
+      "ul": [
+        "70% on acceptance",
+      ],
+    },
+    {
+      "alignment": "center",
+      "bold": true,
+      "fontSize": 18,
+      "margin": [
+        0,
+        30,
+        0,
+        0,
+      ],
+      "text": "Thank You For Your Business",
+    },
+  ],
+  "defaultStyle": {
+    "font": "Inter",
+    "fontSize": 10,
+  },
+  "images": {},
+  "pageMargins": [
+    40,
+    40,
+    40,
+    40,
+  ],
+  "pageSize": "LETTER",
+  "styles": {
+    "paragraph": {
+      "fontSize": 10,
+      "lineHeight": 1.3,
+    },
+  },
+}
+`;
+
+exports[`crm-default renders identically after the view-model extraction > for an unpriced scope block > crm-default — an unpriced scope block 1`] = `
+{
+  "content": [
+    {
+      "alignment": "center",
+      "bold": true,
+      "color": "#E11D2E",
+      "fontSize": 22,
+      "text": "Northwind Services LLC",
+    },
+    {
+      "margin": [
+        0,
+        16,
+        0,
+        20,
+      ],
+      "stack": [
+        {
+          "alignment": "center",
+          "bold": true,
+          "fontSize": 22,
+          "text": "Estimate E00001",
+        },
+        {
+          "alignment": "center",
+          "color": "#666666",
+          "fontSize": 10,
+          "margin": [
+            0,
+            4,
+            0,
+            0,
+          ],
+          "text": "Prepared for Jane Doe",
+        },
+      ],
+    },
+    {
+      "bold": true,
+      "fontSize": 11,
+      "margin": [
+        0,
+        0,
+        0,
+        4,
+      ],
+      "text": "Scope of Work",
+    },
+    {
+      "layout": {},
+      "margin": [
+        0,
+        0,
+        0,
+        16,
+      ],
+      "table": {
+        "body": [
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Install 3 commercial storefront doors",
+                },
+                {
+                  "color": "#666666",
+                  "fontSize": 9,
+                  "text": "Remove existing units, install new frames and hardware.",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "text": "",
+            },
+          ],
+        ],
+        "widths": [
+          "*",
+          80,
+        ],
+      },
+    },
+    {
+      "bold": true,
+      "fontSize": 11,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "Line Items",
+    },
+    {
+      "layout": {},
+      "margin": [
+        0,
+        0,
+        0,
+        16,
+      ],
+      "table": {
+        "body": [
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 1",
+                },
+                {
+                  "color": "#666666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 1 @ $499.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "text": "$499.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 2",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 2 @ $225.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "text": "$450.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 3",
+                },
+                {
+                  "color": "#666666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 1 @ $99.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "stack": [
+                {
+                  "color": "#999999",
+                  "decoration": "lineThrough",
+                  "fontSize": 9,
+                  "text": "$99.00",
+                },
+                {
+                  "bold": true,
+                  "text": "$89.10",
+                },
+              ],
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Additional Service",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 1 @ $150.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "text": "$150.00",
+            },
+          ],
+        ],
+        "widths": [
+          "*",
+          80,
+        ],
+      },
+    },
+    {
+      "columns": [
+        {
+          "text": "",
+          "width": "*",
+        },
+        {
+          "stack": [
+            {
+              "columns": [
+                {
+                  "alignment": "right",
+                  "text": "Subtotal",
+                  "width": 80,
+                },
+                {
+                  "alignment": "right",
+                  "text": "$1,188.10",
+                  "width": 80,
+                },
+              ],
+              "margin": [
+                0,
+                2,
+                0,
+                2,
+              ],
+            },
+            {
+              "columns": [
+                {
+                  "alignment": "right",
+                  "text": "Tax (6.625%)",
+                  "width": 80,
+                },
+                {
+                  "alignment": "right",
+                  "text": "$78.71",
+                  "width": 80,
+                },
+              ],
+              "margin": [
+                0,
+                2,
+                0,
+                2,
+              ],
+            },
+            {
+              "columns": [
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "Total",
+                  "width": 80,
+                },
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "$1,266.81",
+                  "width": 80,
+                },
+              ],
+              "margin": [
+                0,
+                4,
+                0,
+                0,
+              ],
+            },
+          ],
+          "width": "auto",
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        24,
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        0,
+        0,
+        4,
+      ],
+      "text": "Terms:",
+    },
+    {
+      "style": "paragraph",
+      "text": "Sample terms.",
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "Notes:",
+    },
+    {
+      "ul": [
+        "Note A",
+        "Note B",
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "Payment Terms:",
+    },
+    {
+      "ul": [
+        "70% on acceptance",
+      ],
+    },
+    {
+      "alignment": "center",
+      "bold": true,
+      "fontSize": 18,
+      "margin": [
+        0,
+        30,
+        0,
+        0,
+      ],
+      "text": "Thank You For Your Business",
+    },
+  ],
+  "defaultStyle": {
+    "font": "Inter",
+    "fontSize": 10,
+  },
+  "images": {},
+  "pageMargins": [
+    40,
+    40,
+    40,
+    40,
+  ],
+  "pageSize": "LETTER",
+  "styles": {
+    "paragraph": {
+      "fontSize": 10,
+      "lineHeight": 1.3,
+    },
+  },
+}
+`;
+
+exports[`crm-default renders identically after the view-model extraction > for priced and unpriced scopes together > crm-default — priced and unpriced scopes together 1`] = `
+{
+  "content": [
+    {
+      "alignment": "center",
+      "bold": true,
+      "color": "#E11D2E",
+      "fontSize": 22,
+      "text": "Northwind Services LLC",
+    },
+    {
+      "margin": [
+        0,
+        16,
+        0,
+        20,
+      ],
+      "stack": [
+        {
+          "alignment": "center",
+          "bold": true,
+          "fontSize": 22,
+          "text": "Estimate E00001",
+        },
+        {
+          "alignment": "center",
+          "color": "#666666",
+          "fontSize": 10,
+          "margin": [
+            0,
+            4,
+            0,
+            0,
+          ],
+          "text": "Prepared for Jane Doe",
+        },
+      ],
+    },
+    {
+      "bold": true,
+      "fontSize": 11,
+      "margin": [
+        0,
+        0,
+        0,
+        4,
+      ],
+      "text": "Scope of Work",
+    },
+    {
+      "layout": {},
+      "margin": [
+        0,
+        0,
+        0,
+        16,
+      ],
+      "table": {
+        "body": [
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Install 3 commercial storefront doors",
+                },
+                {
+                  "color": "#666666",
+                  "fontSize": 9,
+                  "text": "Remove existing units, install new frames and hardware.",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "text": "$2,000.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Site survey",
+                },
+                {
+                  "color": "#666666",
+                  "fontSize": 9,
+                  "text": "Remove existing units, install new frames and hardware.",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "text": "",
+            },
+          ],
+        ],
+        "widths": [
+          "*",
+          80,
+        ],
+      },
+    },
+    {
+      "bold": true,
+      "fontSize": 11,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "Line Items",
+    },
+    {
+      "layout": {},
+      "margin": [
+        0,
+        0,
+        0,
+        16,
+      ],
+      "table": {
+        "body": [
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 1",
+                },
+                {
+                  "color": "#666666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 1 @ $499.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "text": "$499.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 2",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 2 @ $225.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "text": "$450.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 3",
+                },
+                {
+                  "color": "#666666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 1 @ $99.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "stack": [
+                {
+                  "color": "#999999",
+                  "decoration": "lineThrough",
+                  "fontSize": 9,
+                  "text": "$99.00",
+                },
+                {
+                  "bold": true,
+                  "text": "$89.10",
+                },
+              ],
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Additional Service",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 1 @ $150.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "text": "$150.00",
+            },
+          ],
+        ],
+        "widths": [
+          "*",
+          80,
+        ],
+      },
+    },
+    {
+      "columns": [
+        {
+          "text": "",
+          "width": "*",
+        },
+        {
+          "stack": [
+            {
+              "columns": [
+                {
+                  "alignment": "right",
+                  "text": "Subtotal",
+                  "width": 80,
+                },
+                {
+                  "alignment": "right",
+                  "text": "$1,188.10",
+                  "width": 80,
+                },
+              ],
+              "margin": [
+                0,
+                2,
+                0,
+                2,
+              ],
+            },
+            {
+              "columns": [
+                {
+                  "alignment": "right",
+                  "text": "Tax (6.625%)",
+                  "width": 80,
+                },
+                {
+                  "alignment": "right",
+                  "text": "$78.71",
+                  "width": 80,
+                },
+              ],
+              "margin": [
+                0,
+                2,
+                0,
+                2,
+              ],
+            },
+            {
+              "columns": [
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "Total",
+                  "width": 80,
+                },
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "$1,266.81",
+                  "width": 80,
+                },
+              ],
+              "margin": [
+                0,
+                4,
+                0,
+                0,
+              ],
+            },
+          ],
+          "width": "auto",
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        24,
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        0,
+        0,
+        4,
+      ],
+      "text": "Terms:",
+    },
+    {
+      "style": "paragraph",
+      "text": "Sample terms.",
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "Notes:",
+    },
+    {
+      "ul": [
+        "Note A",
+        "Note B",
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "Payment Terms:",
+    },
+    {
+      "ul": [
+        "70% on acceptance",
+      ],
+    },
+    {
+      "alignment": "center",
+      "bold": true,
+      "fontSize": 18,
+      "margin": [
+        0,
+        30,
+        0,
+        0,
+      ],
+      "text": "Thank You For Your Business",
+    },
+  ],
+  "defaultStyle": {
+    "font": "Inter",
+    "fontSize": 10,
+  },
+  "images": {},
+  "pageMargins": [
+    40,
+    40,
+    40,
+    40,
+  ],
+  "pageSize": "LETTER",
+  "styles": {
+    "paragraph": {
+      "fontSize": 10,
+      "lineHeight": 1.3,
+    },
+  },
+}
+`;
+
+exports[`crm-default renders identically after the view-model extraction > for scope notes > crm-default — scope notes 1`] = `
+{
+  "content": [
+    {
+      "alignment": "center",
+      "bold": true,
+      "color": "#E11D2E",
+      "fontSize": 22,
+      "text": "Northwind Services LLC",
+    },
+    {
+      "margin": [
+        0,
+        16,
+        0,
+        20,
+      ],
+      "stack": [
+        {
+          "alignment": "center",
+          "bold": true,
+          "fontSize": 22,
+          "text": "Estimate E00001",
+        },
+        {
+          "alignment": "center",
+          "color": "#666666",
+          "fontSize": 10,
+          "margin": [
+            0,
+            4,
+            0,
+            0,
+          ],
+          "text": "Prepared for Jane Doe",
+        },
+      ],
+    },
+    {
+      "bold": true,
+      "fontSize": 11,
+      "margin": [
+        0,
+        0,
+        0,
+        4,
+      ],
+      "text": "Scope of Work",
+    },
+    {
+      "fontSize": 10,
+      "margin": [
+        0,
+        0,
+        0,
+        0,
+      ],
+      "text": "Work is performed during business hours.",
+    },
+    {
+      "bold": true,
+      "fontSize": 11,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "Line Items",
+    },
+    {
+      "layout": {},
+      "margin": [
+        0,
+        0,
+        0,
+        16,
+      ],
+      "table": {
+        "body": [
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 1",
+                },
+                {
+                  "color": "#666666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 1 @ $499.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "text": "$499.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 2",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 2 @ $225.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "text": "$450.00",
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Item 3",
+                },
+                {
+                  "color": "#666666",
+                  "fontSize": 9,
+                  "text": "Description line",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 1 @ $99.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "stack": [
+                {
+                  "color": "#999999",
+                  "decoration": "lineThrough",
+                  "fontSize": 9,
+                  "text": "$99.00",
+                },
+                {
+                  "bold": true,
+                  "text": "$89.10",
+                },
+              ],
+            },
+          ],
+          [
+            {
+              "stack": [
+                {
+                  "bold": true,
+                  "text": "Additional Service",
+                },
+                {
+                  "color": "#888888",
+                  "fontSize": 9,
+                  "margin": [
+                    0,
+                    2,
+                    0,
+                    0,
+                  ],
+                  "text": "Qty 1 @ $150.00",
+                },
+              ],
+            },
+            {
+              "alignment": "right",
+              "text": "$150.00",
+            },
+          ],
+        ],
+        "widths": [
+          "*",
+          80,
+        ],
+      },
+    },
+    {
+      "columns": [
+        {
+          "text": "",
+          "width": "*",
+        },
+        {
+          "stack": [
+            {
+              "columns": [
+                {
+                  "alignment": "right",
+                  "text": "Subtotal",
+                  "width": 80,
+                },
+                {
+                  "alignment": "right",
+                  "text": "$1,188.10",
+                  "width": 80,
+                },
+              ],
+              "margin": [
+                0,
+                2,
+                0,
+                2,
+              ],
+            },
+            {
+              "columns": [
+                {
+                  "alignment": "right",
+                  "text": "Tax (6.625%)",
+                  "width": 80,
+                },
+                {
+                  "alignment": "right",
+                  "text": "$78.71",
+                  "width": 80,
+                },
+              ],
+              "margin": [
+                0,
+                2,
+                0,
+                2,
+              ],
+            },
+            {
+              "columns": [
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "Total",
+                  "width": 80,
+                },
+                {
+                  "alignment": "right",
+                  "bold": true,
+                  "fontSize": 12,
+                  "text": "$1,266.81",
+                  "width": 80,
+                },
+              ],
+              "margin": [
+                0,
+                4,
+                0,
+                0,
+              ],
+            },
+          ],
+          "width": "auto",
+        },
+      ],
+      "margin": [
+        0,
+        0,
+        0,
+        24,
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        0,
+        0,
+        4,
+      ],
+      "text": "Terms:",
+    },
+    {
+      "style": "paragraph",
+      "text": "Sample terms.",
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "Notes:",
+    },
+    {
+      "ul": [
+        "Note A",
+        "Note B",
+      ],
+    },
+    {
+      "bold": true,
+      "margin": [
+        0,
+        16,
+        0,
+        4,
+      ],
+      "text": "Payment Terms:",
+    },
+    {
+      "ul": [
+        "70% on acceptance",
+      ],
+    },
+    {
+      "alignment": "center",
+      "bold": true,
+      "fontSize": 18,
+      "margin": [
+        0,
+        30,
+        0,
+        0,
+      ],
+      "text": "Thank You For Your Business",
+    },
+  ],
+  "defaultStyle": {
+    "font": "Inter",
+    "fontSize": 10,
+  },
+  "images": {},
+  "pageMargins": [
+    40,
+    40,
+    40,
+    40,
+  ],
+  "pageSize": "LETTER",
+  "styles": {
+    "paragraph": {
+      "fontSize": 10,
+      "lineHeight": 1.3,
+    },
+  },
+}
+`;

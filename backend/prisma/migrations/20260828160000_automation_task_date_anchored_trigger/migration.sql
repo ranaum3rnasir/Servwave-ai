@@ -1,0 +1,15 @@
+-- Spec B slice 5: reminders before a task is due, and overdue chases after.
+--
+-- ONE value, for the reason every task migration in this series states: a Postgres enum
+-- value can never be removed, so the smaller irreversible step is the safer one, and an
+-- admin must never be able to author a workflow against a trigger that has not shipped.
+-- This is the LAST of Spec B's five task triggers.
+--
+-- One trigger covers BOTH directions. Its trigger_config is {anchor, direction,
+-- offset_minutes} exactly like the other four *_DATE_ANCHORED triggers, so an overdue
+-- chase is direction 'after' rather than a separate TASK_OVERDUE value - which is also
+-- why this file adds one label and not two.
+--
+-- Bare ADD VALUE, following 20260828150000_automation_task_deleted_trigger.
+-- No backfill and nothing destructive in this file.
+ALTER TYPE "AutomationTriggerType" ADD VALUE IF NOT EXISTS 'TASK_DATE_ANCHORED';

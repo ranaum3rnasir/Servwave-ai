@@ -1,0 +1,6 @@
+{
+  "_why": "Held out here, not written inline in the test, because the extractor scans every .ts/.tsx under src/ as raw text - comments and string literals included. A dead class name spelled literally in the guard's own test would register as a fresh occurrence and fail the guard it is testing. scripts/ is outside the scan root.",
+  "class": "bg-emerald-500",
+  "baselinedIn": "src/design-system/__tests__/tokens-guard.test.ts",
+  "leakFile": "src/components/ui/card.tsx"
+}

@@ -1,0 +1,49 @@
+-- Drop the manual communication log's `outcome` column and the `ManualCommOutcome` enum.
+--
+-- PHASE 2 OF TWO. Phase 1 (#1939) removed every read and write of this field: no capture UI, no
+-- API field (the create and update schemas are `.strict()`, so a body naming an outcome is a 400
+-- on the unknown key), and no timeline reading — the "call attempt" title noun and the outcome
+-- meta line are both gone. Phase 1 deliberately LEFT the column and the enum standing.
+--
+-- WHY THE TWO PHASES ARE NOT ONE RELEASE. Prisma enumerates the column list from its BUILD-TIME
+-- schema: a query with no `select` asks for every column the client was generated against, and
+-- `delete` emits RETURNING *. Every one of this table's three consumers is select-less
+-- (lib/job-communications.ts, lib/purge.ts, comm-manual-log.controller.ts). Render's start
+-- command is `prisma migrate deploy && node dist/index.js`, so the migration lands while the
+-- PREVIOUS instance is still serving. Same expand/contract shape as
+-- 20260827220000_drop_attachment_context, whose header spells the hazard out at length.
+--
+-- THE WINDOW IS NARROWED, NOT CLOSED — do not read the phasing as making the overlap safe.
+-- Phase 1 removed the CODE readers but deliberately left `outcome` in schema.prisma, so the
+-- deployed phase-1 instance's generated client STILL enumerates "outcome" in those select-less
+-- queries. Between this migration applying and the new instance taking over, the phase-1
+-- instance can still 500 on the three manual-log consumers. What phase 1 bought is that the
+-- window is one deploy swap rather than every request until the next release.
+--
+-- WHY THAT RESIDUAL RISK IS ACCEPTABLE HERE: the feature is staging-only. Production has neither
+-- the table nor the enum, so there is no production window at all. Staging holds 6 rows, and the
+-- only surfaces affected are the manual-log endpoints and the lead/job/customer timelines.
+--
+-- NO DATA IS LOST: every row's `outcome` is already NULL (staging, the only database that ever
+-- had the column, holds 6 rows and 0 non-null outcomes).
+--
+-- ROLLBACK. There is no down migration (this repo has none anywhere), but the shape is fully
+-- reconstructable: the four enum labels survive verbatim in the immutable
+-- 20260827160000_manual_communication_log/migration.sql (line 37), so a restore is
+--
+--     CREATE TYPE "ManualCommOutcome" AS ENUM
+--       ('CONNECTED','NO_ANSWER','VOICEMAIL','CALLBACK_REQUESTED');
+--     ALTER TABLE manual_communication_logs ADD COLUMN "outcome" "ManualCommOutcome";
+--
+-- No backup table is taken and none is needed: 0 rows carried a value in the only database that
+-- ever had the column, so a restore recreates the shape and loses no data.
+--
+-- ORDERING IS LOAD-BEARING: the type cannot be dropped while a column still uses it, so the
+-- column goes first.
+--
+-- IDEMPOTENT + re-runnable (`IF EXISTS` on both). Portable: plain DDL, no Supabase-only objects
+-- (no auth.* helpers, no TO authenticated/anon/service_role).
+
+ALTER TABLE IF EXISTS "manual_communication_logs" DROP COLUMN IF EXISTS "outcome";
+
+DROP TYPE IF EXISTS "ManualCommOutcome";

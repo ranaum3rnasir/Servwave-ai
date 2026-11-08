@@ -1,0 +1,15 @@
+-- Freeze-at-send: what the salesperson actually offered on each optional line, captured once by
+-- commitFirstSend and never written again. Complements the two columns
+-- 20260912120000_estimate_line_items_optional_selected added, which `is_selected` now shares with
+-- the customer: after send it is THEIR live answer, so the rep's own editor checkbox needs its own
+-- record of what went out.
+--
+-- NULLABLE, NO DEFAULT, and deliberately NO BACKFILL: null means "this row was never sent under
+-- this feature". An estimate sent before this ships falls back to `is_selected` at render time,
+-- which is exactly today's behaviour, so nothing invents a history it does not have. Purely
+-- additive, so old code and new code tolerate each other in either deploy order (frontend and
+-- backend deploy independently here).
+--
+-- @@map'd table name (`estimate_line_items`), not the Prisma model name. ADD COLUMN IF NOT EXISTS
+-- for idempotency. Portable plain Postgres, no vendor-only objects, no secrets, no data repair.
+ALTER TABLE "estimate_line_items" ADD COLUMN IF NOT EXISTS "selected_at_send" boolean;
