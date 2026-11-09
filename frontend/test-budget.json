@@ -1,0 +1,8 @@
+{
+  "maxCpuSeconds": 4500,
+  "cpuEnforcement": "warn",
+  "cpuEnforcementNote": "CPU over budget only warns until a 6-worker Mac baseline is recorded; then change this to \"fail\" (one-line diff, Ran reviews).",
+  "maxMinutes": 10.0,
+  "workers": 6,
+  "maxTestFiles": 1563
+}

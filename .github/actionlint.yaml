@@ -1,0 +1,5 @@
+# Custom runner labels actionlint cannot know. `frontend` is the label of the reserved Frontend runner (ci-nightly.yml's full-run job
+# runs on it so it never overlaps a pull request's Frontend job; ci.yml picks the same label at run time).
+self-hosted-runner:
+  labels:
+    - frontend
