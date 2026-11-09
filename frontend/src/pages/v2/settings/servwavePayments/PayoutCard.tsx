@@ -18,7 +18,7 @@ import {
   useStripeAccountLink,
   type StripeStatus,
   type VerificationValue,
-} from '@/lib/api/organization';
+} from '@/lib/api/shared/organization';
 import { FEE_SCHEDULE_URL, PAYMENTS_TERMS_URL } from '@/lib/legal-urls';
 import { payoutAccountState } from '@/lib/payments/payout-account-state';
 import { discardPayoutConnect, getPayoutConnect, onSessionRequestSucceeded } from '@/lib/payments/payout-connect';

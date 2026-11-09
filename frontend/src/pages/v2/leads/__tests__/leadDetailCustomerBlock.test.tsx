@@ -10,22 +10,16 @@ import { act, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import api from '@/lib/axios';
-import { buildAbility } from '@/lib/ability';
 import { requestCall } from '@/lib/communication/phoneTabHandoff';
-import { renderWithProviders, LEAD_FIXTURE } from '@/__tests__/helpers';
+import { LEAD_FIXTURE } from '@/__tests__/helpers';
 import { catalogToggle } from '@/__tests__/support/backendSwitchCatalog';
 
-import LeadDetailPage from '../LeadDetailPage';
+import { renderLeadDetail, serveLeadDetail, stubBrowser } from '@/__tests__/harness/leadDetailPage';
 
 vi.mock('@/components/tasks/JobLeadTasksTab', () => ({ JobLeadTasksTab: () => null }));
 vi.mock('@/lib/communication/phoneTabHandoff', () => ({ requestCall: vi.fn() }));
 
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 const mockNavigate = vi.fn();
 vi.mock('react-router-dom', async () => {
@@ -45,7 +39,6 @@ vi.mock('@/lib/entitlements', async (importOriginal) => ({
 }));
 
 const mockApi = vi.mocked(api);
-const adminAbility = buildAbility([{ action: 'manage', subject: 'all' }]);
 
 type Switches = { copyPhone: boolean; copyEmail: boolean; contact: boolean; view: boolean };
 const EVERYTHING_ON: Switches = { copyPhone: true, copyEmail: true, contact: true, view: true };
@@ -83,14 +76,8 @@ function renderLeadPage(switches: Switches, opts: { service?: boolean } = {}) {
   phoneService.value = opts.service ?? true;
   // A second render in one case must not start from the first one's remembered answer.
   localStorage.clear();
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url === '/api/permission-switches/me') return { data: meAnswer(switches) };
-    if (url.includes('/api/leads/')) return { data: { lead: LEAD } };
-    if (url.includes('/api/users')) return { data: { users: [] } };
-    if (url.includes('/api/tags')) return { data: { tags: [] } };
-    return { data: {} };
-  });
-  return renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+  serveLeadDetail({ lead: LEAD, me: meAnswer(switches) });
+  return renderLeadDetail();
 }
 
 /**

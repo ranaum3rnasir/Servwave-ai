@@ -8,7 +8,7 @@ import { catalogToggle } from '@/__tests__/support/backendSwitchCatalog';
 import { toast } from '@/ui-kit/components/ui/sonner';
 import { PAYMENTS_CHANNEL, postAttached } from '@/lib/paymentsChannel';
 import type { PaymentsSummary } from '@/lib/api/paymentsPage';
-import type { StripeStatus } from '@/lib/api/organization';
+import type { StripeStatus } from '@/lib/api/shared/organization';
 
 import PaymentsPage from '../PaymentsPage';
 

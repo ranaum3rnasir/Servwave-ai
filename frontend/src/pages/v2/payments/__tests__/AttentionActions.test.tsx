@@ -14,8 +14,8 @@ vi.mock('@/ui-kit/components/ui/sonner', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/ui-kit/components/ui/sonner')>()),
   toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() }),
 }));
-vi.mock('@/lib/api/mySwitches', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/lib/api/mySwitches')>()),
+vi.mock('@/lib/api/shared/mySwitches', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/api/shared/mySwitches')>()),
   useMySwitches: () => ({ admin_box: false, values: { view_customers: true, contact_customers: true, show_text: true, show_email: true } }),
 }));
 vi.mock('@/lib/entitlements', async (importOriginal) => ({

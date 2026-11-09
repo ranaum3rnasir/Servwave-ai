@@ -1,3 +1,30 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { addDays, format, startOfWeek } from 'date-fns';
+import api from '@/lib/axios';
+import { toast } from '@/ui-kit/components/ui/sonner';
+import { buildAbility } from '@/lib/ability';
+import { GRID_EVENT_ID, GRID_EVENT_TYPE, FROM_MEMBER } from '@/components/schedule/dragChannels';
+import { renderSchedule, serveSchedule } from '@/__tests__/harness/schedulePage';
+import { useAuthStore } from '@/stores/auth.store';
+
+vi.mock('@/ui-kit/components/ui/sonner', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  toast: vi.fn(),
+}));
+
+// Each test starts from the setup file's signed-in user and bare client calls: reset them here, so a test states its own user
+// and answers in its own `beforeEach` (`clearAllMocks` keeps implementations).
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(useAuthStore).mockReset();
+  vi.mocked(api.get).mockReset();
+  vi.mocked(api.post).mockReset();
+  vi.mocked(api.patch).mockReset();
+  vi.mocked(api.put).mockReset();
+  vi.mocked(api.delete).mockReset();
+});
+
 /**
  * SchedulePage — dragging a calendar entry (slice 08, calendar-entries spec §3/§4/§5).
  *
@@ -34,23 +61,6 @@
  * running code, the standard-view path is proven by asserting the guard clauses are present in
  * the source and in the right order.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, fireEvent, waitFor } from '@testing-library/react';
-import { addDays, format, startOfWeek } from 'date-fns';
-
-import api from '@/lib/axios';
-import { toast } from '@/ui-kit/components/ui/sonner';
-import { buildAbility } from '@/lib/ability';
-import { renderWithProviders } from '@/__tests__/helpers';
-import { TooltipProvider } from '@/ui-kit/components/ui/tooltip';
-import { GRID_EVENT_ID, GRID_EVENT_TYPE, FROM_MEMBER } from '@/components/schedule/dragChannels';
-
-import SchedulePage from '../SchedulePage';
-
-vi.mock('@/ui-kit/components/ui/sonner', async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  toast: vi.fn(),
-}));
 
 class ResizeObserverStub {
   observe() {}
@@ -118,21 +128,7 @@ const CUSTOMER_ONLY_ENTRY = {
 };
 
 function mockBoard(entries: Array<Record<string, unknown>> = [ENTRY]) {
-  mockApi.get.mockImplementation((url: string) => {
-    if (url === '/api/jobs') return Promise.resolve({ data: { jobs: [] } });
-    if (url === '/api/departments') return Promise.resolve({ data: { departments: [] } });
-    if (url === '/api/leads') return Promise.resolve({ data: { leads: [] } });
-    // The board's roster moved to the scoped endpoint; serve it the same fixture.
-    if (url === '/api/users' || url === '/api/users/assignable') {
-      return Promise.resolve({
-        data: { users: [{ id: 'm-alice', first_name: 'Alice', last_name: 'Ng', is_active: true, role: 'TECHNICIAN' }] },
-      });
-    }
-    if (url === '/api/organization') return Promise.resolve({ data: {} });
-    if (url === '/api/service-plans/scheduler-bucket') return Promise.resolve({ data: { plans: [] } });
-    if (url === '/api/calendar-entries') return Promise.resolve({ data: { calendar_entries: entries } });
-    return Promise.resolve({ data: {} });
-  });
+  serveSchedule({ jobs: [], bucketJobs: [], users: [{ id: 'm-alice', first_name: 'Alice', last_name: 'Ng', is_active: true, role: 'TECHNICIAN' }], calendarEntries: entries });
 }
 
 const cellFor = (offset: number) => `week-cell-m-alice-${format(addDays(WEEK_START, offset), 'yyyy-MM-dd')}`;
@@ -143,12 +139,7 @@ async function mountBoard(
   waitForText: string | RegExp = ENTRY_TITLE,
 ) {
   mockBoard(entries);
-  renderWithProviders(
-    <TooltipProvider>
-      <SchedulePage />
-    </TooltipProvider>,
-    { ability },
-  );
+  renderSchedule({ ability });
   await screen.findAllByText(waitForText);
   fireEvent.click(screen.getByRole('button', { name: 'Member' }));
 }

@@ -23,12 +23,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import api from '@/lib/axios';
-import { renderWithProviders } from './helpers';
-import { buildAbility } from '@/lib/ability';
-import EstimateWorkspacePage from '@/pages/v2/estimates/EstimateWorkspacePage';
+import { renderEstimateWorkspace, serveEstimateWorkspace } from '@/__tests__/harness/estimateWorkspacePage';
 
-const adminAbility = buildAbility([{ action: 'manage', subject: 'all' }]);
 
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');
@@ -71,7 +67,6 @@ vi.mock('@/components/estimates/DuplicateEstimateDialog', () => ({ DuplicateEsti
 vi.mock('@/components/estimates/WaiveDepositDialog', () => ({ WaiveDepositDialog: () => null }));
 vi.mock('@/components/estimates/RefundDepositDialog', () => ({ RefundDepositDialog: () => null }));
 
-const mockApi = vi.mocked(api);
 
 const ESTIMATE = {
   id: 'est-393-test-id',
@@ -138,10 +133,7 @@ const ESTIMATE = {
 };
 
 function setupMocks() {
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.includes('/api/estimates/')) return { data: { estimate: ESTIMATE } };
-    return { data: {} };
-  });
+  serveEstimateWorkspace({ estimate: ESTIMATE });
 }
 
 beforeEach(() => {
@@ -160,7 +152,7 @@ beforeEach(() => {
 describe('EstimateWorkspacePage — Preview dialog', () => {
   it('opens a dialog for THIS estimate, fetched from its own PDF endpoint (Actions → Preview)', async () => {
     const user = userEvent.setup();
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     await user.click(await screen.findByRole('button', { name: 'Actions' }));
     await user.click(await screen.findByRole('menuitem', { name: /preview/i }));
@@ -180,7 +172,7 @@ describe('EstimateWorkspacePage — Preview dialog', () => {
 
   it('keeps a Download button in the PDF dialog, enabled once the PDF has loaded', async () => {
     const user = userEvent.setup();
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     await user.click(await screen.findByRole('button', { name: 'Actions' }));
     await user.click(await screen.findByRole('menuitem', { name: /preview/i }));

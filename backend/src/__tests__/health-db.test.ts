@@ -34,6 +34,7 @@ import request from 'supertest';
 import { performance } from 'perf_hooks';
 import { switchFixture } from './permission-switches-fixture';
 import { heldLines } from './support/held-lines';
+import { terminateOtherSessionsInOwnDatabase } from './support/cancel-own-backend';
 
 const suite = realClient ? describe : describe.skip;
 
@@ -48,7 +49,7 @@ suite('Health endpoints (real database)', () => {
   let hold: ReturnType<typeof heldLines>['hold'];
 
   beforeAll(async () => {
-    app = (await import('../app.js')).default as never;
+    app = await fx.listener();
     healthClient = (await import('../lib/prismaHealth.js')).prismaHealth();
     const { PrismaClient: Client } = await import('@prisma/client');
     // Options typed first, not inlined: an inline literal assigned to a `PrismaClient`-typed place costs ~39k types (~700k the first) and once ran CI's typecheck out of memory.
@@ -131,7 +132,7 @@ suite('Health endpoints (real database)', () => {
   /** The database restarting or a pooler recycling the line: Postgres ends every other session. */
   async function dropEveryLine() {
     await request(app).get('/health/deep'); // the line is open
-    await monitor.$queryRaw`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()`;
+    await terminateOtherSessionsInOwnDatabase(monitor);
     // The users' pool lost its lines too; let it notice here, so the next test finds it whole.
     for (let i = 0; i < 4; i++) await db.$queryRaw`SELECT 1`.catch(() => undefined);
   }

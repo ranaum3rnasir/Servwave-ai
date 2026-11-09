@@ -28,7 +28,7 @@ vi.mock('@/lib/api/communication', async () => ({
 
 // Bubble times render on the ORG's clock, so the drawer reads the org query. This
 // suite renders it bare (no QueryClientProvider), so the zone is pinned here.
-vi.mock('@/lib/api/organization', () => ({
+vi.mock('@/lib/api/shared/organization', () => ({
   useOrganization: () => ({ data: { timezone: 'America/New_York' } }),
 }));
 

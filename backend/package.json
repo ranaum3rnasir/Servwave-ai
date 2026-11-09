@@ -19,6 +19,8 @@
     "db:seed:org": "tsx src/seed-organization.ts",
     "test": "vitest run",
     "test:authorization": "vitest run --config vitest.authorization.config.ts",
+    "test:db": "tsx scripts/ci-db/cli.ts run",
+    "test:db:stop": "tsx scripts/ci-db/cli.ts stop",
     "test:watch": "vitest",
     "verify:stripe": "tsx scripts/verify-stripe.ts",
     "verify:lead-stage-clocks": "tsx scripts/verify-lead-stage-clocks.ts",

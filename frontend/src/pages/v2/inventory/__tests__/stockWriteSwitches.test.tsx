@@ -1,3 +1,27 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { screen, within, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import api from '@/lib/axios';
+import { renderInventory, serveInventory } from '@/__tests__/harness/inventoryPage';
+import type { Item, Location } from '@/lib/api/inventory';
+import { abilityWithSwitches, presetSwitchLabels } from '@/__tests__/support/backendSwitchCatalog';
+import { useInventoryAlertStore } from '@/stores/inventory-alert.store';
+import { useAuthStore } from '@/stores/auth.store';
+
+vi.mock('@/lib/axios');
+
+// Each test starts from the setup file's signed-in user and bare client calls: reset them here, so a test states its own user
+// and answers in its own `beforeEach` (`clearAllMocks` keeps implementations).
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(useAuthStore).mockReset();
+  vi.mocked(api.get).mockReset();
+  vi.mocked(api.post).mockReset();
+  vi.mocked(api.patch).mockReset();
+  vi.mocked(api.put).mockReset();
+  vi.mocked(api.delete).mockReset();
+});
+
 /**
  * Roles & Permissions S07.14 - the Stock page's write controls follow the stock switches.
  *
@@ -6,16 +30,6 @@
  * source of truth, read from the catalog file), never from a role name and never a hand-written grant list.
  * What is asserted is what a person sees, not the shape of a grant.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, within, waitFor } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
-
-import api from '@/lib/axios';
-import { renderWithProviders } from '@/__tests__/helpers';
-import { abilityWithSwitches, presetSwitchLabels } from '@/__tests__/support/backendSwitchCatalog';
-import { useInventoryAlertStore } from '@/stores/inventory-alert.store';
-import InventoryPage from '@/pages/v2/inventory/InventoryPage';
-import type { Item, Location } from '@/lib/api/inventory';
 
 class ResizeObserverStub {
   observe() {}
@@ -23,9 +37,6 @@ class ResizeObserverStub {
   disconnect() {}
 }
 global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
-
-const mockApi = vi.mocked(api);
-vi.mock('@/lib/axios');
 
 const WAREHOUSE = 'a0000000-0000-0000-0000-0000000000w1';
 const ITEM_ID = 'b0000000-0000-0000-0000-00000000b001';
@@ -44,19 +55,9 @@ const ITEMS: Item[] = [
 beforeEach(() => {
   vi.clearAllMocks();
   useInventoryAlertStore.setState({ pending: null, nonce: 0 });
-  mockApi.get.mockImplementation((async (url: string) => {
-    if (url === '/api/permission-switches/me') return { data: { admin_box: false, values: { view_stock: true }, rules: [] } };
-    if (url.startsWith('/api/inventory/items')) return { data: { data: ITEMS } };
-    if (url.startsWith('/api/inventory/locations')) return { data: { locations: LOCATIONS } };
-    if (url.startsWith('/api/inventory/assets')) return { data: { data: [], meta: { total: 0 } } };
-    if (url.startsWith('/api/logistic-orders')) return { data: { data: [], page: 1, limit: 50, total: 0 } };
-    return {
-      data: {
-        data: [], meta: { page: 1, limit: 1, total: 0, totalPages: 1 }, vendors: [], categories: [], branches: [], brands: [],
-        jobStages: [], purchaseOrders: [], users: [], finishes: [], techs: [], itemGroups: [], total: 0,
-      },
-    };
-  }) as typeof mockApi.get);
+  serveInventory({ items: ITEMS, locations: LOCATIONS, routes: [
+      { match: (url) => url === '/api/permission-switches/me', data: { admin_box: false, values: { view_stock: true }, rules: [] } },
+    ] });
 });
 
 /** What every person here may read: the stock page opens, and nothing on it can be written. */
@@ -65,9 +66,9 @@ const READ = ['View stock', 'View price book', 'View purchase orders', 'View ven
 // A Create switch is passed with the Edit switch it needs (Create price book items needs Edit price book items, Create
 // purchase orders needs Edit purchase orders, Create vendors needs Edit vendors).
 function renderStock(...writes: string[]) {
-  return renderWithProviders(<InventoryPage />, {
+  return renderInventory({
     ability: abilityWithSwitches(...READ, ...writes),
-    initialEntries: ['/inventory'],
+    entry: '/inventory',
   });
 }
 
@@ -112,9 +113,9 @@ describe('Items tab and item detail - a person with every stock write switch off
       (label) => /stock$|price book items$|purchase orders$|vendors$/.test(label),
     );
     expect(dispatcher).toContain('View stock');
-    renderWithProviders(<InventoryPage />, {
+    renderInventory({
       ability: abilityWithSwitches(...dispatcher, 'View stock'),
-      initialEntries: ['/inventory'],
+      entry: '/inventory',
     });
     await openDetail();
 

@@ -34,8 +34,29 @@ Every issue carries exactly one priority label + one module label. May optionall
 **Workflow** (zero or more):
 - `auto-fix-eligible` — picked up by the nightly auto-fix cron (1:00 AM ET). Apply only to issues with clear root cause and ≤5-file fix. NEVER apply to issues touching auth, payments, Stripe, webhooks, or DB migrations.
 - `pr-pending` — has an open PR awaiting review (auto-applied by fix-cron when it opens a PR; auto-removed when the PR is merged or closed).
+- `queue:runner` — a ticket done on the CI machine itself (runner labels, runner services), by the agent that runs there, never by a cloud or repo agent.
+- `ci-budget` — the one open ticket the weekly CI time budget job (`.github/workflows/ci-budget.yml`) opens or comments on; its body carries a hidden marker, and the job finds the ticket by this label plus the marker.
+- `in-progress` — claimed by an agent; the newest `CLAIMED` comment says which one.
 
 **Triage state** (optional, from `triage-labels.md`): `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`.
+
+## Handing tickets between agents on different machines
+
+When one ticket graph is worked by more than one agent (for example a cloud build session and
+the agent on the CI machine), GitHub is the only shared state. The rules, the same for every agent:
+
+1. **Startable** = open, not claimed, and every issue in its `## Blocked by` section is **closed**.
+   A repo ticket is closed only after its change is merged into `staging`, so "closed" means
+   "live for the next agent". `node scripts/issue-frontier/run.mjs --label <queue>` lists a
+   queue's startable, claimed and blocked tickets (exit 0 when something is ready, 3 when not).
+2. **Claim**: comment `CLAIMED <agent> <UTC time>` and add `in-progress`. One claimant at a time.
+3. **Done**: close the issue with a comment starting `DONE:` holding the proof (commands run,
+   their output, the resulting state). Remove `in-progress`.
+4. **Stuck**: comment `STUCK:` with the reason, swap `in-progress` for `ready-for-human`, and
+   tell Ran. Never close a ticket to unblock the other side.
+
+A nudge between agents (a chat message, a webhook) carries no instructions, only "check your
+queue". The issue bodies are the instructions.
 
 ## Branching policy
 

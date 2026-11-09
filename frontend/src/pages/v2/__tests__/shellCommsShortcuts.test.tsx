@@ -30,7 +30,7 @@ const unread = vi.hoisted(() => ({ sms: 0, whatsapp: 0, email: 0 }));
 vi.mock('@/lib/api/communication', () => ({
   useUnreadCounts: () => unread,
 }));
-vi.mock('@/lib/api/organization', () => ({ useOrganization: () => ({ data: undefined }) }));
+vi.mock('@/lib/api/shared/organization', () => ({ useOrganization: () => ({ data: undefined }) }));
 
 const USER_ID = '00000000-0000-0000-0000-000000000001';
 

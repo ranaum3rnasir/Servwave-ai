@@ -22,7 +22,7 @@ import { VisitScheduleDialog } from '@/pages/v2/jobs/components/visitScheduleDia
 import { AssignJobDialog } from '@/components/jobs/AssignJobDialog';
 import { CancelJobDialog } from '@/components/jobs/CancelJobDialog';
 import { useVisitLifecycle, type VisitLifecycleVars } from '@/lib/useVisitLifecycle';
-import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
+import { renderJobDetail, serveJobDetail, stubBrowser } from '@/__tests__/harness/jobDetailPage';
 import { BulkBar } from '@/pages/v2/jobs/components/bulkBar';
 
 const JOB_ID = 'j0000000-0000-0000-0000-000000000001';
@@ -34,14 +34,7 @@ vi.mock('react-router-dom', async () => ({
   useNavigate: () => vi.fn(),
 }));
 
-// floating-ui (under the Radix menus) constructs a ResizeObserver; the global setup mock is not
-// constructable.
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 const post = vi.mocked(api.post);
 const patch = vi.mocked(api.patch);
@@ -200,24 +193,16 @@ describe('the Visits card lifecycle steps', () => {
 
 describe('the job page header', () => {
   it('"Complete job" marks the customer page stale (it completes the job\'s visits)', async () => {
-    get.mockImplementation(async (url: string) =>
-      url === `/api/jobs/${JOB_ID}`
-        ? {
-            data: {
-              job: {
-                id: JOB_ID, job_number: 'J00001', status: 'IN_PROGRESS',
-                customer: { id: 'cust-1', first_name: 'Pat', last_name: 'Sample', company_name: null },
-                assignees: [], invoices: [], linked_estimates: [], tags: [], actions: ALL_JOB_ACTIONS,
-                created_at: '2026-09-01T00:00:00.000Z', updated_at: '2026-09-01T00:00:00.000Z',
-              },
-            },
-          }
-        : { data: {} },
-    );
-    const user = userEvent.setup();
-    const { queryClient } = renderWithProviders(<JobDetailPage />, {
-      ability: buildAbility([{ action: 'manage', subject: 'all' }]),
+    serveJobDetail({
+      job: {
+        id: JOB_ID, job_number: 'J00001', status: 'IN_PROGRESS',
+        customer: { id: 'cust-1', first_name: 'Pat', last_name: 'Sample', company_name: null },
+        assignees: [], invoices: [], linked_estimates: [], tags: [], actions: ALL_JOB_ACTIONS,
+        created_at: '2026-09-01T00:00:00.000Z', updated_at: '2026-09-01T00:00:00.000Z',
+      },
     });
+    const user = userEvent.setup();
+    const { queryClient } = renderJobDetail();
     seedCustomerPage(queryClient);
 
     await user.click(await screen.findByRole('button', { name: /Complete job/ }));

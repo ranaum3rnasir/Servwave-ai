@@ -9,10 +9,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import api from '@/lib/axios';
-import { renderWithProviders } from './helpers';
-import { buildAbility } from '@/lib/ability';
-import EstimateWorkspacePage from '@/pages/v2/estimates/EstimateWorkspacePage';
+import { renderEstimateWorkspace, serveEstimateWorkspace } from '@/__tests__/harness/estimateWorkspacePage';
 import { ESTIMATE_STATUS } from '@/constants/estimateStatus';
 import { MEDIA } from '@/ui-kit/lib/breakpoints';
 
@@ -43,7 +40,6 @@ vi.mock('@/components/estimates/DuplicateEstimateDialog', () => ({ DuplicateEsti
 vi.mock('@/components/estimates/WaiveDepositDialog', () => ({ WaiveDepositDialog: () => null }));
 vi.mock('@/components/estimates/RefundDepositDialog', () => ({ RefundDepositDialog: () => null }));
 
-const adminAbility = buildAbility([{ action: 'manage', subject: 'all' }]);
 const originalMatchMedia = window.matchMedia;
 
 function setPhone(isPhone: boolean) {
@@ -117,12 +113,8 @@ const ESTIMATE = {
 };
 
 function mount() {
-  vi.mocked(api.get).mockImplementation(async (url: string) => {
-    if (url.includes('/state-tax-rates')) return { data: { data: [] } };
-    if (url.includes('/api/estimates/')) return { data: { estimate: ESTIMATE } };
-    return { data: {} };
-  });
-  return renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+  serveEstimateWorkspace({ estimate: ESTIMATE });
+  return renderEstimateWorkspace();
 }
 
 beforeEach(() => {

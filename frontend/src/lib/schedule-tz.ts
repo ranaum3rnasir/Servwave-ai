@@ -16,7 +16,7 @@
 // the actual write-path discipline is: go through wallClockToIso()/toInstant() at every
 // serialisation site, never call .toISOString() on a WallClock by hand.
 import { toZonedTime, fromZonedTime, formatInTimeZone } from 'date-fns-tz';
-import { useOrganization } from '@/lib/api/organization';
+import { useOrganization } from '@/lib/api/shared/organization';
 import { DEFAULT_SCHEDULE_TIMEZONE } from '@/lib/schedule-tz-intl';
 
 // The Intl-only half lives in ./schedule-tz-intl so a public page can use it without this file's

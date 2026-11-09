@@ -22,7 +22,7 @@ import { Link } from 'react-router-dom';
 import { AlertTriangle, Ban, RefreshCw } from 'lucide-react';
 import { toast } from '@/components/ui/use-toast';
 import { Button } from '@/components/ui/button';
-import { switchOn, useMySwitches } from '@/lib/api/mySwitches';
+import { switchOn, useMySwitches } from '@/lib/api/shared/mySwitches';
 import type {
   LoApiError,
   LoShortageDetail,

@@ -1,17 +1,12 @@
-/**
- * The lead page's status menu is rendered from the server's `status_options` (walkthrough
- * lead-statuses PRD 7.3 and 7.4): a locked status is shown locked with its reason, the meanings
- * show on hover, a refused change surfaces the server's own words, and a response without
- * `status_options` falls back to the plain list.
- */
-import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { useAuthStore } from '@/stores/auth.store';
 import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
-import { renderWithProviders, LEAD_FIXTURE, NOTES_FIXTURE } from '@/__tests__/helpers';
-import { DESKTOP, emulateDevice } from '@/__tests__/support/deviceShape';
 import { buildAbility } from '@/lib/ability';
-import LeadDetailPage from '../LeadDetailPage';
+import { LEAD_FIXTURE, NOTES_FIXTURE } from '@/__tests__/helpers';
+import { DESKTOP, emulateDevice } from '@/__tests__/support/deviceShape';
+import { renderLeadDetail, serveLeadDetail, stubBrowser } from '@/__tests__/harness/leadDetailPage';
 
 vi.mock('@/components/tasks/JobLeadTasksTab', () => ({ JobLeadTasksTab: () => null }));
 vi.mock('@/components/communication/LeadCommunicationsTab', () => ({ LeadCommunicationsTab: () => null }));
@@ -20,23 +15,37 @@ vi.mock('@/lib/entitlements', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/entitlements')>()),
   useFeature: () => false,
 }));
-const toastError = vi.hoisted(() => vi.fn());
+vi.mock('react-router-dom', async () => {
+  const actual = await vi.importActual('react-router-dom');
+  return { ...actual, useParams: () => ({ id: LEAD_FIXTURE.id }), useNavigate: () => vi.fn() };
+});
 vi.mock('@/ui-kit/components/ui/sonner', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/ui-kit/components/ui/sonner')>()),
   toast: { error: toastError, success: vi.fn() },
 }));
 
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+const toastError = vi.hoisted(() => vi.fn());
 
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual('react-router-dom');
-  return { ...actual, useParams: () => ({ id: LEAD_FIXTURE.id }), useNavigate: () => vi.fn() };
+// Each test starts from the setup file's signed-in user and bare client calls: reset them here, so a test states its own user
+// and answers in its own `beforeEach` (`clearAllMocks` keeps implementations).
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(useAuthStore).mockReset();
+  vi.mocked(api.get).mockReset();
+  vi.mocked(api.post).mockReset();
+  vi.mocked(api.patch).mockReset();
+  vi.mocked(api.put).mockReset();
+  vi.mocked(api.delete).mockReset();
 });
+
+/**
+ * The lead page's status menu is rendered from the server's `status_options` (walkthrough
+ * lead-statuses PRD 7.3 and 7.4): a locked status is shown locked with its reason, the meanings
+ * show on hover, a refused change surfaces the server's own words, and a response without
+ * `status_options` falls back to the plain list.
+ */
+
+stubBrowser();
 
 const mockApi = vi.mocked(api);
 type Rules = Parameters<typeof buildAbility>[0];
@@ -67,19 +76,15 @@ afterEach(() => {
 });
 
 function serveLead(statusOptions: unknown) {
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.includes('/notes')) return { data: { notes: NOTES_FIXTURE } };
-    if (url.includes('/api/leads/')) {
-      return { data: { lead: { ...LEAD_FIXTURE, status: 'CONTACTED', estimates: [], ...(statusOptions ? { status_options: statusOptions } : {}) } } };
-    }
-    if (url.includes('/api/tags')) return { data: { tags: [] } };
-    return { data: {} };
+  serveLeadDetail({
+    lead: { ...LEAD_FIXTURE, status: 'CONTACTED', estimates: [], ...(statusOptions ? { status_options: statusOptions } : {}) },
+    notes: NOTES_FIXTURE,
   });
 }
 
 async function openMenu(rules: Rules = ALL) {
   const user = userEvent.setup({ pointerEventsCheck: 0 });
-  renderWithProviders(<LeadDetailPage />, { ability: buildAbility(rules) });
+  renderLeadDetail({ ability: buildAbility(rules) });
   await user.click(await screen.findByRole('button', { name: /lead status: contacted/i }));
   await screen.findAllByRole('menuitem');
   return user;

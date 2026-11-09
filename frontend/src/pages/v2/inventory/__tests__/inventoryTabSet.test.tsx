@@ -16,7 +16,7 @@ import api from '@/lib/axios';
 import { buildAbility, type AbilityRule } from '@/lib/ability';
 import { renderWithProviders } from '@/__tests__/helpers';
 import { catalogToggle } from '@/__tests__/support/backendSwitchCatalog';
-import InventoryPage from '@/pages/v2/inventory/InventoryPage';
+import { inventoryElement, serveInventory } from '@/__tests__/harness/inventoryPage';
 import { inventoryV2Routes } from '@/pages/v2/routes/inventory.routes';
 import type { Item, Location } from '@/lib/api/inventory';
 
@@ -59,22 +59,14 @@ const callsTo = (prefix: string) => mockApi.get.mock.calls.filter((c) => String(
 /** The person's switches (by label) and the compiled rules that go with the ones that grant a read. */
 function serve(on: string[]) {
   const values = Object.fromEntries(on.map((label) => [key(label), true]));
-  mockApi.get.mockImplementation((async (url: string) => {
-    if (url === '/api/permission-switches/me') return { data: { admin_box: false, values, rules: [] } };
-    if (url.startsWith('/api/inventory/low-stock')) {
-      return { data: { data: [LOW_STOCK_ROW], meta: { page: 1, limit: 1, total: 1, totalPages: 1 } } };
-    }
-    if (url.startsWith('/api/inventory/items')) return { data: { data: ITEMS } };
-    if (url.startsWith('/api/inventory/locations')) return { data: { locations: LOCATIONS } };
-    if (url.startsWith('/api/inventory/assets')) return { data: { data: [], meta: { total: 0 } } };
-    if (url.startsWith('/api/logistic-orders')) return { data: { data: [], page: 1, limit: 50, total: 0 } };
-    return {
-      data: {
-        data: [], meta: { page: 1, limit: 1, total: 0, totalPages: 1 }, vendors: [], categories: [], branches: [],
-        brands: [], jobStages: [], purchaseOrders: [], users: [], finishes: [], techs: [], itemGroups: [], total: 0,
-      },
-    };
-  }) as typeof mockApi.get);
+  serveInventory({
+    items: ITEMS,
+    locations: LOCATIONS,
+    routes: [
+      { match: (url) => url === '/api/permission-switches/me', data: { admin_box: false, values, rules: [] } },
+      { match: (url) => url.startsWith('/api/inventory/low-stock'), data: { data: [LOW_STOCK_ROW], meta: { page: 1, limit: 1, total: 1, totalPages: 1 } } },
+    ],
+  });
 }
 
 function rulesFor(on: string[], extra: AbilityRule[] = []): AbilityRule[] {
@@ -94,7 +86,7 @@ function renderPage(path: string, on: string[], extra: AbilityRule[] = []) {
   return renderWithProviders(
     <>
       <Where />
-      <InventoryPage />
+      {inventoryElement()}
     </>,
     { initialEntries: [path], ability: buildAbility(rulesFor(on, extra)) },
   );

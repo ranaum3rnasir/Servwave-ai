@@ -17,7 +17,7 @@ import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithProviders, inventoryWriteAbility } from './helpers';
 import PriceBookPage from '@/pages/inventory/PriceBookPage';
-import InventoryPage from '@/pages/v2/inventory/InventoryPage';
+import { renderInventory } from '@/__tests__/harness/inventoryPage';
 
 const h = vi.hoisted(() => ({
   MATERIAL_ID: 'bbbbbbb1-0000-4000-8000-000000000001',
@@ -29,12 +29,6 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock('@/lib/api/inventory', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/inventory')>();
-  const EMPTY: never[] = [];
-  const stable =
-    <T,>(data: T) =>
-    () => ({ data, isLoading: false, isError: false });
-  const mutation = () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false });
   const base = {
     category: 'Hardware',
     trade: 'locksmith',
@@ -69,37 +63,25 @@ vi.mock('@/lib/api/inventory', async (importOriginal) => {
       taxable: true,
     },
   ];
-  return {
-    ...actual,
-    useInventoryItems: stable(items),
-    useBrands: stable(EMPTY),
-    useItemGroups: stable(EMPTY),
-    useCategories: stable(EMPTY),
-    useVendors: stable(EMPTY),
-    useLocations: stable(EMPTY),
-    useBranches: stable(EMPTY),
-    useJobStages: stable(EMPTY),
-    useMovements: stable(EMPTY),
-    // Paginated seam - InventoryPage reads `data.meta.total` for the Assets tile.
-    useAssets: stable({ data: EMPTY, meta: { total: 0 } }),
-    useLowStock: stable(EMPTY),
-    useUpsertItem: () => ({
-      mutate: vi.fn(),
-      mutateAsync: h.upsertItemMutateAsync,
-      isPending: false,
-    }),
-    useUpsertLocation: mutation,
-    useDeleteItem: mutation,
-    useRestoreItem: mutation,
-    useImportItemsCSV: mutation,
-    useTransferStock: mutation,
-    useUpsertBrand: mutation,
-    useUpsertItemGroup: mutation,
-    useUpsertCategory: mutation,
-    useDeleteBrand: mutation,
-    useDeleteItemGroup: mutation,
-    useDeleteCategory: mutation,
-  };
+  return (await import('@/__tests__/harness/inventoryApiStub')).inventoryApi(
+    await importOriginal<typeof import('@/lib/api/inventory')>(),
+    {
+      reads: {
+        useInventoryItems: items,
+        useItemGroups: [],
+        useAssets: { data: [], meta: { total: 0 } },
+        useLowStock: [],
+      },
+      mutations: ['useUpsertLocation', 'useDeleteItem', 'useRestoreItem', 'useImportItemsCSV', 'useTransferStock', 'useUpsertBrand', 'useUpsertItemGroup', 'useUpsertCategory', 'useDeleteBrand', 'useDeleteItemGroup', 'useDeleteCategory'],
+      custom: {
+        useUpsertItem: () => ({
+        mutate: vi.fn(),
+        mutateAsync: h.upsertItemMutateAsync,
+        isPending: false,
+      }),
+      },
+    },
+  );
 });
 
 // Shortened in the 2026-08-12 dialog restructure: the parenthetical moved to
@@ -120,7 +102,7 @@ beforeEach(() => {
 describe('PriceBookPage Items table - Type + Taxable columns (SRVW-90)', () => {
   it('renders the billing type and the taxable state for each row', async () => {
     renderWithProviders(<PriceBookPage />, {
-      initialEntries: ['/inventory/price-book'],
+      entry: '/inventory/price-book',
       ability: inventoryAbility(),
     });
 
@@ -138,7 +120,7 @@ describe('PriceBookPage Items table - Type + Taxable columns (SRVW-90)', () => {
 describe('Add/Edit Item dialog ships taxable from both mount points (SRVW-90)', () => {
   it('PriceBookPage create with Kind=material ships kind material and taxable true', async () => {
     renderWithProviders(<PriceBookPage />, {
-      initialEntries: ['/inventory/price-book'],
+      entry: '/inventory/price-book',
       ability: inventoryAbility(),
     });
 
@@ -156,7 +138,7 @@ describe('Add/Edit Item dialog ships taxable from both mount points (SRVW-90)', 
 
   it('edit prefills Taxable from the server row and round-trips false', async () => {
     renderWithProviders(<PriceBookPage />, {
-      initialEntries: ['/inventory/price-book'],
+      entry: '/inventory/price-book',
       ability: inventoryAbility(),
     });
 
@@ -174,8 +156,8 @@ describe('Add/Edit Item dialog ships taxable from both mount points (SRVW-90)', 
   });
 
   it('InventoryPage (Stock) create ships the same kind and taxable', async () => {
-    renderWithProviders(<InventoryPage />, {
-      initialEntries: ['/inventory'],
+    renderInventory({
+      entry: '/inventory',
       ability: inventoryAbility(),
     });
 

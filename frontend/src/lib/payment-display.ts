@@ -8,7 +8,7 @@
  */
 import type { PaymentState, RefundState } from '@/types/entities';
 import { PAYMENT_METHOD_LABELS } from '@/lib/payment-methods';
-import type { PaymentMethod } from '@/lib/api/organization';
+import type { PaymentMethod } from '@/lib/api/shared/organization';
 import { formatCurrency } from '@/lib/utils';
 
 /** The details captured from the charge, for display only. All optional: older rows have none. */

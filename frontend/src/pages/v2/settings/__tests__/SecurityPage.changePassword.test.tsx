@@ -46,6 +46,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   process.off('unhandledRejection', onRejection);
   act(() => {
     sonnerToast.dismiss();
@@ -53,7 +54,7 @@ afterEach(() => {
   cleanup();
 });
 
-/** Real time: the toast's own timer is what is under test, so it is not faked. */
+/** A short real tick (at most 100 ms: docs/ci.md); longer waits step a fake clock. */
 async function advance(ms: number) {
   await act(async () => {
     await new Promise((r) => setTimeout(r, ms));
@@ -102,10 +103,12 @@ describe('Change Password card', () => {
   });
 
   it('confirms inline and as a toast, and both are still on screen 5 seconds later', async () => {
+    // Fake clock (real time still flows for the typing library): the toast's own timer is stepped over, not slept through.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     const user = renderPage();
 
     await fill(user, typed(), typed());
-    await advance(5000);
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
 
     expect(within(card()).getByRole('status')).toHaveTextContent(UPDATED);
     expect(within(toastList()!).getByText(UPDATED)).toBeInTheDocument();

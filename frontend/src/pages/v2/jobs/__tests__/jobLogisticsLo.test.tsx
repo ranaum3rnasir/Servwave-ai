@@ -17,21 +17,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-import api from '@/lib/axios';
-import { renderWithProviders, ALL_JOB_ACTIONS } from '@/__tests__/helpers';
+import { ALL_JOB_ACTIONS } from '@/__tests__/helpers';
 import { buildAbility } from '@/lib/ability';
 
-import JobDetailPage from '../JobDetailPage';
+import { renderJobDetail, serveJobDetail, stubBrowser } from '@/__tests__/harness/jobDetailPage';
 
 const JOB_ID = 'j0000000-0000-0000-0000-000000000001';
 
-// floating-ui, under Radix's dropdown and popover, does `new ResizeObserver(...)`.
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 // Capture the props the page hands LOList so we can assert the anchor.
 let capturedLOListProps: { jobId?: string; invoiceId?: string; servicePlanId?: string } | null =
@@ -53,7 +46,6 @@ vi.mock('react-router-dom', async () => {
   return { ...actual, useParams: () => ({ id: JOB_ID }), useNavigate: () => vi.fn() };
 });
 
-const mockApi = vi.mocked(api);
 const adminAbility = buildAbility([{ action: 'manage', subject: 'all' }]);
 
 const BASE_JOB = {
@@ -106,18 +98,12 @@ const SYNCED_LINE = {
 };
 
 function mockJob(lines: unknown[]) {
-  mockApi.get.mockImplementation((async (url: string) => {
-    if (url.endsWith('/scopes')) {
-      return { data: { scopes: [], billing: { total: 0, invoiced: 0, remaining: 0 } } };
-    }
-    if (url.endsWith('/line-items')) {
-      return { data: { lines, billing: { total: 50, invoiced: 0, remaining: 50 } } };
-    }
-    if (url.includes('/api/jobs/')) {
-      return { data: { job: BASE_JOB } };
-    }
-    return { data: {} };
-  }) as unknown as typeof mockApi.get);
+  serveJobDetail({
+    job: BASE_JOB,
+    routes: [
+      { match: (url) => url.endsWith('/line-items'), data: { lines, billing: { total: 50, invoiced: 0, remaining: 50 } } },
+    ],
+  });
 }
 
 beforeEach(() => {
@@ -128,7 +114,7 @@ beforeEach(() => {
 describe('v2 JobDetailPage - Logistics tab LO fold-in', () => {
   it('renders the SHARED LOList pre-anchored to the job, above staging', async () => {
     mockJob([]);
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+    renderJobDetail({ ability: adminAbility });
 
     const user = userEvent.setup();
     await user.click(await screen.findByRole('tab', { name: /Logistics/ }));
@@ -144,7 +130,7 @@ describe('v2 JobDetailPage - Logistics tab LO fold-in', () => {
 
   it('shows no legacy-synced notice when the job has no SYNCED lines', async () => {
     mockJob([{ ...SYNCED_LINE, stock_status: 'UNSYNCED' }]);
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+    renderJobDetail({ ability: adminAbility });
 
     const user = userEvent.setup();
     await user.click(await screen.findByRole('tab', { name: /Logistics/ }));
@@ -155,7 +141,7 @@ describe('v2 JobDetailPage - Logistics tab LO fold-in', () => {
 
   it('lists the legacy SYNCED lines in a one-line notice when present', async () => {
     mockJob([SYNCED_LINE, { ...SYNCED_LINE, id: 'line-2', description: 'Wire spool' }]);
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+    renderJobDetail({ ability: adminAbility });
 
     const user = userEvent.setup();
     await user.click(await screen.findByRole('tab', { name: /Logistics/ }));

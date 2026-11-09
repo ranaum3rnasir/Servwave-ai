@@ -297,8 +297,12 @@ suite('changeCompanyPart (real database, one connection)', () => {
       await ready;
       const { changeCompanyPart } = await load();
       const mineResult = changeCompanyPart(db, mine.id, part);
-      // let the claim reach the unique index and wait on the rival's uncommitted row
-      await new Promise((r) => setTimeout(r, 400));
+      // the claim has reached the unique index and waits on the rival's uncommitted row: the database says so (a session of this
+      // database blocked on a transaction lock). Polled, not slept; it fails, with the wait's own message, when the claim never waits.
+      await vi.waitFor(async () => {
+        const [waiting] = await rival.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND wait_event = 'transactionid'`;
+        expect(Number(waiting!.n)).toBeGreaterThan(0);
+      }, { timeout: 15_000, interval: 20 });
       release();
       await rivalTx;
       expect(await mineResult).toEqual({ ok: false, reason: 'taken' });

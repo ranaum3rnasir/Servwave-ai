@@ -9,27 +9,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import api from '@/lib/axios';
-import { renderWithProviders } from './helpers';
-import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
+import { JOB_ID, mountJobDetail, stubBrowser } from './harness/jobDetailPage';
 import { buildAbility } from '@/lib/ability';
 
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 vi.mock('@/components/tasks/JobLeadTasksTab', () => ({ JobLeadTasksTab: () => null }));
 
-const JOB_ID = 'j0000000-0000-0000-0000-000000000022';
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual('react-router-dom');
-  return { ...actual, useParams: () => ({ id: JOB_ID }), useNavigate: () => vi.fn() };
-});
+vi.mock('react-router-dom', async () => (await import('./harness/jobDetailRouter')).jobDetailRouter());
 
-const mockApi = vi.mocked(api);
 const adminAbility = buildAbility([{ action: 'manage', subject: 'all' }]);
 /** Reads jobs and nothing else: the page must not take its Record payment answer from this. */
 const readOnlyAbility = buildAbility([{ action: 'read', subject: 'Job' }]);
@@ -63,29 +51,20 @@ const PAID = {
 type Step = { offered: boolean; reason: string | null };
 
 function mount(financials: Record<string, unknown>, step: Step | undefined, ability = adminAbility) {
-  const job = {
-    id: JOB_ID, job_number: 'J00022', status: 'READY_TO_CLOSE', scope_notes: null, estimated_duration: null, completion_notes: null,
-    scheduled_start: '2026-10-02T13:00:00.000Z', scheduled_end: '2026-10-02T15:00:00.000Z', started_at: null,
-    completed_at: '2026-10-02T15:00:00.000Z', cancelled_at: null, cancelled_reason: null, closed_at: null,
-    created_at: '2026-10-01T00:00:00.000Z', updated_at: '2026-10-01T00:00:00.000Z',
-    customer: { id: 'c1', first_name: 'John', last_name: 'Doe', company_name: null, email: 'j@d.com', phone: '5551234567' },
-    assignees: [], visits: [visit], service_location: null, estimate: null, invoices: [], linked_estimates: [], tags: [],
-    source_plan_id: null, source_plan: null, locked: false, locked_actions: [], actions: [],
-    new_visit_closed_reason: null, close_out_money: null,
-  };
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url === '/api/permission-switches/accepted-payment-methods') return { data: { every_method: false, methods: ['CHECK', 'CASH', 'ZELLE'] } } as never;
-    if (url === '/api/permission-switches/me') {
-      return { data: { admin_box: false, values: { allowed_payment_methods: ['ZELLE', 'VENMO', 'CHECK'] }, rules: [] } } as never;
-    }
-    if (url === `/api/jobs/${JOB_ID}/visits`) return { data: { visits: [visit] } } as never;
-    if (url.endsWith('/financials')) return { data: step ? { ...financials, payment_received: step } : financials } as never;
-    if (url.endsWith('/scopes')) return { data: { scopes: [], billing: { total: 0, invoiced: 0, remaining: 0 } } } as never;
-    if (url.endsWith('/line-items')) return { data: { lines: [], billing: { total: 0, invoiced: 0, remaining: 0 } } } as never;
-    if (url.includes(`/api/jobs/${JOB_ID}`)) return { data: { job } } as never;
-    return { data: {} } as never;
+  return mountJobDetail({
+    job: {
+      job_number: 'J00022', status: 'READY_TO_CLOSE', completed_at: '2026-10-02T15:00:00.000Z', closed_at: null,
+      visits: [visit], locked: false, locked_actions: [], actions: [],
+      new_visit_closed_reason: null, close_out_money: null,
+    },
+    visits: [visit],
+    ability, entry: `/jobs/${JOB_ID}`,
+    routes: [
+      { match: (url) => url === '/api/permission-switches/accepted-payment-methods', data: { every_method: false, methods: ['CHECK', 'CASH', 'ZELLE'] } },
+      { match: (url) => url === '/api/permission-switches/me', data: { admin_box: false, values: { allowed_payment_methods: ['ZELLE', 'VENMO', 'CHECK'] }, rules: [] } },
+      { match: (url) => url.endsWith('/financials'), data: step ? { ...financials, payment_received: step } : financials },
+    ],
   });
-  return renderWithProviders(<JobDetailPage />, { ability, initialEntries: [`/jobs/${JOB_ID}`] });
 }
 
 const stepButton = () => screen.findByRole('button', { name: /payment received/i });

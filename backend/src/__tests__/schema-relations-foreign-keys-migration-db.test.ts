@@ -18,7 +18,7 @@ import { randomUUID } from 'crypto';
 import { readdirSync, rmSync } from 'fs';
 import { join } from 'path';
 import { Prisma, PrismaClient } from '@prisma/client';
-import { deployMigrations } from './migration-deploy-support';
+import { createMigrationDatabase, deployMigrations } from './migration-deploy-support';
 
 const url = process.env.TEST_DATABASE_URL;
 const suite = url ? describe : describe.skip;
@@ -66,11 +66,12 @@ suite('every relation schema.prisma declares has its foreign key in the migrated
 
   it('has no relation without a foreign key (a relation on a polymorphic id can never have one)', async () => {
     const name = `fk_schema_${randomUUID().slice(0, 8)}`;
-    await admin.$executeRawUnsafe(`CREATE DATABASE "${name}"`);
+    const latest = readdirSync(MIGRATIONS).filter((entry) => entry !== 'migration_lock.toml').sort().pop()!;
+    // A copy of the run's base plus the migrations after it leaves the same schema as the full history does.
+    await createMigrationDatabase(admin, name, latest, tempDirs);
     databases.push(name);
     const u = new URL(server.toString());
     u.pathname = `/${name}`;
-    const latest = readdirSync(MIGRATIONS).filter((entry) => entry !== 'migration_lock.toml').sort().pop()!;
     deployMigrations(u.toString(), latest, 'through', tempDirs);
 
     scratch = new PrismaClient({ datasources: { db: { url: u.toString() } } });

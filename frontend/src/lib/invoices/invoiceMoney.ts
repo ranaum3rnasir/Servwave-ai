@@ -14,8 +14,9 @@
  * moment a field is added.
  */
 import type { InvoiceKind, Refund, Credit, VoidPaymentReason, PaymentState } from '@/types/entities';
-import type { InvoiceLineItem, Scope } from '@/lib/api/jobs';
-import type { PaymentMethod } from '@/lib/api/organization';
+import type { InvoiceLineItem } from '@/lib/api/jobs';
+import type { Scope } from '@/lib/api/shared/scope';
+import type { PaymentMethod } from '@/lib/api/shared/organization';
 import { PAYMENT_METHOD_LABELS } from '@/lib/payment-methods';
 import type { AppAbility } from '@/lib/ability';
 import { orgDayDiff } from '@/lib/schedule-tz';

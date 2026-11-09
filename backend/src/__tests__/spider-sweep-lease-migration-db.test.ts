@@ -23,7 +23,7 @@ import { spawnSync } from 'child_process';
 import { rmSync } from 'fs';
 import { dirname, join } from 'path';
 import { PrismaClient } from '@prisma/client';
-import { deployMigrations } from './migration-deploy-support';
+import { deployMigrations, createMigrationDatabase } from './migration-deploy-support';
 
 const url = process.env.TEST_DATABASE_URL;
 const suite = url ? describe : describe.skip;
@@ -65,7 +65,7 @@ suite('Spider sweep lease migration (real database)', () => {
 
   async function migrated(): Promise<Db> {
     if (db) return db;
-    await admin.$executeRawUnsafe(`CREATE DATABASE "${name}"`);
+    await createMigrationDatabase(admin, name, MIGRATION, tempDirs);
     const u = new URL(server.toString());
     u.pathname = `/${name}`;
     dbUrl = u.toString();

@@ -12,13 +12,10 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { Route, Routes } from 'react-router-dom';
 
-import { renderWithProviders } from '@/__tests__/helpers';
+import { posts, renderPublicEstimate, servePublicEstimate } from '@/__tests__/harness/publicEstimatePage';
 
-import PublicEstimatePage from '../PublicEstimatePage';
-
-vi.mock('react-signature-canvas', () => ({ default: () => null }));
+vi.mock('react-signature-canvas', async () => (await import('@/__tests__/harness/publicEstimateMocks')).blankPad());
 
 const CHECK_TEXT = 'Make checks payable to Org.\nMail to 1 Test Way.';
 
@@ -55,25 +52,21 @@ function page(est: ReturnType<typeof estimate>) {
 /** A stateful server: an approval POST stores the method, and the next page read returns it. */
 function stubApi(initial: ReturnType<typeof estimate>) {
   let current = initial;
-  const fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
-    if (init?.method === 'POST' && url.includes('/approve')) {
-      const body = JSON.parse(String(init.body));
-      current = { ...current, deposit_method: body.payment_method };
-      return Promise.resolve({ ok: true, json: async () => ({ estimate: current }) });
-    }
-    if (init?.method === 'POST') return Promise.resolve({ ok: true, json: async () => ({ checkout_url: 'https://pay.example/session' }) });
-    return Promise.resolve({ ok: true, json: async () => page(current) });
+  return servePublicEstimate({
+    page: () => page(current),
+    write: (url, init) => {
+      if (url.includes('/approve')) {
+        const body = JSON.parse(String(init!.body));
+        current = { ...current, deposit_method: body.payment_method };
+        return { body: { estimate: current } };
+      }
+      return { body: { checkout_url: 'https://pay.example/session' } };
+    },
   });
-  vi.stubGlobal('fetch', fetchMock);
-  return fetchMock;
 }
-const posts = (m: ReturnType<typeof vi.fn>) => m.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'POST');
 
 function open() {
-  return renderWithProviders(
-    <Routes><Route path="/p/estimates/:id" element={<PublicEstimatePage />} /></Routes>,
-    { initialEntries: ['/p/estimates/est-switch?token=tok-switch'] },
-  );
+  return renderPublicEstimate({ routed: true, entry: '/p/estimates/est-switch?token=tok-switch' });
 }
 
 afterEach(() => vi.unstubAllGlobals());
@@ -180,10 +173,7 @@ describe('a refused manual Confirm (#2981 messages, in the card that failed)', (
     [404, /This link is out of date\. Please open the latest link we sent you, or call us at \(555\) 123-4567\./],
   ] as const)('a %s on Confirm shows the message beside Confirm, and keeps the choice open', async (status, message) => {
     const est = estimate();
-    vi.stubGlobal('fetch', vi.fn().mockImplementation((_url: string, init?: RequestInit) =>
-      init?.method === 'POST'
-        ? Promise.resolve({ ok: false, status, json: async () => ({ error: 'refused' }) })
-        : Promise.resolve({ ok: true, json: async () => page(est) })));
+    servePublicEstimate({ page: () => page(est), write: { ok: false, status, body: { error: 'refused' } } });
     open();
     const user = userEvent.setup();
     await user.click(await screen.findByRole('button', { name: /pay by check/i }));

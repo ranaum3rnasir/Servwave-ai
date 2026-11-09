@@ -1,6 +1,7 @@
-import { useInfiniteQuery, type QueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery } from '@tanstack/react-query';
+import { changeLogKey } from '@/lib/api/shared/queryKeys';
 import api from '@/lib/axios';
-import type { SwitchValue } from '@/lib/api/permissionSwitches';
+import type { SwitchValue } from '@/lib/api/shared/switchTypes';
 
 /**
  * Roles & Permissions: the change log of a role and of a person, read a page at a time, newest first.
@@ -36,17 +37,6 @@ interface ChangeLogPage {
 
 /** Entries asked for at a time: a role edited for months holds thousands, a role assignment writes about 150 at once. */
 export const CHANGE_LOG_PAGE_SIZE = 50;
-
-/** Every change log's cache entries, so a write that adds entries can start them over. */
-export const changeLogKey = ['permission-change-log'] as const;
-
-/**
- * Start every open change log over from its newest page after a write. Refetching the pages already loaded would walk
- * a long log from the top; the entries a write adds are all at the top.
- */
-export function resetChangeLogs(qc: QueryClient): void {
-  void qc.resetQueries({ queryKey: changeLogKey });
-}
 
 function useChangeLogPages(key: readonly string[], path: string) {
   const query = useInfiniteQuery({

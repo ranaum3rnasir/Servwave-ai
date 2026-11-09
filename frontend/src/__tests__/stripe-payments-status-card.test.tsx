@@ -11,7 +11,7 @@ import {
   deriveStripeState,
   PaymentsStatusBody,
 } from '@/components/payments/PaymentsStatusCard';
-import { type StripeStatus } from '@/lib/api/organization';
+import { type StripeStatus } from '@/lib/api/shared/organization';
 
 const BASE_STATUS: StripeStatus = {
   connected: false,
@@ -182,8 +182,8 @@ const hoisted = vi.hoisted(() => ({
   org: undefined as unknown as { accepted_payment_methods: string[] } | undefined,
 }));
 
-vi.mock('@/lib/api/organization', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/organization')>();
+vi.mock('@/lib/api/shared/organization', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/api/shared/organization')>();
   return {
     ...actual,
     useOrganization: () => ({ data: hoisted.org }),

@@ -33,7 +33,7 @@ import {
   USER_MAILBOX_MIGRATION, dryRunReport, formatDryRunReport, formatProofReport, proofReport, stopConditionMessage,
 } from '../lib/mailbox/user-mailbox-report';
 import { buildUserNamePart } from '../lib/mailbox/address-core';
-import { deployMigrations } from './migration-deploy-support';
+import { deployMigrations, createMigrationDatabase } from './migration-deploy-support';
 
 // The register reads the mailbox domain from the environment settings; nothing else here needs them.
 vi.mock('../config/env', () => ({
@@ -73,7 +73,8 @@ suite('user mailbox migration (real database)', () => {
 
   async function createDatabase(template?: string): Promise<{ dbUrl: string; client: Db; name: string }> {
     const name = `s103_mig_${randomUUID().slice(0, 8)}`;
-    await admin.$executeRawUnsafe(`CREATE DATABASE "${name}"${template ? ` TEMPLATE "${template}"` : ''}`);
+    if (template) await admin.$executeRawUnsafe(`CREATE DATABASE "${name}" TEMPLATE "${template}"`);
+    else await createMigrationDatabase(admin, name, USER_MAILBOX_MIGRATION, tempDirs);
     databases.push(name);
     const u = new URL(server.toString());
     u.pathname = `/${name}`;
@@ -158,13 +159,17 @@ suite('user mailbox migration (real database)', () => {
     addresses: await db.$queryRawUnsafe(`SELECT local_part, kind, organization_id::text, is_primary FROM mailbox_addresses ORDER BY local_part`),
   });
 
+  // Every DROP DATABASE forces an immediate checkpoint on the server, and the server's settings are durable (spec #3234: no
+  // non-durable settings). This file drops over a dozen scratch databases one after another, and the other lanes' files do the same, so
+  // under lanes the drops queue behind each other's checkpoints: measured 47 s with only these two files in the lanes, and past the lane
+  // run's 60 s hook limit in two full runs at load 8-13. It is slow teardown, not a stuck one, so this hook alone gets the room.
   afterAll(async () => {
     const quietly = (p: Promise<unknown>) => p.catch(() => undefined);
     for (const c of clients) await quietly(c.$disconnect());
     for (const name of databases) await quietly(admin.$executeRawUnsafe(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`));
     await admin.$disconnect();
     for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
-  });
+  }, 300_000);
 
   // ── The named cases ──────────────────────────────────────────────────────────────────────────────────────────────
 

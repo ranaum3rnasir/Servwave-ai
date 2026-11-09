@@ -1,29 +1,36 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, waitFor, within } from '@testing-library/react';
+import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import api from '@/lib/axios';
-import { renderWithProviders, ALL_JOB_ACTIONS, seesPrices } from './helpers';
-import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
 import { buildAbility } from '@/lib/ability';
-import { catalogToggle } from './support/backendSwitchCatalog';
+import { useAuthStore } from '@/stores/auth.store';
+import { ALL_JOB_ACTIONS, seesPrices } from '@/__tests__/helpers';
+import { JOB_ID, renderJobDetail, serveJobDetail, stubBrowser } from '@/__tests__/harness/jobDetailPage';
+import api from '@/lib/axios';
+import { catalogToggle } from '@/__tests__/support/backendSwitchCatalog';
 
-// floating-ui (under Radix dropdown) does `new ResizeObserver(...)`
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
+
+vi.mock('@/components/tasks/JobLeadTasksTab', () => ({ JobLeadTasksTab: () => null }));
 
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');
-  return {
-    ...actual,
-    useParams: () => ({ id: 'j0000000-0000-0000-0000-000000000001' }),
-  };
+  return { ...actual, useParams: () => ({ id: JOB_ID }), useNavigate: () => vi.fn() };
 });
 
-const mockApi = vi.mocked(api);
+// Each test starts from the setup file's signed-in user and bare client calls: reset them here, so a test states its own user
+// and answers in its own `beforeEach` (`clearAllMocks` keeps implementations).
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(useAuthStore).mockReset();
+  vi.mocked(api.get).mockReset();
+  vi.mocked(api.post).mockReset();
+  vi.mocked(api.patch).mockReset();
+  vi.mocked(api.put).mockReset();
+  vi.mocked(api.delete).mockReset();
+});
+
+// floating-ui (under Radix dropdown) does `new ResizeObserver(...)`
+stubBrowser();
 
 const BASE_JOB = {
   id: 'j0000000-0000-0000-0000-000000000001',
@@ -75,18 +82,13 @@ const FINANCIALS = {
 
 function mockJobAndFinancials(jobOverrides: Partial<typeof BASE_JOB> = {}) {
   const job = { ...BASE_JOB, ...jobOverrides };
-  mockApi.get.mockImplementation(async (url: string) => {
-    // The person may contact customers (S05.3: the Team card's Call and Text follow that switch).
-    if (url === '/api/permission-switches/me') {
-      return { data: { admin_box: false, values: { [catalogToggle('Contact customers').key]: true } } };
-    }
-    if (url.includes('/financials')) {
-      return { data: FINANCIALS };
-    }
-    if (url.includes('/api/jobs/')) {
-      return { data: { job } };
-    }
-    return { data: {} };
+  serveJobDetail({
+    job,
+    routes: [
+      // The person may contact customers (S05.3: the Team card's Call and Text follow that switch).
+      { match: (url) => url === '/api/permission-switches/me', data: { admin_box: false, values: { [catalogToggle('Contact customers').key]: true } } },
+      { match: (url) => url.includes('/financials'), data: FINANCIALS },
+    ],
   });
 }
 
@@ -108,7 +110,7 @@ describe('JobDetailPage - command-center tab scaffold', () => {
     ]);
     mockJobAndFinancials();
 
-    renderWithProviders(<JobDetailPage />, { ability });
+    renderJobDetail({ ability });
 
     // Wait for job to load
     await screen.findByRole('heading', { name: /J00001/ });
@@ -140,7 +142,7 @@ describe('JobDetailPage - command-center tab scaffold', () => {
     ]);
     mockJobAndFinancials();
 
-    renderWithProviders(<JobDetailPage />, { ability });
+    renderJobDetail({ ability });
 
     await screen.findByRole('heading', { name: /J00001/ });
 
@@ -166,7 +168,7 @@ describe('JobDetailPage — IconRail panels', () => {
   it('keeps only the Activity rail panel on the job page', async () => {
     mockJobAndFinancials();
 
-    renderWithProviders(<JobDetailPage />);
+    renderJobDetail({ ability: undefined });
 
     await screen.findByRole('heading', { name: /J00001/ });
 
@@ -183,7 +185,7 @@ describe('JobDetailPage — Command Center header', () => {
   it('renders the command-center header with job number, status, and service type', async () => {
     mockJobAndFinancials();
 
-    renderWithProviders(<JobDetailPage />);
+    renderJobDetail({ ability: undefined });
 
     // Job number heading
     expect(await screen.findByRole('heading', { name: /J00001/ })).toBeInTheDocument();
@@ -201,7 +203,7 @@ describe('JobDetailPage — Command Center header', () => {
     mockJobAndFinancials();
 
     // The money block is for a person who sees prices (P11).
-    renderWithProviders(<JobDetailPage />, { ability: seesPrices });
+    renderJobDetail({ ability: seesPrices });
 
     await screen.findByRole('heading', { name: /J00001/ });
 
@@ -239,7 +241,7 @@ describe('JobDetailPage — R2 header action-cluster changes', () => {
     ]);
     mockJobAndFinancials(); // status IN_PROGRESS → canComplete true
 
-    renderWithProviders(<JobDetailPage />, { ability });
+    renderJobDetail({ ability });
 
     await screen.findByRole('heading', { name: /J00001/ });
 
@@ -285,7 +287,7 @@ describe('JobDetailPage — note composer follows the API permission', () => {
     const ability = buildAbility([{ action: 'read', subject: 'Job' }]);
     mockJobAndFinancials({ actions: [] });
 
-    renderWithProviders(<JobDetailPage />, { ability });
+    renderJobDetail({ ability });
     await screen.findByRole('heading', { name: /J00001/ });
     await userEvent.click(await screen.findByRole('tab', { name: 'Notes' }));
 
@@ -297,7 +299,7 @@ describe('JobDetailPage — note composer follows the API permission', () => {
     const ability = buildAbility([{ action: 'manage', subject: 'Job' }]);
     mockJobAndFinancials({ actions: ['add_note'] });
 
-    renderWithProviders(<JobDetailPage />, { ability });
+    renderJobDetail({ ability });
     await screen.findByRole('heading', { name: /J00001/ });
     await userEvent.click(await screen.findByRole('tab', { name: 'Notes' }));
 
@@ -313,7 +315,7 @@ describe('JobDetailPage — R3 Overview 4-column layout', () => {
     ]);
     mockJobAndFinancials();
 
-    renderWithProviders(<JobDetailPage />, { ability });
+    renderJobDetail({ ability });
 
     await screen.findByRole('heading', { name: /J00001/ });
 
@@ -350,7 +352,7 @@ describe('JobDetailPage — Team card', () => {
       ],
     } as never);
 
-    renderWithProviders(<JobDetailPage />);
+    renderJobDetail({ ability: undefined });
 
     await screen.findByRole('heading', { name: /J00001/ });
 
@@ -384,7 +386,7 @@ describe('JobDetailPage — Attachments tab', () => {
   it('offers attachment upload on the Attachments tab (no rail-pointing message)', async () => {
     mockJobAndFinancials();
 
-    renderWithProviders(<JobDetailPage />);
+    renderJobDetail({ ability: undefined });
 
     await screen.findByRole('heading', { name: /J00001/ });
 
@@ -406,14 +408,15 @@ describe('JobDetailPage — R3 "View All" Communication link', () => {
 
     // Mock job + comms preview so the Communication History section renders
     const job = { ...BASE_JOB };
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url.includes('/financials')) return { data: FINANCIALS };
-      if (url.includes('/communications')) return { data: { messages: [] } };
-      if (url.includes('/api/jobs/')) return { data: { job } };
-      return { data: {} };
+    serveJobDetail({
+      job,
+      routes: [
+        { match: (url) => url.includes('/financials'), data: FINANCIALS },
+        { match: (url) => url.includes('/communications'), data: { messages: [] } },
+      ],
     });
 
-    renderWithProviders(<JobDetailPage />, { ability });
+    renderJobDetail({ ability });
 
     await screen.findByRole('heading', { name: /J00001/ });
 
@@ -450,7 +453,7 @@ describe('JobDetailPage - Items tab cost/margin gate (read Pricing)', () => {
     ]);
     mockJobAndFinancials();
 
-    renderWithProviders(<JobDetailPage />, { ability });
+    renderJobDetail({ ability });
     await openItemsTab();
 
     expect(screen.queryByText(/internal costs/i)).toBeNull();
@@ -466,7 +469,7 @@ describe('JobDetailPage - Items tab cost/margin gate (read Pricing)', () => {
     ]);
     mockJobAndFinancials();
 
-    renderWithProviders(<JobDetailPage />, { ability });
+    renderJobDetail({ ability });
     await openItemsTab();
 
     expect(await screen.findByText(/internal costs/i)).toBeInTheDocument();

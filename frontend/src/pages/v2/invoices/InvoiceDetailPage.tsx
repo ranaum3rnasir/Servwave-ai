@@ -17,7 +17,7 @@ import { customerDisplayName } from '@/lib/customer-name';
 import { cn, downloadBlob, extractApiError, formatCurrency } from '@/lib/utils';
 import { isInvoiceEditable, isInvoiceRenumberLocked } from '@/lib/invoiceEditable';
 import { createInvoicePaymentLink, markInvoiceSent, fetchStateTaxRates, updateInvoiceBilling } from '@/lib/api/invoices';
-import { useOrganization } from '@/lib/api/organization';
+import { useOrganization } from '@/lib/api/shared/organization';
 
 // Feature components with no kit equivalent - reused, never forked. Each owns
 // behaviour that belongs to shared infrastructure (IconRail, TagInput,

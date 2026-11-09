@@ -2204,7 +2204,7 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
 
     it('refuses a request from nobody signed in', async () => {
       const request = (await import('supertest')).default;
-      const app = (await import('../app.js')).default as never;
+      const app = await fx.listener();
       expect((await request(app).get('/api/dashboard/layout')).status).toBe(401);
       expect((await request(app).put('/api/dashboard/layout').send({ layout: [] })).status).toBe(401);
     });
@@ -2797,7 +2797,7 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
 
       it('refuses a request from nobody signed in', async () => {
         const request = (await import('supertest')).default;
-        const app = (await import('../app.js')).default as never;
+        const app = await fx.listener();
         expect((await request(app).post('/api/dashboard/layout/reset').send({})).status).toBe(401);
       });
     });
@@ -2937,7 +2937,7 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
 
       it('refuses a request from nobody signed in, and a layout that is not a list of tiles', async () => {
         const request = (await import('supertest')).default;
-        const app = (await import('../app.js')).default as never;
+        const app = await fx.listener();
         expect((await request(app).post('/api/dashboard/layout/carry-over').send({ layout: [] })).status).toBe(401);
         const { org } = await newOrg();
         const me = await personWith(org, JOBS_AND_LEADS);

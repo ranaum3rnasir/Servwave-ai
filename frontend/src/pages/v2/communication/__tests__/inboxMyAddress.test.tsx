@@ -6,7 +6,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { renderWithProviders } from '@/__tests__/helpers';
+import { renderInbox } from '@/__tests__/harness/inboxPage';
 import { buildAbility } from '@/lib/ability';
 
 const readAbility = buildAbility([
@@ -16,28 +16,21 @@ const readAbility = buildAbility([
 
 let mailbox: { status: string; address: string | null } | null = null;
 
-vi.mock('@/lib/api/communication', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/communication')>();
-  return {
-    ...actual,
-    useEmails: () => ({ data: [] }),
-    useEmailGroups: () => ({ data: [] }),
-    useForwardRules: () => ({ data: [] }),
-    useTeamMembers: () => ({ data: [] }),
-    useSendingIdentity: () => ({ data: undefined }),
-    useMarkEmailThreadRead: () => ({ mutate: vi.fn() }),
-    useSendEmail: () => ({ mutate: vi.fn(), isPending: false }),
-    useMyMailbox: () => ({ data: mailbox === null ? { mailbox: null } : { mailbox } }),
-  };
-});
+vi.mock('@/lib/api/communication', async (importOriginal) =>
+  (await import('@/__tests__/harness/inboxApiStub')).communicationStubs(await importOriginal<typeof import('@/lib/api/communication')>(), {
+    leave: ['useMarkEmailThreadUnread'],
+    hooks: {
+      useEmails: () => ({ data: [] }),
+      useMyMailbox: () => ({ data: mailbox === null ? { mailbox: null } : { mailbox } }),
+    },
+  }));
 
 let emailFeature = true;
-vi.mock('@/lib/entitlements', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/lib/entitlements')>()),
-  useFeature: (key: string) => (key === 'email' ? emailFeature : true),
-}));
-
-import InboxPage from '@/pages/v2/communication/InboxPage';
+vi.mock('@/lib/entitlements', async (importOriginal) =>
+  (await import('@/__tests__/harness/inboxApiStub')).inboxEntitlements(await importOriginal<typeof import('@/lib/entitlements')>(), {
+    ready: false,
+    feature: (key: string) => (key === 'email' ? emailFeature : true),
+  }));
 
 const NEEDED_SENTENCE = "You don't have an email address yet. An admin needs to set one before you can send email.";
 
@@ -51,7 +44,7 @@ describe('the Email page: your own address', () => {
     mailbox = { status: 'active', address: 'jane.smith.acme@mail.example.test' };
     const user = userEvent.setup();
     const writeText = vi.spyOn(navigator.clipboard, 'writeText');
-    renderWithProviders(<InboxPage />, { ability: readAbility });
+    renderInbox({ ability: readAbility });
 
     expect(await screen.findByText('jane.smith.acme@mail.example.test')).toBeInTheDocument();
     expect(screen.getByText('Your email address')).toBeInTheDocument();
@@ -64,7 +57,7 @@ describe('the Email page: your own address', () => {
 
   it('shows the address before the three panes (above the folder list)', async () => {
     mailbox = { status: 'active', address: 'jane.smith.acme@mail.example.test' };
-    renderWithProviders(<InboxPage />, { ability: readAbility });
+    renderInbox({ ability: readAbility });
     const address = await screen.findByText('jane.smith.acme@mail.example.test');
     const inbox = screen.getByRole('button', { name: /^Drafts/ });
     expect(address.compareDocumentPosition(inbox) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -72,7 +65,7 @@ describe('the Email page: your own address', () => {
 
   it('says "You don\'t have an email address yet..." for a person in "address needed", with no address and no copy button', async () => {
     mailbox = { status: 'address_needed', address: null };
-    renderWithProviders(<InboxPage />, { ability: readAbility });
+    renderInbox({ ability: readAbility });
 
     expect(await screen.findByText(NEEDED_SENTENCE)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Copy your email address' })).not.toBeInTheDocument();
@@ -81,7 +74,7 @@ describe('the Email page: your own address', () => {
 
   it('shows nothing about an address for a person who has no mailbox', async () => {
     mailbox = null;
-    renderWithProviders(<InboxPage />, { ability: readAbility });
+    renderInbox({ ability: readAbility });
     await screen.findByText('Compose');
     expect(screen.queryByText('Your email address')).not.toBeInTheDocument();
     expect(screen.queryByText(NEEDED_SENTENCE)).not.toBeInTheDocument();
@@ -91,7 +84,7 @@ describe('the Email page: your own address', () => {
     emailFeature = false;
     for (const box of [{ status: 'active', address: 'jane.smith.acme@mail.example.test' }, { status: 'address_needed', address: null }]) {
       mailbox = box;
-      const { unmount } = renderWithProviders(<InboxPage />, { ability: readAbility });
+      const { unmount } = renderInbox({ ability: readAbility });
       await screen.findByText('Compose');
       expect(screen.queryByText('jane.smith.acme@mail.example.test')).not.toBeInTheDocument();
       expect(screen.queryByText(NEEDED_SENTENCE)).not.toBeInTheDocument();
@@ -101,7 +94,7 @@ describe('the Email page: your own address', () => {
 
   it('names no email provider or other vendor', async () => {
     mailbox = { status: 'address_needed', address: null };
-    const { container } = renderWithProviders(<InboxPage />, { ability: readAbility });
+    const { container } = renderInbox({ ability: readAbility });
     await screen.findByText(NEEDED_SENTENCE);
     expect(container.innerHTML).not.toMatch(/resend|ctm|calltracking|supabase|render\.com|stripe|twilio/i);
   });

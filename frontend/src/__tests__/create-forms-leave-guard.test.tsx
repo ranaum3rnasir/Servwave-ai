@@ -16,7 +16,7 @@ import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import api from '@/lib/axios';
 import { buildAbility } from '@/lib/ability';
 import { AbilityProvider } from '@/contexts/AbilityContext';
-import LeadFormPage from '@/pages/v2/leads/LeadFormPage';
+import { leadFormElement, serveLeadForm } from '@/__tests__/harness/leadFormPage';
 import JobFormPage from '@/pages/v2/jobs/JobFormPage';
 import CustomerFormPage from '@/pages/v2/customers/CustomerFormPage';
 import { useSettingsGuard } from '@/stores/settingsGuard.store';
@@ -27,7 +27,7 @@ vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
   return { ...actual, useNavigate: () => mockNavigate };
 });
-vi.mock('@/lib/api/organization', () => ({
+vi.mock('@/lib/api/shared/organization', () => ({
   useOrganization: () => ({ data: { job_type_options: [], source_options: [], timezone: 'America/New_York' } }),
   useUpdateOrganization: () => ({ mutate: vi.fn() }),
 }));
@@ -76,7 +76,7 @@ interface FormCase {
 const CASES: FormCase[] = [
   {
     name: 'lead',
-    render: (search = '') => renderAt(`/leads/create${search}`, '/leads/create', <LeadFormPage />),
+    render: (search = '') => renderAt(`/leads/create${search}`, '/leads/create', leadFormElement()),
     touch: async (user) => { await user.type(await screen.findByLabelText(/first name/i), 'Jane'); },
     submit: async (user) => {
       await user.type(await screen.findByLabelText(/first name/i), 'Jane');
@@ -122,14 +122,13 @@ beforeEach(() => {
   vi.clearAllMocks();
   window.history.pushState(null, '');
   useSettingsGuard.setState({ isDirty: false, pendingLeave: null });
-  mockApi.get.mockImplementation(async (url: string) => {
+  serveLeadForm({
     // The new-lead form shows the creator rule's pre-fill and will not save blind without it.
-    if (url === '/api/leads/creator-prefill') return { data: { prefill: { owner_id: null, dispatcher_id: null } } };
+    creatorPrefill: { prefill: { owner_id: null, dispatcher_id: null } },
     // The new-job form shows the creator rule's pre-fill (Sold By and Dispatcher) and will not save blind without it.
-    if (url === '/api/jobs/creator-prefill') return { data: { prefill: { sold_by_id: null, dispatcher_id: null } } };
-    if (url === '/api/customers/picker') return { data: { customers: [PICKER_ROW] } };
-    if (url === `/api/customers/picker/${PICKER_ROW.id}`) return { data: { customer: PICKER_ROW } };
-    return { data: {} };
+    jobCreatorPrefill: { prefill: { sold_by_id: null, dispatcher_id: null } },
+    picker: [PICKER_ROW],
+    pickerOne: PICKER_ROW,
   });
 });
 afterEach(() => {
@@ -204,7 +203,7 @@ describe.each(CASES)('the $name create form leave guard', (c) => {
 describe('what a link prefills is not unsaved work', () => {
   it('a lead opened from the dialer with a phone number is clean until the user edits it', async () => {
     const user = userEvent.setup();
-    renderAt('/leads/create?phone=%2B15551234567', '/leads/create', <LeadFormPage />);
+    renderAt('/leads/create?phone=%2B15551234567', '/leads/create', leadFormElement());
     await screen.findByLabelText(/first name/i);
     expect(hasUnsavedWork()).toBe(false);
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
@@ -213,7 +212,7 @@ describe('what a link prefills is not unsaved work', () => {
 
   it('a lead opened for an existing customer is clean until the user edits it', async () => {
     const user = userEvent.setup();
-    renderAt(`/leads/create?customer_id=${PICKER_ROW.id}`, '/leads/create', <LeadFormPage />);
+    renderAt(`/leads/create?customer_id=${PICKER_ROW.id}`, '/leads/create', leadFormElement());
     expect(await screen.findByDisplayValue('Res')).toBeInTheDocument();
     expect(hasUnsavedWork()).toBe(false);
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
@@ -222,7 +221,7 @@ describe('what a link prefills is not unsaved work', () => {
 
   it('choosing a customer in the form is work: leaving asks', async () => {
     const user = userEvent.setup();
-    renderAt('/leads/create', '/leads/create', <LeadFormPage />);
+    renderAt('/leads/create', '/leads/create', leadFormElement());
     await user.type(await screen.findByLabelText(/first name/i), 'Re');
     await user.click(await screen.findByText(/Res Tricted/));
     await screen.findByDisplayValue('Res');
@@ -235,11 +234,8 @@ describe('what a link prefills is not unsaved work', () => {
 describe('the edit forms are not guarded by this slice', () => {
   it('a customer edit page Cancel still goes straight back', async () => {
     const user = userEvent.setup();
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url === '/api/customers/cust-1') {
-        return { data: { customer: { id: 'cust-1', first_name: 'Edit', last_name: 'Me', phone: '5551234567', email: '', service_locations: [] } } };
-      }
-      return { data: {} };
+    serveLeadForm({
+      routes: [{ match: (url) => url === '/api/customers/cust-1', data: { customer: { id: 'cust-1', first_name: 'Edit', last_name: 'Me', phone: '5551234567', email: '', service_locations: [] } } }],
     });
     renderAt('/customers/cust-1/edit', '/customers/:id/edit', <CustomerFormPage />);
     await user.type(await screen.findByDisplayValue('Edit'), 'x');

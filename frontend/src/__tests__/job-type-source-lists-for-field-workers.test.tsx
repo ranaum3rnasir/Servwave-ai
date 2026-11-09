@@ -1,12 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import api from '@/lib/axios';
 import { renderWithProviders } from './helpers';
 import { buildAbility } from '@/lib/ability';
 import JobFormPage from '@/pages/v2/jobs/JobFormPage';
-import LeadFormPage from '@/pages/v2/leads/LeadFormPage';
 import LeadsPage from '@/pages/v2/leads/LeadsPage';
+import { renderLeadForm, serveLeadForm } from '@/__tests__/harness/leadFormPage';
 
 /**
  * Roles & Permissions, PRD 4, slice S04.1 - the Job Type and Job Source lists fill for everyone.
@@ -18,7 +17,6 @@ import LeadsPage from '@/pages/v2/leads/LeadsPage';
  * would hide the lists and fail these.
  */
 
-const mockApi = vi.mocked(api);
 
 const JOB_TYPES = ['Install', 'Repair'];
 const SOURCES = ['Referral', 'Website'];
@@ -52,18 +50,17 @@ class ResizeObserverStub {
 }
 
 function serve(org: { job_type_options: string[]; source_options: string[] }) {
-  mockApi.get.mockImplementation((url: string) => {
-    if (url === '/api/organization') return Promise.resolve({ data: { timezone: 'America/New_York', ...org } });
-    if (url === '/api/leads') {
-      return Promise.resolve({
-        data: {
-          leads: [],
-          pagination: { page: 1, limit: 25, total: 0, totalPages: 0 },
-          stats: { total: 0, new_this_week: 0, no_owner: 0, won: 0, lost: 0 },
-        },
-      });
-    }
-    return Promise.resolve({ data: {} });
+  serveLeadForm({
+    organization: { timezone: 'America/New_York', ...org },
+    // The Leads list, which the same test file draws beside the forms.
+    routes: [{
+      match: (url) => url === '/api/leads',
+      data: {
+        leads: [],
+        pagination: { page: 1, limit: 25, total: 0, totalPages: 0 },
+        stats: { total: 0, new_this_week: 0, no_owner: 0, won: 0, lost: 0 },
+      },
+    }],
   });
 }
 
@@ -99,14 +96,14 @@ describe('Job form: the lists fill for a field worker', () => {
 describe('Lead form: the lists fill for a field worker', () => {
   it('lists the company job types', async () => {
     serve({ job_type_options: JOB_TYPES, source_options: SOURCES });
-    renderWithProviders(<LeadFormPage />, { ability: technician, initialEntries: [NEW_LEAD_ROUTE] });
+    renderLeadForm({ ability: technician, entry: NEW_LEAD_ROUTE });
     const trigger = await screen.findByRole('combobox', { name: 'Job Type' });
     expect(await optionsOf(trigger)).toEqual(JOB_TYPES);
   });
 
   it('lists the company job sources', async () => {
     serve({ job_type_options: JOB_TYPES, source_options: SOURCES });
-    renderWithProviders(<LeadFormPage />, { ability: technician, initialEntries: [NEW_LEAD_ROUTE] });
+    renderLeadForm({ ability: technician, entry: NEW_LEAD_ROUTE });
     const trigger = await screen.findByRole('combobox', { name: 'Source' });
     expect(await optionsOf(trigger)).toEqual(SOURCES);
   });
@@ -135,7 +132,7 @@ describe('Leads list filter: the facets fill for a field worker', () => {
 describe('The empty-list hint', () => {
   async function hintOnLeadForm(ability: typeof technician) {
     serve({ job_type_options: [], source_options: [] });
-    renderWithProviders(<LeadFormPage />, { ability, initialEntries: [NEW_LEAD_ROUTE] });
+    renderLeadForm({ ability, entry: NEW_LEAD_ROUTE });
     const trigger = await screen.findByRole('combobox', { name: 'Job Type' });
     return optionsOf(trigger);
   }

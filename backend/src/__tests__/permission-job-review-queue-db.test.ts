@@ -169,7 +169,7 @@ suite('the office review queue (real database)', () => {
     });
 
     it('refuses a request with no session', async () => {
-      const app = (await import('../app.js')).default as never;
+      const app = await fx.listener();
 
       const res = await request(app).get('/api/jobs/review-queue');
 

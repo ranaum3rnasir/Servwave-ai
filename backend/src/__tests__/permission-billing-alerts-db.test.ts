@@ -783,7 +783,7 @@ suite('the billing alerts (real database)', () => {
     let app: Parameters<typeof request>[0];
 
     beforeAll(async () => {
-      app = (await import('../app.js')).default as unknown as Parameters<typeof request>[0];
+      app = await fx.listener();
     }, 90_000);
 
     /** A company with a connected payment account, an invoice on a job, and the doors to deliver processor events to. */

@@ -9,16 +9,15 @@
  * and the text box says so.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import api from '@/lib/axios';
 import { buildAbility } from '@/lib/ability';
-import { AbilityProvider } from '@/contexts/AbilityContext';
-import { TooltipProvider as KitTooltipProvider } from '@/ui-kit/components/ui/tooltip';
 import { useAuthStore } from '@/stores/auth.store';
 import { LEAD_FIXTURE, NOTES_FIXTURE, renderWithProviders } from './helpers';
+import { renderLeadDetail, serveLeadDetail, stubBrowser } from '@/__tests__/harness/leadDetailPage';
 import { SPIDER_FOLLOW_UP_MAX_CHARS, spiderDraftFrom, spiderLeadLink } from '@/lib/spider/followUp';
 import { useSpiderUnreadAlerts } from '@/lib/api/spider';
 
@@ -35,12 +34,7 @@ vi.mock('react-router-dom', async () => ({
   useParams: () => ({ id: 'e0000000-0000-0000-0000-000000000001' }),
 }));
 
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 const mockApi = vi.mocked(api);
 const admin = buildAbility([{ action: 'manage', subject: 'all' }]);
@@ -68,13 +62,10 @@ function signIn(user: Record<string, unknown>) {
 beforeEach(() => {
   vi.clearAllMocks();
   signIn(SPIDER_USER);
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.includes('/notes')) return { data: { notes: NOTES_FIXTURE } };
-    if (url.includes('/communications')) return { data: { items: [] } };
-    if (url.includes('/api/users')) return { data: { users: [] } };
-    if (url.includes('/api/leads/')) return { data: { lead: LEAD_FIXTURE } };
-    if (url.includes('/api/tags')) return { data: { tags: [] } };
-    return { data: {} };
+  serveLeadDetail({
+    lead: LEAD_FIXTURE,
+    notes: NOTES_FIXTURE,
+    routes: [{ match: (url) => url.includes('/communications'), data: { items: [] } }],
   });
   mockApi.post.mockResolvedValue({ data: { ok: true } });
   mockApi.patch.mockResolvedValue({ data: { ok: true } });
@@ -228,25 +219,22 @@ describe('the lead page', () => {
   const markReadCalls = () => mockApi.patch.mock.calls.filter(([url]) => String(url).startsWith('/api/notifications/'));
 
   function openLead(search = '', state?: unknown, card?: { to: string; state?: unknown }) {
-    return import('@/pages/v2/leads/LeadDetailPage').then(({ default: LeadDetailPage }) => {
-      const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
-      render(
-        <QueryClientProvider client={qc}>
-          <KitTooltipProvider delayDuration={320}>
-            <MemoryRouter initialEntries={[{ pathname: `/leads/${LEAD_ID}`, search, state }]}>
-              <AbilityProvider ability={admin}>
-                <LeadDetailPage />
-                <SpiderButtonProbe />
-                <LocationProbe />
-                {card && <CardLink {...card} />}
-              </AbilityProvider>
-            </MemoryRouter>
-          </KitTooltipProvider>
-        </QueryClientProvider>,
-      );
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    renderLeadDetail({
+      entry: { pathname: `/leads/${LEAD_ID}`, search, state },
+      wrap: (page) => <QueryClientProvider client={qc}>{page}</QueryClientProvider>,
+      beside: (
+        <>
+          <SpiderButtonProbe />
+          <LocationProbe />
+          {card && <CardLink {...card} />}
+        </>
+      ),
     });
   }
 
+  // The 10 s waits below are deliberately longer than the 5 s default: the Communication tab is a lazy
+  // chunk whose first transform is slow on a loaded machine, and the textbox only exists after it.
   it('opens Communication with his draft when a Spider card at New opened it', async () => {
     await openLead('?tab=communication', { spiderAlertId: 'nr-1', spiderDraft: DRAFT });
     expect(await screen.findByRole('tab', { name: /Communication/, selected: true })).toBeInTheDocument();
@@ -331,19 +319,12 @@ describe('the lead page', () => {
       { action: 'manage', subject: 'all' },
       { action: 'read', subject: 'Communication', inverted: true },
     ]);
-    const { default: LeadDetailPage } = await import('@/pages/v2/leads/LeadDetailPage');
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
-    render(
-      <QueryClientProvider client={qc}>
-        <KitTooltipProvider delayDuration={320}>
-          <MemoryRouter initialEntries={[{ pathname: `/leads/${LEAD_ID}`, search: '?tab=communication', state: { spiderAlertId: 'nr-1', spiderDraft: DRAFT } }]}>
-            <AbilityProvider ability={noComms}>
-              <LeadDetailPage />
-            </AbilityProvider>
-          </MemoryRouter>
-        </KitTooltipProvider>
-      </QueryClientProvider>,
-    );
+    renderLeadDetail({
+      ability: noComms,
+      entry: { pathname: `/leads/${LEAD_ID}`, search: '?tab=communication', state: { spiderAlertId: 'nr-1', spiderDraft: DRAFT } },
+      wrap: (page) => <QueryClientProvider client={qc}>{page}</QueryClientProvider>,
+    });
     expect(await screen.findByRole('tab', { name: /Overview/, selected: true })).toBeInTheDocument();
     expect(screen.queryByRole('tab', { name: /Communication/ })).toBeNull();
     expect(screen.queryByRole('textbox', { name: /message/i })).toBeNull();

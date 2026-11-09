@@ -20,45 +20,23 @@ import { describe, it, expect, vi } from 'vitest';
 import { screen, within } from '@testing-library/react';
 
 import { buildAbility } from '@/lib/ability';
-import { renderWithProviders, seedMySwitches } from '@/__tests__/helpers';
-import InventoryPage from '@/pages/v2/inventory/InventoryPage';
+import { seedMySwitches } from '@/__tests__/helpers';
+import { renderInventory } from '@/__tests__/harness/inventoryPage';
 
 vi.mock('@/lib/api/inventory', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/inventory')>();
-  const EMPTY: never[] = [];
-  const stable =
-    <T,>(data: T) =>
-    () => ({ data, isLoading: false, isError: false });
-  const mutation = () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false });
-  return {
-    ...actual,
-    useInventoryItems: stable(EMPTY),
-    useLocations: stable(EMPTY),
-    useVendors: stable(EMPTY),
-    useCategories: stable(EMPTY),
-    useBranches: stable(EMPTY),
-    useBrands: stable(EMPTY),
-    useJobStages: stable(EMPTY),
-    useMovements: stable(EMPTY),
-    useLowStock: stable(EMPTY),
-    useAssets: stable({ data: EMPTY, meta: { total: 0 } }),
-    usePurchaseOrders: stable(EMPTY),
-    useInventoryJobs: stable(EMPTY),
-    useTechs: stable(EMPTY),
-    useUpsertItem: mutation,
-    useUpsertLocation: mutation,
-    useUpsertBranch: mutation,
-    useRestock: mutation,
-    useTransferStock: mutation,
-    useImportItemsCSV: mutation,
-    useCreatePO: mutation,
-    useReceivePO: mutation,
-    useCreateStage: mutation,
-    useReceiveStageLine: mutation,
-    useNotifyTechReady: mutation,
-    useUpsertVendor: mutation,
-    useDeleteVendor: mutation,
-  };
+  return (await import('@/__tests__/harness/inventoryApiStub')).inventoryApi(
+    await importOriginal<typeof import('@/lib/api/inventory')>(),
+    {
+      reads: {
+        useLowStock: [],
+        useAssets: { data: [], meta: { total: 0 } },
+        usePurchaseOrders: [],
+        useInventoryJobs: [],
+        useTechs: [],
+      },
+      mutations: ['useUpsertItem', 'useUpsertLocation', 'useUpsertBranch', 'useRestock', 'useTransferStock', 'useImportItemsCSV', 'useCreatePO', 'useReceivePO', 'useCreateStage', 'useReceiveStageLine', 'useNotifyTechReady', 'useUpsertVendor', 'useDeleteVendor'],
+    },
+  );
 });
 
 // Pending badge = 3, total LO count = 7.
@@ -83,8 +61,8 @@ describe('v2 InventoryPage - Logistic Orders tab', () => {
   it('renders the tab with a total-count pill and an amber pending-approval badge', () => {
     // The tab needs View logistic orders.
     seedMySwitches({ view_logistic_orders: true });
-    renderWithProviders(<InventoryPage />, {
-      initialEntries: ['/inventory'],
+    renderInventory({
+      entry: '/inventory',
       ability: buildAbility([{ action: 'read', subject: 'LogisticOrder' }]),
     });
 
@@ -96,8 +74,8 @@ describe('v2 InventoryPage - Logistic Orders tab', () => {
   });
 
   it('dispatches /v2/inventory/logistic-orders to the REBUILT LOList surface', () => {
-    renderWithProviders(<InventoryPage />, {
-      initialEntries: ['/inventory/logistic-orders'],
+    renderInventory({
+      entry: '/inventory/logistic-orders',
     });
 
     // LOList's empty state (its own copy) proves the body dispatched to it ...

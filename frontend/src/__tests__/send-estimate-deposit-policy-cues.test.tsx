@@ -16,7 +16,7 @@ import { SendEstimateDialog } from '@/components/estimates/SendEstimateDialog';
 vi.mock('@/lib/axios', () => ({ default: { post: vi.fn(), patch: vi.fn(), get: vi.fn() } }));
 
 const mockOrg = vi.fn();
-vi.mock('@/lib/api/organization', () => ({ useOrganization: () => mockOrg() }));
+vi.mock('@/lib/api/shared/organization', () => ({ useOrganization: () => mockOrg() }));
 vi.mock('@/components/payments/PaymentsSetupBanner', () => ({ PaymentsSetupBanner: () => null }));
 
 const ORG = {

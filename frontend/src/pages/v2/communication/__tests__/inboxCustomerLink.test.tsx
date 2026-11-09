@@ -1,14 +1,33 @@
-/// <reference types="@testing-library/jest-dom/vitest" />
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { screen, within, waitFor } from '@testing-library/react';
+import { renderInbox, serveInbox } from '@/__tests__/harness/inboxPage';
+import { buildAbility } from '@/lib/ability';
+import type { MailboxList, Email } from '@/lib/api/communication';
+import userEvent from '@testing-library/user-event';
+import api from '@/lib/axios';
+import { useAuthStore } from '@/stores/auth.store';
+
+vi.mock('@/lib/api/communication', async (importOriginal) =>
+  (await import('@/__tests__/harness/inboxApiStub')).communicationStubs(await importOriginal<typeof import('@/lib/api/communication')>()));
+vi.mock('@/lib/entitlements', async (importOriginal) =>
+  (await import('@/__tests__/harness/inboxApiStub')).inboxEntitlements(await importOriginal<typeof import('@/lib/entitlements')>()));
+
+// Each test starts from the setup file's signed-in user and bare client calls: reset them here, so a test states its own user
+// and answers in its own `beforeEach` (`clearAllMocks` keeps implementations).
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(useAuthStore).mockReset();
+  vi.mocked(api.get).mockReset();
+  vi.mocked(api.post).mockReset();
+  vi.mocked(api.patch).mockReset();
+  vi.mocked(api.put).mockReset();
+  vi.mocked(api.delete).mockReset();
+});
+
 // Roles & Permissions, PRD 10, slice S10.20 - the Email page's reading pane shows "Unverified sender" on a message linked to its
 // customer by an address the sender's domain could not vouch for, and "Matches several customers" with a picker on a message from
 // an address several customers share. The routed page runs with the REAL email, candidate and pick hooks; the server is answered at
 // the network layer, so what is on screen is what the server sent and what the picker asks it.
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, waitFor, within } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
-import { renderWithProviders } from '@/__tests__/helpers';
-import { buildAbility } from '@/lib/ability';
-import type { Email, MailboxList } from '@/lib/api/communication';
 
 const READER = [
   { action: 'read', subject: 'Communication' },
@@ -16,8 +35,6 @@ const READER = [
 ] as const;
 const reader = buildAbility([...READER]);
 const attacher = buildAbility([...READER, { action: 'attach', subject: 'Communication' }]);
-
-const NOTHING: unknown[] = [];
 
 const mail = (over: Partial<Email> & { id: string; subject: string }): Email => ({
   account: 'system', from: { name: 'Pat Payer', email: 'pat@example.com' }, to: 'sam@mail.example.test', snippet: 'Are you open on Saturday?',
@@ -46,53 +63,27 @@ const LIST: MailboxList = {
 const MATCHES = Array.from({ length: 120 }, (_, i) => ({ id: `cust-${i}`, name: `Shared Customer ${i}`, number: `C-${1000 + i}` }));
 const PAGE = 50;
 
-const calls = vi.hoisted(() => ({ gets: [] as { url: string; params?: Record<string, string> }[], patches: [] as { url: string; body: unknown }[] }));
-
-vi.mock('@/lib/axios', () => ({
-  default: {
-    get: (url: string, config?: { params?: Record<string, string> }) => {
-      calls.gets.push({ url, params: config?.params });
-      if (url.endsWith('/mailboxes')) return Promise.resolve({ data: LIST });
-      if (url.endsWith('/customer-candidates')) {
-        const search = (config?.params?.search ?? '').toLowerCase();
-        const found = MATCHES.filter((c) => c.name.toLowerCase().includes(search));
-        return Promise.resolve({ data: { customers: found.slice(0, PAGE), total: found.length } });
-      }
-      return Promise.resolve({ data: { emails: ROWS } });
-    },
-    patch: (url: string, body: unknown) => {
-      calls.patches.push({ url, body });
-      return Promise.resolve({ data: { email: ROWS[2] } });
-    },
-  },
-}));
-
-vi.mock('@/lib/api/communication', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/communication')>();
-  return {
-    ...actual,
-    useEmailGroups: () => ({ data: NOTHING }),
-    useForwardRules: () => ({ data: NOTHING }),
-    useTeamMembers: () => ({ data: NOTHING }),
-    useSendingIdentity: () => ({ data: undefined }),
-    useMarkEmailThreadRead: () => ({ mutate: vi.fn() }),
-    useMarkEmailThreadUnread: () => ({ mutate: vi.fn() }),
-    useSendEmail: () => ({ mutate: vi.fn(), isPending: false }),
-    useMyMailbox: () => ({ data: { mailbox: null } }),
-  };
-});
-
-vi.mock('@/lib/entitlements', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/lib/entitlements')>()),
-  useFeature: () => true,
-  useEntitlementsReady: () => true,
-}));
-
-import InboxPage from '@/pages/v2/communication/InboxPage';
+const calls = { gets: [] as ReturnType<typeof serveInbox>['reads'], patches: [] as { url: string; body: unknown }[] };
 
 beforeEach(() => {
-  calls.gets.length = 0;
   calls.patches.length = 0;
+  calls.gets = serveInbox({
+    mailboxes: LIST,
+    emails: ROWS,
+    otherwise: { emails: ROWS },
+    routes: [{
+      match: (url) => url.endsWith('/customer-candidates'),
+      data: (_url, config) => {
+        const search = (((config?.params as { search?: string } | undefined)?.search) ?? '').toLowerCase();
+        const found = MATCHES.filter((c) => c.name.toLowerCase().includes(search));
+        return { customers: found.slice(0, PAGE), total: found.length };
+      },
+    }],
+  }).reads;
+  vi.mocked(api.patch).mockImplementation((async (url: string, body: unknown) => {
+    calls.patches.push({ url, body });
+    return { data: { email: ROWS[2] } };
+  }) as typeof api.patch);
 });
 
 const open = async (user: ReturnType<typeof userEvent.setup>, subject: string) => {
@@ -103,7 +94,7 @@ const open = async (user: ReturnType<typeof userEvent.setup>, subject: string) =
 describe('the Email page marks a message from an unverified sender', () => {
   it('shows "Unverified sender" on the open message the server marked, and on no other', async () => {
     const user = userEvent.setup();
-    renderWithProviders(<InboxPage />, { ability: reader, initialEntries: ['/communication/inbox'] });
+    renderInbox({ ability: reader, entry: '/communication/inbox' });
 
     await open(user, 'Unverified question');
     expect(await screen.findByText('Unverified sender')).toBeInTheDocument();
@@ -120,7 +111,7 @@ describe('the Email page marks a message from an unverified sender', () => {
 describe('the Email page says a message matches several customers', () => {
   it('says so, with no picker, to a person without the attach switch', async () => {
     const user = userEvent.setup();
-    renderWithProviders(<InboxPage />, { ability: reader, initialEntries: ['/communication/inbox'] });
+    renderInbox({ ability: reader, entry: '/communication/inbox' });
 
     await open(user, 'From a shared address');
     expect(await screen.findByText('Matches several customers')).toBeInTheDocument();
@@ -129,7 +120,7 @@ describe('the Email page says a message matches several customers', () => {
 
   it('says nothing on a message that matches one customer or none', async () => {
     const user = userEvent.setup();
-    renderWithProviders(<InboxPage />, { ability: attacher, initialEntries: ['/communication/inbox'] });
+    renderInbox({ ability: attacher, entry: '/communication/inbox' });
 
     await open(user, 'Verified question');
     expect(screen.queryByText('Matches several customers')).not.toBeInTheDocument();
@@ -139,7 +130,7 @@ describe('the Email page says a message matches several customers', () => {
 
   it('offers the picker to a person with the attach switch, and links the customer they pick', async () => {
     const user = userEvent.setup();
-    renderWithProviders(<InboxPage />, { ability: attacher, initialEntries: ['/communication/inbox'] });
+    renderInbox({ ability: attacher, entry: '/communication/inbox' });
 
     await open(user, 'From a shared address');
     await user.click(await screen.findByRole('button', { name: 'Choose customer' }));
@@ -154,7 +145,7 @@ describe('the Email page says a message matches several customers', () => {
 
   it('asks the server for no candidates once the pick is made: the message is linked, so that request could only be refused', async () => {
     const user = userEvent.setup();
-    renderWithProviders(<InboxPage />, { ability: attacher, initialEntries: ['/communication/inbox'] });
+    renderInbox({ ability: attacher, entry: '/communication/inbox' });
 
     await open(user, 'From a shared address');
     await user.click(await screen.findByRole('button', { name: 'Choose customer' }));
@@ -174,7 +165,7 @@ describe('the Email page says a message matches several customers', () => {
 
   it('is a search, never a wall: a hundred and twenty customers show a page of them, the total, and narrow with the search', async () => {
     const user = userEvent.setup();
-    renderWithProviders(<InboxPage />, { ability: attacher, initialEntries: ['/communication/inbox'] });
+    renderInbox({ ability: attacher, entry: '/communication/inbox' });
 
     await open(user, 'From a shared address');
     await user.click(await screen.findByRole('button', { name: 'Choose customer' }));

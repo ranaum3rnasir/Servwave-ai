@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 
 import { useRoles, type RoleSummary } from '@/lib/api/roles';
-import { allViewsOff, CANT_READ_ROLE_NOTE, changedSwitches, emailPageClosed, useAcceptedPaymentMethods, useRoleSwitches, useSaveRoleSwitches, useSwitchCatalog, type SwitchSet } from '@/lib/api/permissionSwitches';
+import { allViewsOff, CANT_READ_ROLE_NOTE, changedSwitches, emailPageClosed, useRoleSwitches, useSaveRoleSwitches, useSwitchCatalog } from '@/lib/api/permissionSwitches';
+import { useAcceptedPaymentMethods } from '@/lib/api/recordablePaymentMethods';
+import { type SwitchSet } from '@/lib/api/shared/switchTypes';
 import { useSettingsGuard } from '@/stores/settingsGuard.store';
 import { useFeature } from '@/lib/entitlements';
 import SwitchSetEditor from '@/components/permissions/SwitchSetEditor';

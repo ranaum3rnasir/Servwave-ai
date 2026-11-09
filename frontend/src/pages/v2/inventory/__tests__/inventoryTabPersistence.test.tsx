@@ -41,44 +41,22 @@ import { seedMySwitches } from '@/__tests__/helpers';
 import { useAuthStore } from '@/stores/auth.store';
 
 import V2AppLayout from '@/pages/v2/V2AppLayout';
-import InventoryPage from '@/pages/v2/inventory/InventoryPage';
+import { inventoryElement } from '@/__tests__/harness/inventoryPage';
 
 vi.mock('@/lib/api/inventory', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/inventory')>();
-  const EMPTY: never[] = [];
-  const stable =
-    <T,>(data: T) =>
-    () => ({ data, isLoading: false, isError: false });
-  const mutation = () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false });
-  return {
-    ...actual,
-    useInventoryItems: stable(EMPTY),
-    useLocations: stable(EMPTY),
-    useVendors: stable(EMPTY),
-    useCategories: stable(EMPTY),
-    useBranches: stable(EMPTY),
-    useBrands: stable(EMPTY),
-    useJobStages: stable(EMPTY),
-    useMovements: stable(EMPTY),
-    useLowStock: stable(EMPTY),
-    useAssets: stable({ data: EMPTY, meta: { total: 0 } }),
-    usePurchaseOrders: stable(EMPTY),
-    useInventoryJobs: stable(EMPTY),
-    useTechs: stable(EMPTY),
-    useUpsertItem: mutation,
-    useUpsertLocation: mutation,
-    useUpsertBranch: mutation,
-    useRestock: mutation,
-    useTransferStock: mutation,
-    useImportItemsCSV: mutation,
-    useCreatePO: mutation,
-    useReceivePO: mutation,
-    useCreateStage: mutation,
-    useReceiveStageLine: mutation,
-    useNotifyTechReady: mutation,
-    useUpsertVendor: mutation,
-    useDeleteVendor: mutation,
-  };
+  return (await import('@/__tests__/harness/inventoryApiStub')).inventoryApi(
+    await importOriginal<typeof import('@/lib/api/inventory')>(),
+    {
+      reads: {
+        useLowStock: [],
+        useAssets: { data: [], meta: { total: 0 } },
+        usePurchaseOrders: [],
+        useInventoryJobs: [],
+        useTechs: [],
+      },
+      mutations: ['useUpsertItem', 'useUpsertLocation', 'useUpsertBranch', 'useRestock', 'useTransferStock', 'useImportItemsCSV', 'useCreatePO', 'useReceivePO', 'useCreateStage', 'useReceiveStageLine', 'useNotifyTechReady', 'useUpsertVendor', 'useDeleteVendor'],
+    },
+  );
 });
 
 vi.mock('@/lib/api/logisticOrders', async (importOriginal) => {
@@ -104,7 +82,7 @@ vi.mock('@/components/timeclock/ClockInOutMenu', () => ({ ClockInOutMenu: () => 
 vi.mock('@/lib/api/communication', () => ({
   useUnreadCounts: () => ({ sms: 0, whatsapp: 0, email: 0 }),
 }));
-vi.mock('@/lib/api/organization', () => ({ useOrganization: () => ({ data: undefined }) }));
+vi.mock('@/lib/api/shared/organization', () => ({ useOrganization: () => ({ data: undefined }) }));
 
 const USER_ID = '00000000-0000-0000-0000-000000000001';
 
@@ -128,12 +106,12 @@ function renderShell(entry: string) {
         <AbilityProvider ability={buildAbility([{ action: 'manage', subject: 'all' }])}>
           <Routes>
             <Route element={<V2AppLayout />}>
-              <Route path="/inventory" element={<InventoryPage />} />
-              <Route path="/inventory/staging" element={<InventoryPage />} />
-              <Route path="/inventory/assets" element={<InventoryPage />} />
-              <Route path="/inventory/low-stock" element={<InventoryPage />} />
-              <Route path="/inventory/activity" element={<InventoryPage />} />
-              <Route path="/inventory/logistic-orders" element={<InventoryPage />} />
+              <Route path="/inventory" element={inventoryElement()} />
+              <Route path="/inventory/staging" element={inventoryElement()} />
+              <Route path="/inventory/assets" element={inventoryElement()} />
+              <Route path="/inventory/low-stock" element={inventoryElement()} />
+              <Route path="/inventory/activity" element={inventoryElement()} />
+              <Route path="/inventory/logistic-orders" element={inventoryElement()} />
             </Route>
           </Routes>
         </AbilityProvider>

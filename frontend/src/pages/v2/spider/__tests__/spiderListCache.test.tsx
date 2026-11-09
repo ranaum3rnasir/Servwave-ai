@@ -98,7 +98,6 @@ const CHANGES = {
 let leadRows: unknown[];
 let customerRows: unknown[];
 let leadsFail: number | null;
-let leadsDelay: number;
 let settings = settingsBody(true, []);
 let spiderSwitch = { isActive: true, isSetUp: true };
 
@@ -106,7 +105,18 @@ const httpError = (status: number) =>
   Object.assign(new Error(`Request failed with status code ${status}`), { isAxiosError: true, response: { status, data: {} } });
 const reads = (url: string) => mockApi.get.mock.calls.filter(([u]) => u === url).length;
 const settingsPuts = () => mockApi.put.mock.calls.filter(([u]) => u === SETTINGS);
+/** A short real tick (never over 100 ms: see docs/ci.md). Anything longer waits on a condition, with `quiet`. */
 const pause = (ms: number) => act(() => new Promise((r) => setTimeout(r, ms)));
+/** Reads the mocked API has started and not yet answered. */
+let inflight = 0;
+/** Holds the next lead-list reads open until the test lets go (null: answer at once). */
+let leadsGate: Promise<void> | null = null;
+/** Nothing is being read any more: whatever a save or a visit set in motion has landed. */
+const quiet = async () => {
+  await pause(20);
+  await waitFor(() => expect(inflight).toBe(0));
+  await pause(20);
+};
 
 /** The in-app enable from the alerts pop-up (it is not on the page), mounted beside the page. */
 function EnableInApp() {
@@ -140,19 +150,20 @@ beforeEach(() => {
   leadRows = [L1, L2, L3];
   customerRows = [PAT, KIM].map(asCustomer);
   leadsFail = null;
-  leadsDelay = 0;
+  leadsGate = null;
+  inflight = 0;
   settings = settingsBody(true, []);
   spiderSwitch = { isActive: true, isSetUp: true };
   vi.mocked(useAuthStore).mockImplementation(((selector: (s: Record<string, unknown>) => unknown) =>
     selector({ user: ADMIN, isAuthenticated: true })) as never);
   client = new QueryClient({ defaultOptions: APP_DEFAULTS });
-  mockApi.get.mockImplementation(async (url: string) => {
+  const serveGet = async (url: string) => {
     if (url === SETTINGS) return { data: settings };
     if (url === STATUS) return { data: spiderSwitch };
     if (url === LEADS) {
       const fail = leadsFail;
       const rows = leadRows;
-      if (leadsDelay) await new Promise((r) => setTimeout(r, leadsDelay));
+      if (leadsGate) await leadsGate;
       if (fail) throw httpError(fail);
       return { data: { leads: rows } };
     }
@@ -160,6 +171,14 @@ beforeEach(() => {
     if (url === '/api/users') return { data: { users: [] } };
     if (String(url).includes('/spider/history')) return { data: { total: 0, new_since: 0, items: [], recipients: [], customers: [] } };
     return { data: {} };
+  };
+  mockApi.get.mockImplementation(async (url: string) => {
+    inflight += 1;
+    try {
+      return await serveGet(url);
+    } finally {
+      inflight -= 1;
+    }
   });
   mockApi.post.mockImplementation(async () => ({ data: { items: [], total: 0, page: 1, page_size: 25, total_pages: 1 } }));
   mockApi.put.mockImplementation(async (url: string, body?: unknown) => {
@@ -210,13 +229,13 @@ async function saveNow(refused = false) {
   fireEvent.click(within(dialog).getByRole('button', { name: 'Active' }));
   if (refused) {
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Failed to Save Settings', expect.anything()), { timeout: 4000 });
-    await pause(100);
+    await quiet();
     expect(settingsPuts().length).toBe(before);
     expect(toast).not.toHaveBeenCalledWith('Spider Agent Settings Saved', expect.anything());
     return;
   }
   await waitFor(() => expect(settingsPuts().length).toBe(before + 1), { timeout: 5000 });
-  await pause(300);
+  await quiet();
 }
 
 /** Each lead's tick ('absent' when the list does not show it) and the Auto-select box. */
@@ -254,7 +273,7 @@ interface Row {
 }
 
 /** A plain visit: the person only looks. */
-const stay = () => pause(100);
+const stay = () => quiet();
 const LIST13 = { watchAll: false, ids: ['lead-1', 'lead-3'] };
 let ticksSeen: Record<string, Record<string, string>> = {};
 
@@ -271,7 +290,7 @@ const ROWS: Row[] = [
       await screen.findByText('Turn it on to change its settings or see its history.');
       fireEvent.click(screen.getByRole('switch', { name: 'Switch Spider on or off' }));
       await settled();
-      await pause(100);
+      await quiet();
     },
     saves: [],
     reads: { leads: 1, customers: 1 },
@@ -281,7 +300,7 @@ const ROWS: Row[] = [
     act: async () => {
       await click(screen.getByRole('button', { name: 'test: enable in-app' }));
       await waitFor(() => expect(settingsPuts().length).toBe(1));
-      await pause(200);
+      await quiet();
     },
     saves: [t()],
     reads: { leads: 1, customers: 1 },
@@ -329,10 +348,10 @@ const ROWS: Row[] = [
       await allLink_();
       await lead_(2)();
       fireEvent.click(screen.getByRole('tab', { name: 'History Tab' }));
-      await pause(200);
+      await quiet();
       fireEvent.click(screen.getByRole('tab', { name: 'Configuration Tab' }));
       await settled();
-      await pause(200);
+      await quiet();
       await saveNow();
     },
     saves: [f(1, 3, 4)],
@@ -355,15 +374,19 @@ const ROWS: Row[] = [
     id: 'I1 an edit while the save reads the list, then a second save (F4)',
     act: async () => {
       await lead_(1)();
-      leadsDelay = 400;
+      // The save's read of the lead list is held open while the person edits, then let go.
+      let release!: () => void;
+      leadsGate = new Promise<void>((r) => { release = r; });
+      const readsBefore = reads(LEADS);
       fireEvent.click(screen.getByRole('button', { name: 'Save' }));
       const dialog = await screen.findByRole('dialog', { name: 'Confirm Spider Agent Configuration' });
       fireEvent.click(within(dialog).getByRole('button', { name: 'Active' }));
-      await pause(50);
+      await waitFor(() => expect(reads(LEADS)).toBe(readsBefore + 1));
       await lead_(2)();
+      release();
       await waitFor(() => expect(settingsPuts().length).toBe(1), { timeout: 5000 });
-      await pause(1000);
-      leadsDelay = 0;
+      await quiet();
+      leadsGate = null;
       await saveNow();
     },
     saves: [f(2, 3, 4), f(3, 4)],
@@ -374,15 +397,19 @@ const ROWS: Row[] = [
     id: 'I2 as I1, and Pat gains a lead before the second save (F4)',
     act: async () => {
       await lead_(1)();
-      leadsDelay = 400;
+      // The save's read of the lead list is held open while the person edits, then let go.
+      let release!: () => void;
+      leadsGate = new Promise<void>((r) => { release = r; });
+      const readsBefore = reads(LEADS);
       fireEvent.click(screen.getByRole('button', { name: 'Save' }));
       const dialog = await screen.findByRole('dialog', { name: 'Confirm Spider Agent Configuration' });
       fireEvent.click(within(dialog).getByRole('button', { name: 'Active' }));
-      await pause(50);
+      await waitFor(() => expect(reads(LEADS)).toBe(readsBefore + 1));
       await lead_(2)();
+      release();
       await waitFor(() => expect(settingsPuts().length).toBe(1), { timeout: 5000 });
-      await pause(1000);
-      leadsDelay = 0;
+      await quiet();
+      leadsGate = null;
       leadRows = [L1, L2, L3, L4, L5];
       await saveNow();
     },
@@ -416,7 +443,7 @@ describe("Spider's lists use the app's freshness rule, and every save writes wha
     const first = mount();
     await settled();
     await screen.findByRole('button', { name: 'Toggle leads for Pat Payer' });
-    await pause(100);
+    await quiet();
     expect({ leads: reads(LEADS), customers: reads(CUSTOMERS) }).toEqual({ leads: 1, customers: 1 });
     first.unmount();
 
@@ -429,7 +456,7 @@ describe("Spider's lists use the app's freshness rule, and every save writes wha
     mount();
     await settled();
     await screen.findByRole('button', { name: 'Toggle leads for Pat Payer' });
-    await pause(100);
+    await quiet();
 
     await row.act();
 

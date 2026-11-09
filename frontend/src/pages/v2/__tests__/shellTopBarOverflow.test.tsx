@@ -43,7 +43,7 @@ vi.mock('@/components/timeclock/ClockInOutMenu', () => ({ ClockInOutMenu: () => 
 vi.mock('@/lib/api/communication', () => ({
   useUnreadCounts: () => ({ sms: 3, whatsapp: 0, email: 0 }),
 }));
-vi.mock('@/lib/api/organization', () => ({ useOrganization: () => ({ data: { name: 'Test Org' } }) }));
+vi.mock('@/lib/api/shared/organization', () => ({ useOrganization: () => ({ data: { name: 'Test Org' } }) }));
 
 const openPhoneTab = vi.fn();
 vi.mock('@/lib/communication/phoneTabHandoff', async (importOriginal) => ({

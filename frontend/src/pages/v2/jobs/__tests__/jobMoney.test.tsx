@@ -12,21 +12,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-import api from '@/lib/axios';
 import { buildAbility } from '@/lib/ability';
 import { useAuthStore } from '@/stores/auth.store';
-import { renderWithProviders } from '@/__tests__/helpers';
 
-import JobDetailPage from '../JobDetailPage';
+import { renderJobDetail, serveJobDetail, stubBrowser } from '@/__tests__/harness/jobDetailPage';
 
 const JOB_ID = 'j0000000-0000-0000-0000-000000000026';
 
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 vi.mock('@/components/tasks/JobLeadTasksTab', () => ({ JobLeadTasksTab: () => null }));
 vi.mock('react-router-dom', async () => {
@@ -34,7 +27,6 @@ vi.mock('react-router-dom', async () => {
   return { ...actual, useParams: () => ({ id: JOB_ID }), useNavigate: () => vi.fn() };
 });
 
-const mockApi = vi.mocked(api);
 
 const VISIT = {
   id: 'v-1', visit_seq: 1, status: 'SCHEDULED', scheduled_at: '2026-09-05T13:00:00.000Z', scheduled_end: '2026-09-05T15:00:00.000Z',
@@ -88,20 +80,23 @@ function mountWith({ financials, actions = [], job = {}, can = [], prices = true
     } as never),
   );
   const detail = { ...JOB, actions, ...job };
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.includes('/visits')) return { data: { visits: [VISIT] } };
-    if (url.includes('/financials')) return { data: financials };
-    if (url.includes('/line-items')) return { data: { lines: [], billing: { subtotal: 0, discount_amount: 0, tax_rate: 0, tax_amount: 0, total: 0 } } };
-    if (url.includes('/notes')) return { data: { notes: [] } };
-    if (url.includes('/api/attachments/')) return { data: { attachments: [] } };
-    if (url.includes('/communications')) return { data: { items: [] } };
-    if (url.includes(`/api/jobs/${JOB_ID}`)) return { data: { job: detail } };
-    return { data: {} };
+  serveJobDetail({
+    jobId: JOB_ID,
+    job: detail,
+    visits: [VISIT],
+    lines: [],
+    billing: { subtotal: 0, discount_amount: 0, tax_rate: 0, tax_amount: 0, total: 0 },
+    routes: [
+      { match: (url) => url.includes('/financials'), data: financials },
+      { match: (url) => url.includes('/notes'), data: { notes: [] } },
+      { match: (url) => url.includes('/api/attachments/'), data: { attachments: [] } },
+      { match: (url) => url.includes('/communications'), data: { items: [] } },
+    ],
   });
-  return renderWithProviders(<JobDetailPage />, {
+  return renderJobDetail({
     // Prices are held unless the case says otherwise (P11): the balance block is for a person who sees them.
     ability: buildAbility([{ action: 'read', subject: 'Job' }, ...(prices ? [{ action: 'read', subject: 'Prices' }] : []), ...can] as never),
-    initialEntries: [`/jobs/${JOB_ID}`],
+    entry: `/jobs/${JOB_ID}`,
   });
 }
 

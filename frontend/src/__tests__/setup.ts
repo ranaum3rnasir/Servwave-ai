@@ -1,6 +1,15 @@
 import '@testing-library/jest-dom';
 import { afterAll, afterEach, vi } from 'vitest';
 import { cleanup, configure } from '@testing-library/react';
+import * as webStreams from 'node:stream/web';
+
+// The VM-based worker pool gives each file a context without Node's Web Streams globals; some
+// test files and the e2e helpers they import need them. A no-op in the default pool, where they already exist.
+for (const name of ['ReadableStream', 'WritableStream', 'TransformStream', 'TextEncoderStream', 'TextDecoderStream'] as const) {
+  if (!(name in globalThis)) {
+    Object.defineProperty(globalThis, name, { configurable: true, writable: true, value: webStreams[name] });
+  }
+}
 
 // ─── Mock @/lib/axios ─────────────────────────────────────
 vi.mock('@/lib/axios', () => ({
@@ -85,8 +94,12 @@ vi.mock('@/stores/auth.store', () => ({
 }));
 
 // ─── Silence window.matchMedia ────────────────────────────
+// configurable so a test can swap it with Object.defineProperty: in the VM-based worker pool the window
+// is the jsdom one, where a property defined without flags is non-configurable and cannot be redefined
+// (the default pool already makes these properties configurable).
 Object.defineProperty(window, 'matchMedia', {
   writable: true,
+  configurable: true,
   value: vi.fn().mockImplementation((query: string) => ({
     matches: false,
     media: query,
@@ -170,7 +183,9 @@ if (typeof globalThis.localStorage === 'undefined') {
 // transform that whole module graph on first import, and DatePicker pulls
 // react-day-picker into those chunks. The components are not slow; the
 // bundler is cold, and it is worst under full-suite worker contention.
-configure({ asyncUtilTimeout: 20_000 });
+// 5 s (was 20 s): a wait that never succeeds now fails after 5 s, not 20 s. A test that really needs more
+// passes its own `{ timeout }` and says why in a comment beside it (see docs/ci.md).
+configure({ asyncUtilTimeout: 5_000 });
 
 // ─── Let focus-scope unmount timers run while this file's window is alive ───
 // @radix-ui/react-focus-scope (Dialog, Sheet, Popover, dropdown menus) schedules a

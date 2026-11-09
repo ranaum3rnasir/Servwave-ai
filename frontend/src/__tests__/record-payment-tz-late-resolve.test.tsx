@@ -29,8 +29,8 @@ const orgMock = vi.hoisted(() => ({
   state: { data: undefined, isLoading: true, isError: false } as OrgQueryState,
 }));
 
-vi.mock('@/lib/api/organization', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/organization')>();
+vi.mock('@/lib/api/shared/organization', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/api/shared/organization')>();
   return { ...actual, useOrganization: () => orgMock.state };
 });
 

@@ -6,9 +6,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { renderWithProviders } from '@/__tests__/helpers';
+import { renderInbox, serveInbox, signInDispatcher } from '@/__tests__/harness/inboxPage';
 import { buildAbility } from '@/lib/ability';
-import { useAuthStore } from '@/stores/auth.store';
 import { MEDIA } from '@/ui-kit/lib/breakpoints';
 import api from '@/lib/axios';
 
@@ -22,13 +21,8 @@ const READ_ONLY = buildAbility([
   { action: 'access_inbox', subject: 'Communication' },
 ]);
 
-vi.mock('@/lib/entitlements', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/lib/entitlements')>()),
-  useFeature: () => true,
-  useEntitlementsReady: () => true,
-}));
-
-import InboxPage from '@/pages/v2/communication/InboxPage';
+vi.mock('@/lib/entitlements', async (importOriginal) =>
+  (await import('@/__tests__/harness/inboxApiStub')).inboxEntitlements(await importOriginal<typeof import('@/lib/entitlements')>()));
 
 const THREAD_A = '11111111-1111-4111-8111-111111111111';
 const THREAD_B = '22222222-2222-4222-8222-222222222222';
@@ -48,29 +42,20 @@ let all: ReturnType<typeof held>[];
 const unmatchedCalls: { mailbox: string; limit: number; offset: number }[] = [];
 
 function answerNetwork() {
-  vi.mocked(api.get).mockImplementation(async (url: string, config?: { params?: unknown }) => {
-    const params = (config?.params ?? {}) as Record<string, unknown>;
-    if (url === '/api/communication/mailboxes') {
-      return {
-        data: {
-          scope: 'attached', selected: params.selected ?? 'mine', selected_label: null, selected_unread: 0, total_unread: 0,
-          mine: { id: 'box-mine', unread: 0 }, held: [], main: null, people: null,
-          needs_review: { selected: all.length, total: all.length },
-        },
-      };
-    }
-    if (url === '/api/communication/emails/unmatched') {
+  serveInbox({
+    mailboxes: (params) => ({
+      scope: 'attached', selected: params.selected ?? 'mine', selected_label: null, selected_unread: 0, total_unread: 0,
+      mine: { id: 'box-mine', unread: 0 }, held: [], main: null, people: null,
+      needs_review: { selected: all.length, total: all.length },
+    }),
+    unmatched: (params) => {
       const limit = Number(params.limit); const offset = Number(params.offset);
       unmatchedCalls.push({ mailbox: String(params.mailbox), limit, offset });
-      return { data: { emails: all.slice(offset, offset + limit), total: all.length, limit, offset, selected: params.mailbox } };
-    }
-    if (url === '/api/communication/emails') return { data: { emails: CONVERSATIONS } };
-    if (url === '/api/communication/email-groups') return { data: { groups: [] } };
-    if (url === '/api/communication/forward-rules') return { data: { rules: [] } };
-    if (url === '/api/communication/team-members') return { data: { members: [] } };
-    if (url === '/api/communication/sending-identity') return { data: { status: 'active', address: 'me@mail.test', name: 'Me at Acme', sendingEnabled: true } };
-    if (url === '/api/communication/my-mailbox') return { data: { mailbox: { status: 'active', address: 'me@mail.test' } } };
-    return { data: {} };
+      return { emails: all.slice(offset, offset + limit), total: all.length, limit, offset, selected: params.mailbox };
+    },
+    emails: CONVERSATIONS,
+    sendingIdentity: { status: 'active', address: 'me@mail.test', name: 'Me at Acme', sendingEnabled: true },
+    myMailbox: { mailbox: { status: 'active', address: 'me@mail.test' } },
   });
   vi.mocked(api.patch).mockImplementation(async (url: string) => {
     const id = /emails\/([^/]+)\/link/.exec(url)![1]!;
@@ -92,17 +77,12 @@ beforeEach(() => {
   vi.clearAllMocks();
   unmatchedCalls.length = 0;
   all = [held(1, 'failed_authentication'), held(2, 'automatic'), held(3, 'sender_mismatch', { linkTo: { threadId: THREAD_B, subject: 'Your invoice' } }), held(4, 'unknown_reply')];
-  vi.mocked(useAuthStore).mockImplementation(((selector: (s: Record<string, unknown>) => unknown) =>
-    selector({
-      user: { id: 'u1', email: 'jane@test.com', first_name: 'Jane', last_name: 'Smith', role: 'DISPATCHER', organization_id: 'org-1', org_features: ['email', 'phone'] },
-      isAuthenticated: true, isLoading: false, error: null,
-    })) as typeof useAuthStore,
-  );
+  signInDispatcher();
   answerNetwork();
 });
 afterEach(() => mockWidth('desktop'));
 
-const render = (ability = FULL, entry = '/communication/inbox') => renderWithProviders(<InboxPage />, { ability, initialEntries: [entry] });
+const render = (ability = FULL, entry = '/communication/inbox') => renderInbox({ ability, entry });
 const openFolder = async (user: ReturnType<typeof userEvent.setup>) => {
   await user.click(await screen.findByRole('button', { name: /Needs review/ }));
   return screen.findByRole('region', { name: 'Held messages' });

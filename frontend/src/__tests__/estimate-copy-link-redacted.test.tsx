@@ -14,12 +14,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import api from '@/lib/axios';
-import { renderWithProviders } from './helpers';
 import { buildAbility } from '@/lib/ability';
-import EstimateWorkspacePage from '@/pages/v2/estimates/EstimateWorkspacePage';
+import { renderEstimateWorkspace, serveEstimateWorkspace } from '@/__tests__/harness/estimateWorkspacePage';
 
-const adminAbility = buildAbility([{ action: 'manage', subject: 'all' }]);
 const ESTIMATE_ID = 'est-1997-copylink-id';
 
 vi.mock('react-router-dom', async () => {
@@ -48,7 +45,6 @@ vi.mock('@/components/estimates/DuplicateEstimateDialog', () => ({ DuplicateEsti
 vi.mock('@/components/estimates/WaiveDepositDialog', () => ({ WaiveDepositDialog: () => null }));
 vi.mock('@/components/estimates/RefundDepositDialog', () => ({ RefundDepositDialog: () => null }));
 
-const mockApi = vi.mocked(api);
 
 function baseEstimate(overrides: Record<string, unknown> = {}) {
   return {
@@ -98,10 +94,7 @@ function baseEstimate(overrides: Record<string, unknown> = {}) {
 }
 
 function setupMocks(estimate: Record<string, unknown>) {
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.includes('/api/estimates/')) return { data: { estimate } };
-    return { data: {} };
-  });
+  serveEstimateWorkspace({ estimate });
 }
 
 beforeEach(() => {
@@ -115,7 +108,7 @@ describe('EstimateWorkspacePage — Copy Link control when public_token is redac
     setupMocks(estimate);
     const user = userEvent.setup();
 
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     await user.click(await screen.findByRole('button', { name: 'Actions' }));
     expect(screen.queryByRole('menuitem', { name: /copy link/i })).not.toBeInTheDocument();
@@ -127,7 +120,7 @@ describe('EstimateWorkspacePage — Copy Link control when public_token is redac
     const user = userEvent.setup();
     const noPrices = buildAbility([{ action: 'manage', subject: 'all' }, { action: 'read', subject: 'Prices', inverted: true }]);
 
-    renderWithProviders(<EstimateWorkspacePage />, { ability: noPrices });
+    renderEstimateWorkspace({ ability: noPrices });
 
     await user.click(await screen.findByRole('button', { name: 'Actions' }));
     await screen.findByRole('menuitem', { name: /history/i });
@@ -146,7 +139,7 @@ describe('EstimateWorkspacePage — Copy Link control when public_token is redac
       configurable: true,
     });
 
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     await user.click(await screen.findByRole('button', { name: 'Actions' }));
     const item = await screen.findByRole('menuitem', { name: /copy link/i });
@@ -162,7 +155,7 @@ describe('EstimateWorkspacePage — Copy Link control when public_token is redac
     const estimate = baseEstimate({ status: 'DRAFT', sent_at: null, public_token: null });
     setupMocks(estimate);
 
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     const user = userEvent.setup();
     await user.click(await screen.findByRole('button', { name: 'Actions' }));

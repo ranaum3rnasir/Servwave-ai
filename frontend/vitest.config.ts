@@ -30,6 +30,10 @@ export default defineConfig({
     // chunks. Alone that suite runs in ~11s; under full-suite worker
     // contention it exceeded the old ceiling. A bundler cost, not an app one.
     testTimeout: 30000,
+    // Hooks get the same 30s as tests, for the same recorded reason: a loaded machine, not slow
+    // code, is what crosses the limit (the 5s default failed beforeAll/afterEach hooks that a
+    // test of the same file passed). Pinned equal by src/__tests__/vitest-config.test.ts.
+    hookTimeout: 30000,
     coverage: {
       provider: 'v8',
       reporter: ['text-summary', 'json-summary', 'json'],

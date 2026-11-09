@@ -7,10 +7,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import api from '@/lib/axios';
 import { useAuthStore } from '@/stores/auth.store';
-import { renderWithProviders, ALL_JOB_ACTIONS } from './helpers';
-import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
+import { ALL_JOB_ACTIONS } from './helpers';
+import { renderJobDetail, serveJobDetail } from '@/__tests__/harness/jobDetailPage';
 import { buildAbility, type AbilityRule } from '@/lib/ability';
 
 const JOB_ID = 'j0000000-0000-0000-0000-000000000001';
@@ -28,7 +27,6 @@ vi.mock('react-router-dom', async () => {
   return { ...actual, useParams: () => ({ id: JOB_ID }), useNavigate: () => vi.fn() };
 });
 
-const mockApi = vi.mocked(api);
 
 const BASE_JOB = {
   id: JOB_ID,
@@ -69,17 +67,14 @@ const VIEW_LOGISTIC_ORDERS: AbilityRule = { action: 'read', subject: 'LogisticOr
 const VIEW_JOBS: AbilityRule = { action: 'read', subject: 'Job' };
 
 function showJob(viewerAttached: boolean) {
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.endsWith('/scopes')) return { data: { scopes: [], billing: { total: 0, invoiced: 0, remaining: 0 } } };
-    if (url.endsWith('/line-items')) return { data: { lines: [], billing: { total: 0, invoiced: 0, remaining: 0 } } };
-    if (url.includes('/api/jobs/')) return { data: { job: { ...BASE_JOB, viewer_attached: viewerAttached } } };
-    return { data: {} };
+  serveJobDetail({
+    job: { ...BASE_JOB, viewer_attached: viewerAttached },
   });
 }
 
 async function renderJob(rules: AbilityRule[], viewerAttached: boolean) {
   showJob(viewerAttached);
-  renderWithProviders(<JobDetailPage />, { ability: buildAbility(rules) });
+  renderJobDetail({ ability: buildAbility(rules) });
   await screen.findByRole('tab', { name: /Overview/ });
 }
 

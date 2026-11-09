@@ -1,0 +1,7 @@
+{
+  "floor": 16900,
+  "maxRetried": 10,
+  "skipAllowList": {
+    "src/pages/phone/__tests__/incoming-call-card.test.tsx": 7
+  }
+}

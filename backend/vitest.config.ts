@@ -15,6 +15,8 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     setupFiles: ['./src/__tests__/setup.ts'],
+    // Names (and drops at the end) the run's migration base template; builds nothing itself. See migration-deploy-support.ts.
+    globalSetup: ['./src/__tests__/migration-base.global-setup.ts'],
     ...(maxWorkers ? { maxWorkers: Number(maxWorkers), minWorkers: 1 } : {}),
     // Every test worker gets a 4 GB heap ceiling, wherever it runs. tx-pool-static-scan.test.ts loads the backend
     // into the TypeScript compiler and needs ~1.5 GB; Node's default ceiling is ~2 GB on the CI runners and lower on

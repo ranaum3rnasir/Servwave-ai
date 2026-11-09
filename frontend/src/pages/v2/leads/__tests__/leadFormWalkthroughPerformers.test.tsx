@@ -8,14 +8,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { AxiosRequestConfig } from 'axios';
 import api from '@/lib/axios';
-import { renderWithProviders } from '@/__tests__/helpers';
-import LeadFormPage from '@/pages/v2/leads/LeadFormPage';
 import { buildAbility } from '@/lib/ability';
 import { formatDateForInput } from '@/lib/date-input';
 import { DEFAULT_SCHEDULE_TIMEZONE, isoToOrgDay } from '@/lib/schedule-tz';
 import { useAuthStore } from '@/stores/auth.store';
+import { renderLeadForm, serveLeadForm } from '@/__tests__/harness/leadFormPage';
 
 type AuthState = ReturnType<typeof useAuthStore.getState>;
 
@@ -24,7 +22,7 @@ vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
   return { ...actual, useNavigate: () => mockNavigate };
 });
-vi.mock('@/lib/api/organization', () => ({
+vi.mock('@/lib/api/shared/organization', () => ({
   useOrganization: () => ({ data: { job_type_options: [], source_options: [] } }),
   useUpdateOrganization: () => ({ mutate: vi.fn() }),
 }));
@@ -52,20 +50,14 @@ const canBook = buildAbility([
 
 /** The creator rule's answer and whether the signed-in person can be on a crew, as the server serves them. */
 function serverAnswers(opts: { canBeOnCrew: boolean }) {
-  mockApi.get.mockImplementation(async (url: string, config?: AxiosRequestConfig) => {
-    if (url === '/api/leads/creator-prefill') {
-      return { data: { prefill: { owner_id: CREATOR.id, dispatcher_id: null }, can_be_on_crew: opts.canBeOnCrew } };
-    }
-    if (url === '/api/users/assignable') {
-      const params = (config?.params ?? {}) as Record<string, unknown>;
-      return { data: params.eligible_for === 'crew' ? CREW : [] };
-    }
-    return { data: {} };
+  serveLeadForm({
+    creatorPrefill: { prefill: { owner_id: CREATOR.id, dispatcher_id: null }, can_be_on_crew: opts.canBeOnCrew },
+    assignable: (params) => (params.eligible_for === 'crew' ? CREW : []),
   });
 }
 
 function renderForm(ability: ReturnType<typeof buildAbility>) {
-  return renderWithProviders(<LeadFormPage />, { ability, initialEntries: ['/leads/create'] });
+  return renderLeadForm({ ability, entry: '/leads/create' });
 }
 
 async function fillRequiredFields(user: ReturnType<typeof userEvent.setup>) {

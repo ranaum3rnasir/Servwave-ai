@@ -484,7 +484,7 @@ suite('H6: prices cannot be dodged by retyping the address or through the custom
 
   it('the customer page itself still opens with the token, signed in or not: the customer reads their own prices', async () => {
     const request = (await import('supertest')).default;
-    const app = (await import('../app.js')).default as never;
+    const app = await fx.listener();
     const res = await request(app).get(`/api/invoices/${invoiceId}/public`).query({ token: invoiceToken });
     expect(res.status).toBe(200);
     expect(JSON.stringify(res.body)).toMatch(/total_amount/);

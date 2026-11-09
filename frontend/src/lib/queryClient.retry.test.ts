@@ -28,7 +28,10 @@ const cases: Array<[string, () => AxiosError, boolean]> = [
   ['network error', networkError, true],
 ];
 
-afterEach(() => queryClient.clear());
+afterEach(() => {
+  vi.useRealTimers();
+  queryClient.clear();
+});
 
 describe('shared query client retry rule', () => {
   it.each(cases)('query failing with %s', async (_label, make, retried) => {
@@ -62,6 +65,8 @@ describe('shared query client retry rule', () => {
 // first; the other is saved by the one query retry. Both must end with data.
 describe('two reads that get a 401 during a session refresh', () => {
   it('both end with data', async () => {
+    // A fake clock (real time still flows) steps over the 300 ms session refresh and the 400 ms retry delay.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     const { default: realApi } = await vi.importActual<typeof import('@/lib/axios')>('@/lib/axios');
     let token = 'old-token';
     vi.mocked(getAccessToken).mockImplementation(() => token);
@@ -78,6 +83,8 @@ describe('two reads that get a 401 during a session refresh', () => {
       queryClient
         .fetchQuery({ queryKey: ['retry-401', key], queryFn: async () => (await realApi.get(`/api/${key}`)).data, retryDelay: 400 })
         .then(() => 'data', (e: AxiosError) => `error ${e.response?.status}`);
-    expect(await Promise.all([read('a'), read('b')])).toEqual(['data', 'data']);
+    const both = Promise.all([read('a'), read('b')]);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(await both).toEqual(['data', 'data']);
   }, 15000);
 });

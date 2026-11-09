@@ -7,9 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useLocation } from 'react-router-dom';
-import { renderWithProviders } from '@/__tests__/helpers';
+import { renderInbox, serveInbox, signInDispatcher } from '@/__tests__/harness/inboxPage';
 import { buildAbility } from '@/lib/ability';
-import { useAuthStore } from '@/stores/auth.store';
 import { MEDIA } from '@/ui-kit/lib/breakpoints';
 import api from '@/lib/axios';
 
@@ -23,13 +22,8 @@ const READ_ONLY = buildAbility([
   { action: 'access_inbox', subject: 'Communication' },
 ]);
 
-vi.mock('@/lib/entitlements', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/lib/entitlements')>()),
-  useFeature: () => true,
-  useEntitlementsReady: () => true,
-}));
-
-import InboxPage from '@/pages/v2/communication/InboxPage';
+vi.mock('@/lib/entitlements', async (importOriginal) =>
+  (await import('@/__tests__/harness/inboxApiStub')).inboxEntitlements(await importOriginal<typeof import('@/lib/entitlements')>()));
 
 const THREAD_INVOICE = '22222222-2222-4222-8222-222222222222';
 
@@ -48,35 +42,29 @@ let byId: Record<string, ReturnType<typeof item>>;
 const itemCalls: string[] = [];
 
 function answerNetwork() {
-  vi.mocked(api.get).mockImplementation(async (url: string, config?: { params?: unknown }) => {
-    const params = (config?.params ?? {}) as Record<string, unknown>;
-    if (url === '/api/communication/mailboxes') {
-      return {
-        data: {
-          scope: 'attached', selected: params.selected ?? 'mine', selected_label: null, selected_unread: 0, total_unread: 0,
-          mine: { id: 'box-mine', unread: 0 }, held: [], main: null, people: null,
-          needs_review: { selected: listed.length, total: listed.length },
-        },
-      };
-    }
-    const one = /^\/api\/communication\/emails\/unmatched\/([^/]+)$/.exec(url);
-    if (one) {
-      itemCalls.push(one[1]!);
-      const found = byId[one[1]!];
-      if (!found) throw { response: { status: 404, data: { error: 'Email not found' } } };
-      return { data: { email: found } };
-    }
-    if (url === '/api/communication/emails/unmatched') {
+  serveInbox({
+    // One held message by id, as the bell asks for it; a missing id answers 404.
+    routes: [{
+      match: (url) => /^\/api\/communication\/emails\/unmatched\/([^/]+)$/.test(url),
+      data: (url: string) => {
+        const id = /^\/api\/communication\/emails\/unmatched\/([^/]+)$/.exec(url)![1]!;
+        itemCalls.push(id);
+        const found = byId[id];
+        if (!found) throw { response: { status: 404, data: { error: 'Email not found' } } };
+        return { email: found };
+      },
+    }],
+    mailboxes: (params) => ({
+      scope: 'attached', selected: params.selected ?? 'mine', selected_label: null, selected_unread: 0, total_unread: 0,
+      mine: { id: 'box-mine', unread: 0 }, held: [], main: null, people: null,
+      needs_review: { selected: listed.length, total: listed.length },
+    }),
+    unmatched: (params) => {
       const limit = Number(params.limit); const offset = Number(params.offset);
-      return { data: { emails: listed.slice(offset, offset + limit), total: listed.length, limit, offset, selected: params.mailbox } };
-    }
-    if (url === '/api/communication/emails') return { data: { emails: [] } };
-    if (url === '/api/communication/email-groups') return { data: { groups: [] } };
-    if (url === '/api/communication/forward-rules') return { data: { rules: [] } };
-    if (url === '/api/communication/team-members') return { data: { members: [] } };
-    if (url === '/api/communication/sending-identity') return { data: { status: 'active', address: 'me@mail.test', name: 'Me at Acme', sendingEnabled: true } };
-    if (url === '/api/communication/my-mailbox') return { data: { mailbox: { status: 'active', address: 'me@mail.test' } } };
-    return { data: {} };
+      return { emails: listed.slice(offset, offset + limit), total: listed.length, limit, offset, selected: params.mailbox };
+    },
+    sendingIdentity: { status: 'active', address: 'me@mail.test', name: 'Me at Acme', sendingEnabled: true },
+    myMailbox: { mailbox: { status: 'active', address: 'me@mail.test' } },
   });
   vi.mocked(api.patch).mockImplementation(async (url: string) => {
     const id = /emails\/([^/]+)\/link/.exec(url)![1]!;
@@ -105,18 +93,13 @@ beforeEach(() => {
   itemCalls.length = 0;
   listed = [item('held-other', { subject: 'Held in my mailbox', reviewReason: 'automatic', reviewMailboxId: 'box-mine', recordTie: undefined, linkTo: null })];
   byId = { 'held-bell': item('held-bell') };
-  vi.mocked(useAuthStore).mockImplementation(((selector: (s: Record<string, unknown>) => unknown) =>
-    selector({
-      user: { id: 'u1', email: 'jane@test.com', first_name: 'Jane', last_name: 'Smith', role: 'DISPATCHER', organization_id: 'org-1', org_features: ['email', 'phone'] },
-      isAuthenticated: true, isLoading: false, error: null,
-    })) as typeof useAuthStore,
-  );
+  signInDispatcher();
   answerNetwork();
 });
 afterEach(() => mockWidth('desktop'));
 
 const render = (ability = FULL, entry = '/communication/inbox?review=held-bell') =>
-  renderWithProviders(<><InboxPage /><Where /></>, { ability, initialEntries: [entry] });
+  renderInbox({ ability, entry, beside: <Where /> });
 
 describe('the page the bell opens', () => {
   it('lands on the Needs review folder with the bell\'s message open, though it is in none of the lists the person sees', async () => {
@@ -158,7 +141,7 @@ describe('the page the bell opens', () => {
 
     await waitFor(() => expect(api.patch).toHaveBeenCalledWith('/api/communication/emails/held-bell/link', {}));
     await waitFor(() => expect(screen.queryByRole('heading', { name: 'Re: Your invoice' })).not.toBeInTheDocument());
-    expect(screen.getByTestId('where')).not.toHaveTextContent('review=');
+    await waitFor(() => expect(screen.getByTestId('where')).not.toHaveTextContent('review='));
   });
 
   it('says so when the message is no longer there, and keeps the list', async () => {

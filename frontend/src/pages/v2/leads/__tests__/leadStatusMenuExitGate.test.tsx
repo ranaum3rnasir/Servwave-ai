@@ -1,3 +1,36 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { useAuthStore } from '@/stores/auth.store';
+import { screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import api from '@/lib/axios';
+import { buildAbility } from '@/lib/ability';
+import { LEAD_FIXTURE, NOTES_FIXTURE } from '@/__tests__/helpers';
+import { renderLeadDetail, serveLeadDetail, stubBrowser } from '@/__tests__/harness/leadDetailPage';
+
+vi.mock('@/components/tasks/JobLeadTasksTab', () => ({ JobLeadTasksTab: () => null }));
+vi.mock('@/components/communication/LeadCommunicationsTab', () => ({ LeadCommunicationsTab: () => null }));
+vi.mock('@/lib/communication/phoneTabHandoff', () => ({ requestCall: vi.fn() }));
+vi.mock('@/lib/entitlements', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/entitlements')>()),
+  useFeature: () => false,
+}));
+vi.mock('react-router-dom', async () => {
+  const actual = await vi.importActual('react-router-dom');
+  return { ...actual, useParams: () => ({ id: LEAD_FIXTURE.id }), useNavigate: () => vi.fn() };
+});
+
+// Each test starts from the setup file's signed-in user and bare client calls: reset them here, so a test states its own user
+// and answers in its own `beforeEach` (`clearAllMocks` keeps implementations).
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(useAuthStore).mockReset();
+  vi.mocked(api.get).mockReset();
+  vi.mocked(api.post).mockReset();
+  vi.mocked(api.patch).mockReset();
+  vi.mocked(api.put).mockReset();
+  vi.mocked(api.delete).mockReset();
+});
+
 /**
  * The lead status menu offers Lost only to a user who may take the dedicated door, and never offers Cancelled.
  *
@@ -7,33 +40,8 @@
  * choice that would be refused. Gated on `ability.can(...)`, never a role name. A lead closes one way,
  * as Lost: no ability, however broad, brings Cancelled back into the menu (S05.17).
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
-import api from '@/lib/axios';
-import { renderWithProviders, LEAD_FIXTURE, NOTES_FIXTURE } from '@/__tests__/helpers';
-import { buildAbility } from '@/lib/ability';
-import LeadDetailPage from '../LeadDetailPage';
 
-vi.mock('@/components/tasks/JobLeadTasksTab', () => ({ JobLeadTasksTab: () => null }));
-vi.mock('@/components/communication/LeadCommunicationsTab', () => ({ LeadCommunicationsTab: () => null }));
-vi.mock('@/lib/communication/phoneTabHandoff', () => ({ requestCall: vi.fn() }));
-vi.mock('@/lib/entitlements', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/lib/entitlements')>()),
-  useFeature: () => false,
-}));
-
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
-
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual('react-router-dom');
-  return { ...actual, useParams: () => ({ id: LEAD_FIXTURE.id }), useNavigate: () => vi.fn() };
-});
+stubBrowser();
 
 const mockApi = vi.mocked(api);
 type Rules = Parameters<typeof buildAbility>[0];
@@ -44,17 +52,12 @@ const EDIT_LEAD: Rules = [
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.includes('/notes')) return { data: { notes: NOTES_FIXTURE } };
-    if (url.includes('/api/leads/')) return { data: { lead: { ...LEAD_FIXTURE, status: 'CONTACTED', estimates: [] } } };
-    if (url.includes('/api/tags')) return { data: { tags: [] } };
-    return { data: {} };
-  });
+  serveLeadDetail({ lead: { ...LEAD_FIXTURE, status: 'CONTACTED', estimates: [] }, notes: NOTES_FIXTURE });
 });
 
 async function openStatusMenu(rules: Rules) {
   const user = userEvent.setup({ pointerEventsCheck: 0 });
-  renderWithProviders(<LeadDetailPage />, { ability: buildAbility(rules) });
+  renderLeadDetail({ ability: buildAbility(rules) });
   await user.click(await screen.findByRole('button', { name: /lead status: contacted/i }));
   const items = await screen.findAllByRole('menuitem');
   return items.map((i) => i.textContent?.trim());
@@ -107,7 +110,7 @@ describe('lead status menu: Lost asks for a reason', () => {
   async function pickFromMenu(label: string) {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     mockApi.post.mockResolvedValue({ data: { lead: { ...LEAD_FIXTURE } } });
-    renderWithProviders(<LeadDetailPage />, { ability: buildAbility(CLOSE_RULES) });
+    renderLeadDetail({ ability: buildAbility(CLOSE_RULES) });
     await user.click(await screen.findByRole('button', { name: /lead status: contacted/i }));
     await user.click(await screen.findByRole('menuitem', { name: label }));
     return user;
@@ -139,7 +142,7 @@ describe('lead status menu: Lost asks for a reason', () => {
   it('the other statuses still change through the PATCH', async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     mockApi.patch.mockResolvedValue({ data: {} });
-    renderWithProviders(<LeadDetailPage />, { ability: buildAbility(CLOSE_RULES) });
+    renderLeadDetail({ ability: buildAbility(CLOSE_RULES) });
     await user.click(await screen.findByRole('button', { name: /lead status: contacted/i }));
     await user.click(await screen.findByRole('menuitem', { name: 'Estimate Sent' }));
 
@@ -150,13 +153,8 @@ describe('lead status menu: Lost asks for a reason', () => {
 
   it('picking the status the lead already has opens no dialog and sends nothing', async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url.includes('/notes')) return { data: { notes: NOTES_FIXTURE } };
-      if (url.includes('/api/leads/')) return { data: { lead: { ...LEAD_FIXTURE, status: 'LOST', estimates: [] } } };
-      if (url.includes('/api/tags')) return { data: { tags: [] } };
-      return { data: {} };
-    });
-    renderWithProviders(<LeadDetailPage />, { ability: buildAbility(CLOSE_RULES) });
+    serveLeadDetail({ lead: { ...LEAD_FIXTURE, status: 'LOST', estimates: [] }, notes: NOTES_FIXTURE });
+    renderLeadDetail({ ability: buildAbility(CLOSE_RULES) });
     await user.click(await screen.findByRole('button', { name: /lead status: lost/i }));
     await user.click(await screen.findByRole('menuitem', { name: /^Lost/ }));
 
@@ -169,14 +167,9 @@ describe('lead status menu: Lost asks for a reason', () => {
   // still opens the Mark Lost dialog and the typed reason goes to the mark-lost door.
   it('a Won lead can still be moved to Lost: the dialog opens and confirming sends the reason', async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url.includes('/notes')) return { data: { notes: NOTES_FIXTURE } };
-      if (url.includes('/api/leads/')) return { data: { lead: { ...LEAD_FIXTURE, status: 'WON', estimates: [] } } };
-      if (url.includes('/api/tags')) return { data: { tags: [] } };
-      return { data: {} };
-    });
+    serveLeadDetail({ lead: { ...LEAD_FIXTURE, status: 'WON', estimates: [] }, notes: NOTES_FIXTURE });
     mockApi.post.mockResolvedValue({ data: { lead: { ...LEAD_FIXTURE } } });
-    renderWithProviders(<LeadDetailPage />, { ability: buildAbility(CLOSE_RULES) });
+    renderLeadDetail({ ability: buildAbility(CLOSE_RULES) });
     await user.click(await screen.findByRole('button', { name: /lead status: won/i }));
     await user.click(await screen.findByRole('menuitem', { name: /^Lost/ }));
 

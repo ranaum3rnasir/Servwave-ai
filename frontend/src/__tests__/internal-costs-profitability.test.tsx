@@ -10,7 +10,8 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import { InternalCostsCard } from '@/components/crm/InternalCostsCard';
-import type { InvoiceLineItem, Scope } from '@/lib/api/jobs';
+import type { InvoiceLineItem } from '@/lib/api/jobs';
+import type { Scope } from '@/lib/api/shared/scope';
 
 function line(unitCost: number | null): InvoiceLineItem {
   return {

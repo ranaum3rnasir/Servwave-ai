@@ -40,8 +40,8 @@ const DUE_NEUTRAL_3 = '2026-08-03T12:00:00.000Z';
 // `useOrganization` arrow, which runs at render time - long after this module
 // body. Flattening it to a bare literal at factory level would be a TDZ
 // ReferenceError.
-vi.mock('@/lib/api/organization', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/organization')>();
+vi.mock('@/lib/api/shared/organization', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/api/shared/organization')>();
   return {
     ...actual,
     useOrganization: () => ({

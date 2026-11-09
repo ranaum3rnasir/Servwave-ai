@@ -41,7 +41,7 @@ const suite = realClient ? describe : describe.skip;
 suite('H2: invite links are single-use (real database)', () => {
   const db = realClient as PrismaClient;
   const fx = switchFixture(db, async () => (await import('../app.js')).default as never);
-  const app = async () => (await import('../app.js')).default as never;
+  const app = () => fx.listener();
   beforeAll(async () => {
     // Inviting creates the person's mailbox, which needs the company's mailbox domain.
     const { env } = await import('../config/env.js');

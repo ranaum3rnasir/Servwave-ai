@@ -78,7 +78,8 @@ import {
   deleteJobScope,
   reorderJobScopes,
 } from '@/lib/api/jobs';
-import type { InvoiceLineItem, Scope } from '@/lib/api/jobs';
+import type { InvoiceLineItem } from '@/lib/api/jobs';
+import type { Scope } from '@/lib/api/shared/scope';
 import { useAppAbility } from '@/contexts/AbilityContext';
 import { canSeePricing as canSeePricingAbility, canStartPurchaseOrder } from '@/lib/ability';
 import { useModuleAccess } from '@/lib/entitlements';

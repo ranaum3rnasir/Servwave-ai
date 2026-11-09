@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import { ColumnDef, SortingState } from '@tanstack/react-table';
 import api from '@/lib/axios';
-import { useOrganization } from '@/lib/api/organization';
+import { useOrganization } from '@/lib/api/shared/organization';
 import { useAppAbility } from '@/contexts/AbilityContext';
 import { useAssignableUsers } from '@/lib/api/users';
 import { DataTable } from '@/components/data/data-table';

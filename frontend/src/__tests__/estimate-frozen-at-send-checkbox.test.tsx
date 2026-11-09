@@ -35,7 +35,8 @@ import {
   EstimateScopeOfWorkCard,
 } from '@/components/estimates/EstimateLineItemsEditor';
 import { buildAbility } from '@/lib/ability';
-import type { InvoiceLineItem, Scope } from '@/lib/api/jobs';
+import type { InvoiceLineItem } from '@/lib/api/jobs';
+import type { Scope } from '@/lib/api/shared/scope';
 import type { EstimateLineItem } from '@/lib/api/estimates';
 import { renderWithProviders } from './helpers';
 

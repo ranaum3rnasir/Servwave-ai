@@ -12,12 +12,12 @@
 // sanctioned pattern). Every WRITE hook (useUpsertCategory/useUpsertVendor/
 // useUpsertBranch/useDeleteCategory/useUpsertItem/useSetQuantity/etc.) is left
 // REAL so its POST/PATCH/DELETE actually hits the setup-mocked axios.
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
-import { renderWithProviders, inventoryWriteAbility } from './helpers';
-import InventoryPage from '@/pages/v2/inventory/InventoryPage';
+import { inventoryWriteAbility } from './helpers';
+import { renderInventory } from '@/__tests__/harness/inventoryPage';
 import { toPriceBookBody } from '@/lib/api/inventory';
 
 import { toast } from '@/ui-kit/components/ui/sonner';
@@ -25,10 +25,8 @@ import { toast } from '@/ui-kit/components/ui/sonner';
 // The routed page reports through the kit's sonner toaster, which App.tsx
 // mounts at the root and renderWithProviders does not. Spying on the call is
 // how the toast copy stays asserted without standing a toaster up per test.
-vi.mock('@/ui-kit/components/ui/sonner', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/ui-kit/components/ui/sonner')>()),
-  toast: vi.fn(),
-}));
+vi.mock('@/ui-kit/components/ui/sonner', async (importOriginal) =>
+  (await import('@/__tests__/harness/inventoryApiStub')).sonnerSpy(await importOriginal<typeof import('@/ui-kit/components/ui/sonner')>()));
 
 const mockToast = vi.mocked(toast);
 
@@ -42,11 +40,6 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock('@/lib/api/inventory', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/inventory')>();
-  const EMPTY: never[] = [];
-  const stable =
-    <T,>(data: T) =>
-    () => ({ data, isLoading: false, isError: false });
   const locations = [
     { id: h.LOC_WH, name: 'Main Warehouse', type: 'warehouse', branch: 'HQ' },
     { id: h.LOC_VAN, name: "Mike's Van", type: 'truck', branch: 'HQ' },
@@ -77,33 +70,23 @@ vi.mock('@/lib/api/inventory', async (importOriginal) => {
     ],
     updatedAt: '2026-07-01T00:00:00.000Z',
   };
-  return {
-    ...actual,
-    useInventoryItems: stable([item]),
-    useLocations: stable(locations),
-    useVendors: stable(EMPTY),
-    useCategories: stable(categories),
-    useBranches: stable(EMPTY),
-    useBrands: stable(EMPTY),
-    useJobStages: stable(EMPTY),
-    useMovements: stable(EMPTY),
-    useInventoryJobs: stable(EMPTY),
-    usePurchaseOrders: stable(EMPTY),
-  };
+  return (await import('@/__tests__/harness/inventoryApiStub')).inventoryApi(
+    await importOriginal<typeof import('@/lib/api/inventory')>(),
+    {
+      reads: {
+        useInventoryItems: [item],
+        useLocations: locations,
+        useCategories: categories,
+        useInventoryJobs: [],
+        usePurchaseOrders: [],
+      },
+    },
+  );
 });
 
 // AddItemDialog + AddLocationDialog read the org default inventory location.
-vi.mock('@/lib/api/organization', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/organization')>();
-  return {
-    ...actual,
-    useOrganization: () => ({
-      data: { id: 'org-1', default_inventory_location_id: h.LOC_WH },
-      isLoading: false,
-      isError: false,
-    }),
-  };
-});
+vi.mock('@/lib/api/shared/organization', async (importOriginal) =>
+  (await import('@/__tests__/harness/inventoryApiStub')).organizationApi(await importOriginal<typeof import('@/lib/api/shared/organization')>(), { id: 'org-1', default_inventory_location_id: h.LOC_WH }));
 
 const mockApi = vi.mocked(api);
 
@@ -114,8 +97,8 @@ const mockApi = vi.mocked(api);
 const inventoryAbility = () => inventoryWriteAbility();
 
 function render() {
-  return renderWithProviders(<InventoryPage />, {
-    initialEntries: ['/inventory'],
+  return renderInventory({
+    entry: '/inventory',
     ability: inventoryAbility(),
   });
 }

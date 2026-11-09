@@ -1,37 +1,37 @@
-/**
- * Roles & Permissions, PRD 4, S04.17 - Complete job on the routed job page when the job still has open visits.
- *
- * The job-level complete never finishes a visit: the server refuses it while a visit is open unless the request says
- * to cancel them. The page holds the refusal, lists the open visits with cancel-and-complete as the default and a way
- * back, and sends the complete again with that choice only when the person agrees.
- */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-
-import api from '@/lib/axios';
 import { buildAbility } from '@/lib/ability';
 import { useAuthStore } from '@/stores/auth.store';
-import { renderWithProviders, ALL_JOB_ACTIONS } from '@/__tests__/helpers';
+import { ALL_JOB_ACTIONS } from '@/__tests__/helpers';
+import { JOB_ID, renderJobDetail, serveJobDetail, stubBrowser } from '@/__tests__/harness/jobDetailPage';
+import api from '@/lib/axios';
 
-import JobDetailPage from '../JobDetailPage';
-
-const JOB_ID = 'j0000000-0000-0000-0000-000000000001';
-
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 vi.mock('@/components/tasks/JobLeadTasksTab', () => ({ JobLeadTasksTab: () => null }));
+
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');
   return { ...actual, useParams: () => ({ id: JOB_ID }), useNavigate: () => vi.fn() };
 });
 
+// Each test starts from the setup file's signed-in user and bare client calls: reset them here, so a test states its own user
+// and answers in its own `beforeEach` (`clearAllMocks` keeps implementations).
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(useAuthStore).mockReset();
+  vi.mocked(api.get).mockReset();
+  vi.mocked(api.post).mockReset();
+  vi.mocked(api.patch).mockReset();
+  vi.mocked(api.put).mockReset();
+  vi.mocked(api.delete).mockReset();
+});
+
+stubBrowser();
+
 const mockApi = vi.mocked(api);
+
 // The page draws its controls from the server's per-record action list, so the browser-side ability stays empty.
 const nothing = buildAbility([]);
 
@@ -111,17 +111,18 @@ function mountWith(actions: string[]) {
     } as never),
   );
   const job = { ...JOB, actions };
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.includes('/visits')) return { data: { visits: [VISIT] } };
-    if (url.includes('/financials')) return { data: { final_invoice: null, invoices: [], payments: [] } };
-    if (url.includes('/line-items')) return { data: { lines: [], billing: { subtotal: 0, discount_amount: 0, tax_rate: 0, tax_amount: 0, total: 0 } } };
-    if (url.includes('/notes')) return { data: { notes: [] } };
-    if (url.includes('/api/attachments/')) return { data: { attachments: [] } };
-    if (url.includes('/communications')) return { data: { items: [] } };
-    if (url.includes(`/api/jobs/${JOB_ID}`)) return { data: { job } };
-    return { data: {} };
+  serveJobDetail({
+    job,
+    visits: [VISIT],
+    routes: [
+      { match: (url) => url.includes('/financials'), data: { final_invoice: null, invoices: [], payments: [] } },
+      { match: (url) => url.includes('/line-items'), data: { lines: [], billing: { subtotal: 0, discount_amount: 0, tax_rate: 0, tax_amount: 0, total: 0 } } },
+      { match: (url) => url.includes('/notes'), data: { notes: [] } },
+      { match: (url) => url.includes('/api/attachments/'), data: { attachments: [] } },
+      { match: (url) => url.includes('/communications'), data: { items: [] } },
+    ],
   });
-  return renderWithProviders(<JobDetailPage />, { ability: nothing, initialEntries: [`/jobs/${JOB_ID}`] });
+  return renderJobDetail({ ability: nothing, entry: `/jobs/${JOB_ID}` });
 }
 
 const completeCalls = () => mockApi.post.mock.calls.filter(([url]) => url === `/api/jobs/${JOB_ID}/complete`);

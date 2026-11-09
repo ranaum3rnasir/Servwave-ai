@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 
-import { useSwitchCatalog, type CatalogSwitch, type SwitchValue } from '@/lib/api/permissionSwitches';
+import { useSwitchCatalog, type CatalogSwitch } from '@/lib/api/permissionSwitches';
+import { type SwitchValue } from '@/lib/api/shared/switchTypes';
 import { useRoleChangeLog, usePersonChangeLog, type ChangeLogEntry } from '@/lib/api/permissionChangeLog';
 import { formatInstant, useScheduleTimezone } from '@/lib/schedule-tz';
 import { choiceLabel, valueText } from '@/components/permissions/switchValueText';

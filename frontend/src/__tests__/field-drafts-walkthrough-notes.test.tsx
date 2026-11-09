@@ -9,7 +9,7 @@ import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
 import { renderWithProviders, LEAD_FIXTURE } from './helpers';
-import LeadDetailPage from '@/pages/v2/leads/LeadDetailPage';
+import { renderLeadDetail, serveLeadDetail, stubBrowser } from '@/__tests__/harness/leadDetailPage';
 import { LeadWalkthroughNotes } from '@/pages/v2/leads/components/leadWalkthroughNotes';
 import type { VisitHistoryRow } from '@/pages/v2/leads/components/leadShared';
 import { buildAbility } from '@/lib/ability';
@@ -20,18 +20,10 @@ import { hasUnsavedWork } from '@/ui-kit/lib/unsavedWork';
 vi.mock('@/components/tasks/JobLeadTasksTab', () => ({ JobLeadTasksTab: () => null }));
 vi.mock('@/components/communication/LeadCommunicationsTab', () => ({ LeadCommunicationsTab: () => null }));
 
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 const LEAD_ID = 'e0000000-0000-0000-0000-000000000001';
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual('react-router-dom');
-  return { ...actual, useParams: () => ({ id: 'e0000000-0000-0000-0000-000000000001' }) };
-});
+vi.mock('react-router-dom', async () => (await import('@/__tests__/harness/leadDetailRouter')).leadDetailRouter());
 
 const adminAbility = buildAbility([{ action: 'manage', subject: 'all' }]);
 const mockApi = vi.mocked(api);
@@ -54,17 +46,8 @@ const wt = (id: string, seq: number, notes: string | null) => ({
 });
 
 function mockLead(savedNotes: string | null, extraVisits: unknown[] = []) {
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.includes('/notes')) return { data: { notes: [] } };
-    if (url.includes('/api/leads/')) {
-      return {
-        data: {
-          lead: { ...LEAD_FIXTURE, status: 'CONTACTED', walkthrough_history: [wt('w1', 1, savedNotes), ...extraVisits] },
-        },
-      };
-    }
-    if (url.includes('/api/tags')) return { data: { tags: [] } };
-    return { data: {} };
+  serveLeadDetail({
+    lead: { ...LEAD_FIXTURE, status: 'CONTACTED', walkthrough_history: [wt('w1', 1, savedNotes), ...extraVisits] },
   });
 }
 
@@ -83,7 +66,7 @@ beforeEach(() => {
 describe('lead walkthrough notes on the Notes tab', () => {
   it('keeps notes typed on the card across a tab switch, restored with "Draft restored"', async () => {
     const user = userEvent.setup();
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     const notes = await openNotes(user);
     await user.type(notes, 'Unit is on the roof; access via the south stairwell.');
@@ -104,7 +87,7 @@ describe('lead walkthrough notes on the Notes tab', () => {
   it("opens on the walkthrough's saved notes, which are not a draft", async () => {
     mockLead('Gate code is 4417');
     const user = userEvent.setup();
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     const notes = await openNotes(user);
     expect(notes).toHaveValue('Gate code is 4417');
@@ -116,7 +99,7 @@ describe('lead walkthrough notes on the Notes tab', () => {
   it('an edit to saved notes survives a tab switch and comes back as the edited text', async () => {
     mockLead('Gate code is 4417');
     const user = userEvent.setup();
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     const notes = await openNotes(user);
     await user.type(notes, ' and the dog is friendly');
@@ -129,7 +112,7 @@ describe('lead walkthrough notes on the Notes tab', () => {
   it("keeps each walkthrough's unsent text on its own card", async () => {
     mockLead('One', [wt('w2', 2, 'Two')]);
     const user = userEvent.setup();
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     await openNotes(user);
     await user.type(screen.getByRole('textbox', { name: 'Walkthrough 2 notes' }), ' typed');
@@ -143,7 +126,7 @@ describe('lead walkthrough notes on the Notes tab', () => {
   it('saving the notes clears the draft', async () => {
     mockApi.patch.mockResolvedValue({ data: {} });
     const user = userEvent.setup();
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     const notes = await openNotes(user);
     await user.type(notes, 'Done and dusted');
@@ -155,12 +138,12 @@ describe('lead walkthrough notes on the Notes tab', () => {
 
   it("does not show another user's draft", async () => {
     const user = userEvent.setup();
-    const first = renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    const first = renderLeadDetail();
     await user.type(await openNotes(user), "first user's private note");
     first.unmount();
 
     setUser('user-other');
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
     expect(await openNotes(user)).toHaveValue('');
     expect(screen.queryByText('Draft restored')).not.toBeInTheDocument();
   });

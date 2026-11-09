@@ -15,7 +15,7 @@ import { useCalls, useMessageThreads, useEmails, useWhatsAppChats } from '@/lib/
 
 const mockApi = vi.mocked(api);
 
-vi.mock('@/lib/api/organization', () => ({
+vi.mock('@/lib/api/shared/organization', () => ({
   useOrganization: () => ({ data: { phone_connected: false, ctm_account_id: null } }),
 }));
 vi.mock('@/lib/useIsDemoOrg', () => ({ useIsDemoOrg: () => true }));

@@ -1,3 +1,37 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import api from '@/lib/axios';
+import { buildAbility, type AbilityRule } from '@/lib/ability';
+import { seedMySwitches, ALL_JOB_ACTIONS } from '@/__tests__/helpers';
+import { renderJobDetail, serveJobDetail, stubBrowser } from '@/__tests__/harness/jobDetailPage';
+import { renderInventory } from '@/__tests__/harness/inventoryPage';
+import type { LogisticOrderDetail, LogisticOrderStatus } from '@/lib/api/logisticOrders';
+import { useAuthStore } from '@/stores/auth.store';
+
+vi.mock('@/components/jobs/JobStagesSection', () => ({ JobStagesSection: () => null }));
+vi.mock('@/components/tasks/JobLeadTasksTab', () => ({ JobLeadTasksTab: () => null }));
+vi.mock('react-router-dom', async () => {
+  const actual = await vi.importActual('react-router-dom');
+  return { ...actual, useParams: () => ({ id: __route.id }), useNavigate: () => vi.fn() };
+});
+
+const __route = vi.hoisted(() => ({ id: '' }));
+
+// Each test starts from the setup file's signed-in user and bare client calls: reset them here, so a test states its own user
+// and answers in its own `beforeEach` (`clearAllMocks` keeps implementations).
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(useAuthStore).mockReset();
+  vi.mocked(api.get).mockReset();
+  vi.mocked(api.post).mockReset();
+  vi.mocked(api.patch).mockReset();
+  vi.mocked(api.put).mockReset();
+  vi.mocked(api.delete).mockReset();
+});
+
+// The router mock reads the id this block's file used to fix.
+beforeEach(() => { __route.id = JOB_ID; });
 // Roles & Permissions, PRD 7, slice S07.11 - the pickup mark on a Processed logistic order.
 //
 // "Taken by me" and "Taken by..." are drawn from the order's own action list (`pick_up`, `record_pickup`), the server's
@@ -6,34 +40,12 @@
 // <name>" when someone else recorded it) and the time. The picker lists the people the server sends, the requester first,
 // in a searchable list with a scroller of its own. Role names appear nowhere; the HTTP layer is mocked and the real list
 // and sheet are mounted.
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, within } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
 
-import api from '@/lib/axios';
-import { buildAbility, type AbilityRule } from '@/lib/ability';
-import { renderWithProviders, seedMySwitches, ALL_JOB_ACTIONS } from './helpers';
-import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
-import InventoryPage from '@/pages/v2/inventory/InventoryPage';
-import type { LogisticOrderDetail, LogisticOrderStatus } from '@/lib/api/logisticOrders';
-
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 const JOB_ID = 'j0000000-0000-0000-0000-000000000001';
 const ORDER_ID = 'o0000000-0000-0000-0000-000000000001';
 const ISO = '2026-07-18T10:00:00.000Z';
-
-vi.mock('@/components/jobs/JobStagesSection', () => ({ JobStagesSection: () => null }));
-vi.mock('@/components/tasks/JobLeadTasksTab', () => ({ JobLeadTasksTab: () => null }));
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual('react-router-dom');
-  return { ...actual, useParams: () => ({ id: JOB_ID }), useNavigate: () => vi.fn() };
-});
 
 const mockApi = vi.mocked(api);
 
@@ -56,20 +68,24 @@ function detail(status: LogisticOrderStatus, actions: LogisticOrderDetail['actio
   };
 }
 
-function serve(order: LogisticOrderDetail, showOrdersPage = true) {
-  mockApi.get.mockImplementation((async (url: string, config?: { params?: Record<string, unknown> }) => {
-    if (url === '/api/permission-switches/me') return { data: { admin_box: false, values: { view_logistic_orders: showOrdersPage }, rules: [] } };
-    if (url === `/api/logistic-orders/${ORDER_ID}`) return { data: order };
-    if (url === '/api/logistic-orders') {
-      const limit = Number(config?.params?.limit ?? 50);
-      return { data: { data: limit === 1 ? [] : [{ ...order, lineCount: 1, createdBy: order.createdBy }], page: 1, limit, total: 1 } };
-    }
-    if (url.endsWith('/scopes')) return { data: { scopes: [], billing: { total: 0, invoiced: 0, remaining: 0 } } };
-    if (url.endsWith('/line-items')) return { data: { lines: [], billing: { total: 0, invoiced: 0, remaining: 0 } } };
-    if (url.includes('/api/jobs/')) return { data: { job: BASE_JOB } };
-    if (url.startsWith('/api/inventory/locations')) return { data: { locations: [{ id: 'loc1', name: 'Main', type: 'warehouse', branch: 'HQ' }] } };
-    return { data: { data: [], meta: { total: 0, page: 1, limit: 1, totalPages: 1 }, total: 0 } };
-  }) as typeof mockApi.get);
+function serve(order: LogisticOrderDetail, showOrdersPage = true, more: Array<{ match: (url: string) => boolean; data: unknown }> = []) {
+  serveJobDetail({
+    job: BASE_JOB,
+    routes: [
+      ...more,
+      { match: (url) => url === '/api/permission-switches/me', data: { admin_box: false, values: { view_logistic_orders: showOrdersPage }, rules: [] } },
+      { match: (url) => url === `/api/logistic-orders/${ORDER_ID}`, data: order },
+      {
+        match: (url) => url === '/api/logistic-orders',
+        data: (config) => {
+          const limit = Number(config?.params?.limit ?? 50);
+          return { data: limit === 1 ? [] : [{ ...order, lineCount: 1, createdBy: order.createdBy }], page: 1, limit, total: 1 };
+        },
+      },
+      { match: (url) => url.startsWith('/api/inventory/locations'), data: { locations: [{ id: 'loc1', name: 'Main', type: 'warehouse', branch: 'HQ' }] } },
+    ],
+    otherwise: { data: [], meta: { total: 0, page: 1, limit: 1, totalPages: 1 }, total: 0 },
+  });
 }
 
 const READ_ORDERS: AbilityRule = { action: 'read', subject: 'LogisticOrder' };
@@ -85,7 +101,7 @@ const RECORD_FOR_OTHER: AbilityRule = { action: 'record_pickup_for_other', subje
 
 /** Shows the order list on the job page's Logistics tab. */
 async function showOnJob(rules: AbilityRule[]) {
-  renderWithProviders(<JobDetailPage />, { ability: buildAbility(rules) });
+  renderJobDetail({ ability: buildAbility(rules) });
   await userEvent.click(await screen.findByRole('tab', { name: /Logistics/ }));
   await screen.findByText('LO00001');
 }
@@ -93,7 +109,7 @@ async function showOnJob(rules: AbilityRule[]) {
 /** Shows the order list on the Inventory page's Logistic Orders tab. */
 async function showOnInventory(rules: AbilityRule[]) {
   seedMySwitches({ view_logistic_orders: true });
-  renderWithProviders(<InventoryPage />, { initialEntries: ['/inventory/logistic-orders'], ability: buildAbility(rules) });
+  renderInventory({ entry: '/inventory/logistic-orders', ability: buildAbility(rules) });
   await screen.findByText('LO00001');
 }
 
@@ -125,10 +141,7 @@ const taken = (status: LogisticOrderStatus = 'PROCESSED') =>
 
 /** Serves the order plus the picker's people on top of the usual answers. */
 function serveWithPeople(order: LogisticOrderDetail, people: Array<{ id: string; name: string; requester: boolean }> = []) {
-  serve(order);
-  const base = mockApi.get.getMockImplementation()!;
-  mockApi.get.mockImplementation(((url: string, config?: unknown) =>
-    url === PEOPLE_URL ? Promise.resolve({ data: { people } }) : base(url, config as never)) as typeof mockApi.get);
+  serve(order, true, [{ match: (url) => url === PEOPLE_URL, data: { people } }]);
 }
 
 describe.each(SCREENS)('%s - the pickup buttons follow the order\'s own list', (_screen, open) => {

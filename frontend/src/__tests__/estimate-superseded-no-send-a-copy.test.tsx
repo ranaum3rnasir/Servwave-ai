@@ -12,10 +12,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import api from '@/lib/axios';
-import { renderWithProviders } from './helpers';
-import { buildAbility } from '@/lib/ability';
-import EstimateWorkspacePage from '@/pages/v2/estimates/EstimateWorkspacePage';
+import { renderEstimateWorkspace, serveEstimateWorkspace } from '@/__tests__/harness/estimateWorkspacePage';
 import { ESTIMATE_STATUS } from '@/constants/estimateStatus';
 
 const ESTIMATE_ID = 'est-superseded-send-id';
@@ -46,7 +43,6 @@ vi.mock('@/components/estimates/DuplicateEstimateDialog', () => ({ DuplicateEsti
 vi.mock('@/components/estimates/WaiveDepositDialog', () => ({ WaiveDepositDialog: () => null }));
 vi.mock('@/components/estimates/RefundDepositDialog', () => ({ RefundDepositDialog: () => null }));
 
-const adminAbility = buildAbility([{ action: 'manage', subject: 'all' }]);
 
 const BASE_ESTIMATE = {
   id: ESTIMATE_ID,
@@ -103,12 +99,8 @@ const BASE_ESTIMATE = {
 
 function renderAt(status: string, overrides: Record<string, unknown> = {}) {
   const estimate = { ...BASE_ESTIMATE, status, ...overrides };
-  vi.mocked(api.get).mockImplementation(async (url: string) => {
-    if (url.includes('/state-tax-rates')) return { data: { data: [] } };
-    if (url.includes('/api/estimates/')) return { data: { estimate } };
-    return { data: {} };
-  });
-  return renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+  serveEstimateWorkspace({ estimate });
+  return renderEstimateWorkspace();
 }
 
 const sendACopy = () => screen.queryByRole('button', { name: /send a copy/i });

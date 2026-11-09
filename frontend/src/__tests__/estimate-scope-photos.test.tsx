@@ -13,7 +13,7 @@ import { renderWithProviders } from './helpers';
 import { ScopePhotoStrip } from '@/components/estimates/photos/ScopePhotoStrip';
 import { EstimateScopeOfWorkCard } from '@/components/estimates/EstimateLineItemsEditor';
 import type { EstimateScopePhoto } from '@/lib/api/estimates';
-import type { Scope } from '@/lib/api/jobs';
+import type { Scope } from '@/lib/api/shared/scope';
 
 // #2029 — every pick now goes through `normaliseImageForUpload`, whose real pipeline needs a
 // canvas jsdom does not have. Stubbed to the identity conversion so this file keeps testing what

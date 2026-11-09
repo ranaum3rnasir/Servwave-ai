@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useOrganization } from '@/lib/api/organization';
+import { useOrganization } from '@/lib/api/shared/organization';
 import { useAppAbility } from '@/contexts/AbilityContext';
 import { useFeature } from '@/lib/entitlements';
 import { Button } from '@/components/ui/button';

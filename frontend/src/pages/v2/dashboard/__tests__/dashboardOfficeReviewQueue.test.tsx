@@ -12,23 +12,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { fireEvent, screen, within } from '@testing-library/react';
 import { Route, Routes, useLocation } from 'react-router-dom';
 
-import api from '@/lib/axios';
 import { buildAbility } from '@/lib/ability';
 import type { DashboardResponse, DashboardTileMeta } from '@/lib/api/dashboard';
-import { renderWithProviders, serveDashboard } from '@/__tests__/helpers';
-import DashboardPage from '../DashboardPage';
-import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
+import { serveDashboard, renderDashboard, serveNothing, dashboardElement } from '@/__tests__/harness/dashboardPage';
+import { renderJobDetail, serveJobDetail, stubBrowser } from '@/__tests__/harness/jobDetailPage';
 
 vi.hoisted(() => {
   vi.stubEnv('VITE_DASHBOARD_USE_MOCK', 'false');
 });
 
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 vi.mock('@/components/tasks/JobLeadTasksTab', () => ({ JobLeadTasksTab: () => null }));
 
@@ -55,7 +48,7 @@ const where = () => screen.getByTestId('where').textContent;
 /** The page of a person whose saved layout holds the tile (as an Admin's or a Dispatcher's default does). */
 function open(body: DashboardResponse) {
   serveDashboard(body, [{ id: ID, visible: true }]);
-  renderWithProviders(<><DashboardPage /><Where /></>, { ability: ADMIN });
+  renderDashboard({ ability: ADMIN, beside: <Where /> });
 }
 
 beforeEach(() => {
@@ -104,15 +97,15 @@ describe('the Office review queue tile', () => {
   });
 
   it('claims nothing before the first answer lands', async () => {
-    vi.mocked(api.get).mockReturnValue(new Promise(() => undefined));
-    renderWithProviders(<DashboardPage />, { ability: ADMIN });
+    serveNothing();
+    renderDashboard({ ability: ADMIN });
     await screen.findByRole('button', { name: /Customize home page/ });
     expect(screen.queryByText('No jobs waiting for review')).not.toBeInTheDocument();
   });
 
   it('is offered by the picker under the Office review category the server named, and added from there', async () => {
     serveDashboard(answer('/sent-jobs', { count: 0, jobs: [] }), []);
-    renderWithProviders(<DashboardPage />, { ability: ADMIN });
+    renderDashboard({ ability: ADMIN });
     fireEvent.click(await screen.findByRole('button', { name: /Customize home page/ }));
     const group = (await screen.findByText('Office review', { selector: '[data-testid="category-name"]' })).closest('[role="group"]') as HTMLElement;
     fireEvent.click(within(group).getByRole('button', { name: 'Add Office review queue' }));
@@ -138,28 +131,33 @@ describe('a row of the Office review queue, followed to the routed job page', ()
     source_plan_id: null, source_plan: null, locked: true, locked_actions: [], actions, new_visit_closed_reason: null,
   });
   const review = {
-    summary: { status: 'OFFICE_REVIEW', visits: [], lines: [], discount_amount: 0, total: 0, invoices: [], balance: 0, file_count: 0, note_count: 0 },
+    summary: {
+      key: 'summary', title: 'Job details', checked: false, checked_by: null, checked_at: null, latest_entry_id: null,
+      job_number: 'J-1', job_type: 'Repair', customer: { name: 'John Doe', company_name: null }, service_address: '12 Main St, Springfield, IL 62701',
+      visits: [], lines: [], discount_amount: 0, total: 0, invoices: [], balance: 0, file_count: 0, note_count: 0,
+    },
     groups: [], version: 'version-1', totals: { items: 1, checked: 0, unusual: 0 }, round: null,
   };
 
   /** The home page and the job page, routed as the app routes them; the server's own link (as the tile row sends it) is the only way between. */
   function openFromTheTile(actions: string[]) {
-    serveDashboard(answer('/jobs?in_office_review=true', { count: 1, jobs: [{ ...job(1, 3), id: JOB_ID, link: `/jobs/${JOB_ID}?panel=review` }] }), [{ id: ID, visible: true }]);
-    const served = vi.mocked(api.get).getMockImplementation()!;
-    vi.mocked(api.get).mockImplementation(((url: string) => {
-      if (url === `/api/jobs/${JOB_ID}/review`) return Promise.resolve({ data: { review } });
-      if (url === `/api/jobs/${JOB_ID}/visits`) return Promise.resolve({ data: { visits: [VISIT] } });
-      if (url.endsWith('/scopes') || url.endsWith('/line-items')) return Promise.resolve({ data: { scopes: [], lines: [], billing: { total: 0, invoiced: 0, remaining: 0 } } });
-      if (url.includes(`/api/jobs/${JOB_ID}`)) return Promise.resolve({ data: { job: jobAnswer(actions) } });
-      return served(url);
-    }) as never);
-    renderWithProviders(
-      <Routes>
-        <Route path="/" element={<DashboardPage />} />
-        <Route path="/jobs/:id" element={<JobDetailPage />} />
-      </Routes>,
-      { ability: ADMIN },
-    );
+    const dashboard = serveDashboard(answer('/jobs?in_office_review=true', { count: 1, jobs: [{ ...job(1, 3), id: JOB_ID, link: `/jobs/${JOB_ID}?panel=review` }] }), [{ id: ID, visible: true }]);
+    serveJobDetail({
+      jobId: JOB_ID,
+      job: jobAnswer(actions),
+      visits: [VISIT],
+      routes: [{ match: (url) => url === `/api/jobs/${JOB_ID}/review`, data: { review } }],
+      rest: (url) => ({ data: dashboard.read(url) }),
+    });
+    renderJobDetail({
+      ability: ADMIN,
+      wrap: (page) => (
+        <Routes>
+          <Route path="/" element={dashboardElement()} />
+          <Route path="/jobs/:id" element={page} />
+        </Routes>
+      ),
+    });
   }
 
   it('opens the job with the review panel open for a person the job offers the review to', async () => {

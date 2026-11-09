@@ -12,7 +12,7 @@ import { renderWithProviders } from './helpers';
 import { useAuthStore } from '@/stores/auth.store';
 import { PaymentsSetupBanner } from '@/components/payments/PaymentsSetupBanner';
 import { buildAbility } from '@/lib/ability';
-import type { Organization } from '@/lib/api/organization';
+import type { Organization } from '@/lib/api/shared/organization';
 
 const DISMISS_KEY = 'servwave.payments.jit.dismissed';
 
@@ -33,8 +33,8 @@ const hoisted = vi.hoisted(() => ({
   org: undefined as unknown as Organization,
 }));
 
-vi.mock('@/lib/api/organization', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/organization')>();
+vi.mock('@/lib/api/shared/organization', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/api/shared/organization')>();
   return {
     ...actual,
     useOrganization: () => ({ data: hoisted.org }),

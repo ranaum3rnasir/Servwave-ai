@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 
-import { useOrganization, useUpdateOrganization, useUploadLogo } from '@/lib/api/organization';
+import { useOrganization, useUpdateOrganization, useUploadLogo } from '@/lib/api/shared/organization';
 import { getAccessToken } from '@/lib/supabase';
 import { DEFAULT_BRAND_COLOR } from '@/lib/branding';
 // The app's Thumbnail, not a raw <img>: the kit ships no image primitive and

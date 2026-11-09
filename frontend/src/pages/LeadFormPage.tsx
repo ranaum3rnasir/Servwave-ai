@@ -4,7 +4,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/axios';
-import { useOrganization } from '@/lib/api/organization';
+import { useOrganization } from '@/lib/api/shared/organization';
 import { useAddJobType } from '@/lib/api/jobTypes';
 import { useAssignableUsers } from '@/lib/api/users';
 import { useAppAbility } from '@/contexts/AbilityContext';

@@ -11,6 +11,7 @@
 
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 import { randomUUID } from 'crypto';
+import { afterResponseDrained } from '../lib/after-response';
 import type { PrismaClient } from '@prisma/client';
 
 const { realClient, providerSend } = vi.hoisted(() => {
@@ -60,13 +61,10 @@ suite('the Owner is emailed on every Admin change (real database, real routes)',
     providerSend.mockReset().mockResolvedValue({ data: { id: 'msg_1' }, error: null });
   });
 
-  /** The mail that went to this address. Waits for the alert, which is sent after the change commits. */
-  async function mailTo(address: string, atLeast = 1): Promise<Sent[]> {
-    const read = () => providerSend.mock.calls.map((c) => c[0] as Sent).filter((m) => m.to === address);
-    for (let i = 0; i < 60 && read().length < atLeast; i++) await new Promise((r) => setTimeout(r, 50));
-    // A short wait for mail that should not come, so "exactly" and "none" are real checks.
-    await new Promise((r) => setTimeout(r, 200));
-    return read();
+  /** The mail that went to this address, read once ALL the work the route started after its answer is over (a drain that times out fails). */
+  async function mailTo(address: string): Promise<Sent[]> {
+    await afterResponseDrained();
+    return providerSend.mock.calls.map((c) => c[0] as Sent).filter((m) => m.to === address);
   }
 
   const asOwner = (owner: Person) => fx.signedInAs(owner);
@@ -114,6 +112,6 @@ suite('the Owner is emailed on every Admin change (real database, real routes)',
     expect((await (await asOwner(owner)).patch(`/api/users/${tech.id}`, { role: 'DISPATCHER' })).status).toBe(200);
     expect((await (await asOwner(owner)).patch(`/api/users/${tech.id}`, { first_name: 'Tina' })).status).toBe(200);
 
-    expect(await mailTo(owner.email, 0)).toEqual([]);
+    expect(await mailTo(owner.email)).toEqual([]);
   });
 });

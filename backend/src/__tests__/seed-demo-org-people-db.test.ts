@@ -23,7 +23,7 @@ import { cpSync, mkdtempSync, readdirSync, rmSync, copyFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { PrismaClient } from '@prisma/client';
-import { deployFrom } from './migration-deploy-support';
+import { createMigrationDatabase, deployFrom } from './migration-deploy-support';
 import { SWITCH_CATALOG, type BuiltInRole } from '../lib/permissions/switches/catalog';
 
 const url = process.env.TEST_DATABASE_URL;
@@ -74,7 +74,9 @@ suite('demo-org seed fills lead Dispatchers and job Sold By (real database)', ()
   /** A migrated database holding the demo org's staff and one other organization with a lead. */
   async function migratedDatabase() {
     const name = `s0320_seed_${randomUUID().slice(0, 8)}`;
-    await admin.$executeRawUnsafe(`CREATE DATABASE "${name}"`);
+    // A copy of the run's base, then the rest of the history: the same migrated database the full deploy gives.
+    const latest = readdirSync(join(PRISMA_DIR, 'migrations')).filter((e) => e !== 'migration_lock.toml').sort().pop()!;
+    await createMigrationDatabase(admin, name, latest, tempDirs);
     databases.push(name);
     const u = new URL(server.toString());
     u.pathname = `/${name}`;

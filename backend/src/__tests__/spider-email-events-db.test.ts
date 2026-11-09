@@ -74,13 +74,13 @@ interface ProviderSend {
 suite('Spider emails and their delivery events (real app, real database, real webhook route)', () => {
   const db = realClient as PrismaClient;
   let app: Parameters<typeof request>[0];
-  const fx = switchFixture(db, async () => app);
+  const fx = switchFixture(db, async () => (await import('../app.js')).default as never);
   const sends: ProviderSend[] = [];
   const unknownIdWarnings = () =>
     vi.mocked(logger.warn).mock.calls.map((c) => String(c[0])).filter((m) => m.includes('unknown provider_message_id'));
 
   beforeAll(async () => {
-    app = (await import('../app.js')).default as never;
+    app = await fx.listener();
     // The provider's HTTP edge: each send gets its own id; any other request goes out untouched.
     const realFetch = globalThis.fetch;
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {

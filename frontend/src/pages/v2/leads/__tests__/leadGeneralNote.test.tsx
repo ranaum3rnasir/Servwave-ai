@@ -12,11 +12,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
-import { renderWithProviders, LEAD_FIXTURE, NOTES_FIXTURE } from '@/__tests__/helpers';
+import { LEAD_FIXTURE, NOTES_FIXTURE } from '@/__tests__/helpers';
 import { buildAbility } from '@/lib/ability';
 import { impossibleOnPurpose } from '@/__tests__/support/backendSwitchCatalog';
-import LeadDetailPage from '../LeadDetailPage';
-import LeadFormPage from '../LeadFormPage';
+import { renderLeadDetail, serveLeadDetail, stubBrowser } from '@/__tests__/harness/leadDetailPage';
+import { renderLeadForm } from '@/__tests__/harness/leadFormPage';
 
 vi.mock('@/components/tasks/JobLeadTasksTab', () => ({ JobLeadTasksTab: () => null }));
 vi.mock('@/components/communication/LeadCommunicationsTab', () => ({ LeadCommunicationsTab: () => null }));
@@ -27,12 +27,7 @@ vi.mock('@/lib/entitlements', async (importOriginal) => ({
 }));
 vi.mock('@/lib/api/users', () => ({ useAssignableUsers: () => ({ data: [] }) }));
 
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 // The routed id: set per test (none on the new-lead form).
 let routeId: string | undefined;
@@ -65,13 +60,17 @@ const formLead = (extra: object = {}) => ({
   ...extra,
 });
 
-function serve(lead?: unknown) {
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url === '/api/organization') return { data: { timezone: 'America/New_York', job_type_options: [], source_options: [] } };
-    if (url.includes('/notes')) return { data: { notes: NOTES_FIXTURE } };
-    if (lead && url.includes('/api/leads/')) return { data: { lead } };
-    if (url.includes('/api/tags')) return { data: { tags: [] } };
-    return { data: {} };
+function serve(lead?: unknown, held?: Promise<void>) {
+  serveLeadDetail({
+    lead,
+    notes: NOTES_FIXTURE,
+    routes: [
+      // The lead's own read waits for the test to let it through (the form opened while the lead was still loading).
+      ...(held && lead ? [{ match: (url: string) => url === `/api/leads/${LEAD_FIXTURE.id}`, data: () => held.then(() => ({ lead })) }] : []),
+      { match: (url) => url === '/api/organization', data: { timezone: 'America/New_York', job_type_options: [], source_options: [] } },
+      // The new-lead form has no lead to read: the lead's own routes answer an empty success.
+      ...(lead ? [] : [{ match: (url: string) => url.includes('/api/leads/'), data: {} }]),
+    ],
   });
 }
 
@@ -90,7 +89,7 @@ describe('the new-lead form\'s Notes box', () => {
     ['Add notes', impossibleOnPurpose(buildAbility([...CREATE_LEAD, { action: 'add_note', subject: 'Lead' }]), NO_EDIT)],
   ])('shows to a person with %s and sends its text with the new lead', async (_who, ability) => {
     serve();
-    renderWithProviders(<LeadFormPage />, { ability, initialEntries: [NEW_LEAD] });
+    renderLeadForm({ ability, entry: NEW_LEAD });
     const user = userEvent.setup();
     await user.type(await screen.findByLabelText(/first name/i), 'Morgan');
     await user.type(screen.getByLabelText(/^phone/i), '5551234567');
@@ -106,7 +105,7 @@ describe('the new-lead form\'s Notes box', () => {
 
   it('is not shown to a person without Add notes and Edit leads', async () => {
     serve();
-    renderWithProviders(<LeadFormPage />, { ability: impossibleOnPurpose(buildAbility([...CREATE_LEAD]), NO_EDIT), initialEntries: [NEW_LEAD] });
+    renderLeadForm({ ability: impossibleOnPurpose(buildAbility([...CREATE_LEAD]), NO_EDIT), entry: NEW_LEAD });
     expect(await screen.findByPlaceholderText('Describe the service needed...')).toBeInTheDocument();
     expect(screen.queryByLabelText('Notes')).toBeNull();
     expect(screen.queryByPlaceholderText('Internal notes...')).toBeNull();
@@ -114,7 +113,7 @@ describe('the new-lead form\'s Notes box', () => {
 });
 
 describe('the Edit lead form\'s Notes box', () => {
-  const render = () => renderWithProviders(<LeadFormPage />, { ability: editor, initialEntries: [`/leads/${LEAD_FIXTURE.id}/edit`] });
+  const render = () => renderLeadForm({ ability: editor, entry: `/leads/${LEAD_FIXTURE.id}/edit` });
 
   it('opens with the general note\'s text, not the lead\'s old column, and saves the change', async () => {
     routeId = LEAD_FIXTURE.id;
@@ -187,12 +186,7 @@ describe('the Edit lead form\'s Notes box', () => {
     routeId = LEAD_FIXTURE.id;
     let release!: () => void;
     const loaded = new Promise<void>((r) => { release = r; });
-    serve(formLead({ general_note: MORNINGS }));
-    const served = mockApi.get.getMockImplementation()!;
-    mockApi.get.mockImplementation(async (url: string, ...rest: unknown[]) => {
-      if (url.includes('/api/leads/')) await loaded;
-      return (served as (u: string, ...r: unknown[]) => Promise<unknown>)(url, ...rest);
-    });
+    serve(formLead({ general_note: MORNINGS }), loaded);
     render();
     expect(screen.queryByLabelText('Notes')).toBeNull();
     await act(async () => { release(); });
@@ -223,7 +217,7 @@ describe('Overview', () => {
   it('has no "Lead Notes" block, even for a lead whose old column holds text', async () => {
     routeId = LEAD_FIXTURE.id;
     serve({ ...LEAD_FIXTURE, status: 'CONTACTED', estimates: [], notes: 'Old column text', actions: ['edit'] });
-    renderWithProviders(<LeadDetailPage />, { ability: editor });
+    renderLeadDetail({ ability: editor });
     expect(await screen.findByText('Service Request')).toBeInTheDocument();
     expect(screen.queryByText('Lead Notes')).toBeNull();
     expect(screen.queryByText('Old column text')).toBeNull();

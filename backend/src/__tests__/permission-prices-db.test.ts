@@ -512,7 +512,7 @@ suite('See prices hides every price, on the server (real database)', () => {
       const token = randomUUID();
       await db.estimate.update({ where: { id: world.estimateId }, data: { public_token: token, status: 'SENT' } });
       const request = (await import('supertest')).default;
-      const app = (await import('../app.js')).default as never;
+      const app = await fx.listener();
       const res = await request(app).get(`/api/estimates/${world.estimateId}/public`).query({ token });
       // A customer reads their own estimate with its prices, whoever on staff cannot.
       expect(res.status).toBe(200);

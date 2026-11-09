@@ -27,7 +27,8 @@
  */
 import { ReceiptCard } from '@/components/jobs/items/ReceiptCard';
 import { toNum, netOf } from '@/components/jobs/items/money';
-import type { InvoiceLineItem, Scope } from '@/lib/api/jobs';
+import type { InvoiceLineItem } from '@/lib/api/jobs';
+import type { Scope } from '@/lib/api/shared/scope';
 import type { StateTaxRate } from '@/lib/api/invoices';
 
 export interface InvoiceReceiptCardInvoice {

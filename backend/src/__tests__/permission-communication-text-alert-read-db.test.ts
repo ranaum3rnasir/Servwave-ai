@@ -46,7 +46,7 @@ suite('the inbound-text alert and the conversation read agree (real database)', 
   const fx = switchFixture(db, async () => (await import('../app.js')).default as never);
   let app: Parameters<typeof request>[0];
   beforeAll(async () => {
-    app = (await import('../app.js')).default as never;
+    app = await fx.listener();
     // The route is closed while no token is set; the suite-wide setup leaves the environment's own object in place.
     (env as { CTM_WEBHOOK_TOKEN?: string }).CTM_WEBHOOK_TOKEN = TOKEN;
   }, 120_000);

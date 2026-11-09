@@ -27,7 +27,7 @@ import { spawnSync } from 'child_process';
 import { rmSync } from 'fs';
 import { dirname, join } from 'path';
 import { PrismaClient } from '@prisma/client';
-import { deployMigrations } from './migration-deploy-support';
+import { deployMigrations, createMigrationDatabase } from './migration-deploy-support';
 
 const url = process.env.TEST_DATABASE_URL;
 const suite = url ? describe : describe.skip;
@@ -91,7 +91,7 @@ suite('mailbox register migration (real database)', () => {
 
   async function createDatabase(): Promise<{ dbUrl: string; client: Db }> {
     const name = `s101_mig_${randomUUID().slice(0, 8)}`;
-    await admin.$executeRawUnsafe(`CREATE DATABASE "${name}"`);
+    await createMigrationDatabase(admin, name, MIGRATION, tempDirs);
     databases.push(name);
     const u = new URL(server.toString());
     u.pathname = `/${name}`;

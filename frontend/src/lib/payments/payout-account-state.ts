@@ -1,5 +1,5 @@
 import { deriveStripeState } from '@/components/payments/PaymentsStatusCard';
-import type { StripeStatus } from '@/lib/api/organization';
+import type { StripeStatus } from '@/lib/api/shared/organization';
 
 export type PayoutTone = 'neutral' | 'success' | 'warning' | 'danger';
 

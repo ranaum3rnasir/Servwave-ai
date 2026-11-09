@@ -5,7 +5,8 @@ import { renderWithProviders } from './helpers';
 import { LineItemsEditor, JobScopeOfWorkCard } from '@/components/jobs/items/LineItemsEditor';
 import { buildAbility } from '@/lib/ability';
 import api from '@/lib/axios';
-import type { JobLineItem, JobBilling, Scope } from '@/lib/api/jobs';
+import type { JobLineItem, JobBilling } from '@/lib/api/jobs';
+import type { Scope } from '@/lib/api/shared/scope';
 import * as invoicesApi from '@/lib/api/invoices';
 
 // AddLineDialog's price-book search/browse goes straight through invoices.ts — mock just those
@@ -50,8 +51,8 @@ vi.mock('@/lib/api/inventory', async (importOriginal) => {
   };
 });
 
-vi.mock('@/lib/api/organization', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/organization')>();
+vi.mock('@/lib/api/shared/organization', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/api/shared/organization')>();
   const org = {
     id: 'org-1',
     default_inventory_location_id: hoisted.LOC_MAIN_ID,

@@ -1,7 +1,24 @@
-import { useAcceptedPaymentMethods } from '@/lib/api/permissionSwitches';
-import { useMySwitchesStatus } from '@/lib/api/mySwitches';
-import type { PaymentMethod } from '@/lib/api/organization';
+import { useMySwitchesStatus } from '@/lib/api/shared/mySwitches';
+import type { PaymentMethod } from '@/types/entities';
+import { useQuery } from '@tanstack/react-query';
+import api from '@/lib/axios';
 import { PAYMENT_METHOD_ORDER } from '@/lib/payment-methods';
+
+/** The company's effective accepted payment methods, as `GET /api/permission-switches/accepted-payment-methods` answers. */
+export interface AcceptedPaymentMethods {
+  /** The company ticked no method in ServWave Payments, so every method is accepted. */
+  every_method: boolean;
+  /** The methods the company accepts: the ticked ones plus Credit Card while the card processor is live, or every method. */
+  methods: string[];
+}
+
+/** The read the Allowed payment methods editor offers its checklist from (and the payment dialogs filter by). */
+export function useAcceptedPaymentMethods() {
+  return useQuery<AcceptedPaymentMethods>({
+    queryKey: ['permission-switches', 'accepted-payment-methods'],
+    queryFn: () => api.get('/api/permission-switches/accepted-payment-methods').then((r) => r.data),
+  });
+}
 
 /**
  * Roles & Permissions: the payment methods the signed-in person may record by hand.

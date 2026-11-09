@@ -31,7 +31,7 @@ vi.mock('@/components/layout/GlobalSearch', () => ({
 vi.mock('@/lib/api/communication', () => ({
   useUnreadCounts: () => ({ sms: 0, whatsapp: 0, email: 0 }),
 }));
-vi.mock('@/lib/api/organization', () => ({ useOrganization: () => ({ data: { name: 'Test Org' } }) }));
+vi.mock('@/lib/api/shared/organization', () => ({ useOrganization: () => ({ data: { name: 'Test Org' } }) }));
 vi.mock('@/lib/api/timeclock', () => ({
   useIsClockedIn: () => ({ isClockedIn: false, sinceTs: null, zoneLabel: null }),
   useRecordPunch: () => ({ mutateAsync: vi.fn(), isPending: false }),

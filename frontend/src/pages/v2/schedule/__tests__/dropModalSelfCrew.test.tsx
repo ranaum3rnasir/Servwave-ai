@@ -50,14 +50,11 @@ import { join } from 'node:path';
 import { screen, fireEvent, within } from '@testing-library/react';
 import { addDays, format, startOfWeek } from 'date-fns';
 
-import api from '@/lib/axios';
 import { buildAbility } from '@/lib/ability';
 import { useAuthStore } from '@/stores/auth.store';
-import { renderWithProviders } from '@/__tests__/helpers';
-import { TooltipProvider } from '@/ui-kit/components/ui/tooltip';
 import { JOB_ID, FROM_MEMBER } from '@/components/schedule/dragChannels';
 
-import SchedulePage from '../SchedulePage';
+import { renderSchedule, serveSchedule } from '@/__tests__/harness/schedulePage';
 
 class ResizeObserverStub {
   observe() {}
@@ -98,30 +95,11 @@ const BUCKET_JOB = {
   visits: [],
 };
 
-const mockApi = vi.mocked(api);
 const WEEK_START = startOfWeek(new Date(), { weekStartsOn: 0 });
 
 /** The roster the SERVER would answer a self-only caller with: one row, and it is them. */
 function mockBoard() {
-  mockApi.get.mockImplementation((url: string, config?: { params?: unknown }) => {
-    if (url === '/api/jobs') {
-      const status = (config?.params as { status?: unknown } | undefined)?.status;
-      const wantsBucket = status === 'UNSCHEDULED'
-        || (Array.isArray(status) && status.includes('UNSCHEDULED'));
-      return Promise.resolve({ data: { jobs: wantsBucket ? [BUCKET_JOB] : [] } });
-    }
-    if (url === '/api/departments') return Promise.resolve({ data: { departments: [] } });
-    if (url === '/api/leads') return Promise.resolve({ data: { leads: [] } });
-    if (url === '/api/users' || url === '/api/users/assignable') {
-      return Promise.resolve({
-        data: { users: [{ ...ACTOR, is_active: true, role: 'ADMIN' }] },
-      });
-    }
-    if (url === '/api/organization') return Promise.resolve({ data: {} });
-    if (url === '/api/service-plans/scheduler-bucket') return Promise.resolve({ data: { plans: [] } });
-    if (url === '/api/calendar-entries') return Promise.resolve({ data: { calendar_entries: [] } });
-    return Promise.resolve({ data: {} });
-  });
+  serveSchedule({ jobs: [], bucketJobs: [BUCKET_JOB], users: [{ ...ACTOR, is_active: true, role: 'ADMIN' }] });
 }
 
 /** WHO is at the keyboard is the actor. The board's controls follow the ability, never this role. */
@@ -139,12 +117,7 @@ function signedInAsActor() {
 /** Mounts the board, switches to the Member week view, and drops the bucket card on the lane. */
 async function dropBucketCardOnOwnLane(ability = SELF_ONLY) {
   mockBoard();
-  renderWithProviders(
-    <TooltipProvider>
-      <SchedulePage />
-    </TooltipProvider>,
-    { ability },
-  );
+  renderSchedule({ ability });
   await screen.findAllByText(/J00043/);
   // By LABEL, not by text: the toolbar refresh turned Standard/Member from two text
   // segments into two icon segments. The name is unchanged and still on the control
@@ -173,12 +146,7 @@ beforeEach(() => {
 describe('the board, for a viewer who may name nobody but themselves', () => {
   it('has one lane: no Member view to drop a card on', async () => {
     mockBoard();
-    renderWithProviders(
-      <TooltipProvider>
-        <SchedulePage />
-      </TooltipProvider>,
-      { ability: SELF_ONLY },
-    );
+    renderSchedule({ ability: SELF_ONLY });
     await screen.findAllByText(/J00043/);
     expect(screen.queryByLabelText('Member')).not.toBeInTheDocument();
   });

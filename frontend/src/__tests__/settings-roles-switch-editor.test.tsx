@@ -13,7 +13,8 @@ import { renderWithProviders } from './helpers';
 import RolesPage from '@/pages/v2/settings/RolesPage';
 import { useSettingsGuard } from '@/stores/settingsGuard.store';
 import type { SettingsSaver } from '@/lib/settings/types';
-import type { BuiltInRoleKey, RoleSwitchSet } from '@/lib/api/permissionSwitches';
+import type { BuiltInRoleKey } from '@/lib/api/permissionSwitches';
+import type { RoleSwitchSet } from '@/lib/api/shared/switchTypes';
 import { FIXTURE_CATALOG, FIXTURE_LAYOUT, FIXTURE_DRAWN_SWITCHES, FIXTURE_SWITCHES, catalogSwitch, presetSet } from './support/permissionCatalogFixture';
 
 const mockApi = vi.mocked(api);

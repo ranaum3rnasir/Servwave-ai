@@ -30,8 +30,8 @@ vi.mock('@/lib/api/inventory', async (importOriginal) => {
   };
 });
 
-vi.mock('@/lib/api/organization', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/organization')>();
+vi.mock('@/lib/api/shared/organization', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/api/shared/organization')>();
   return { ...actual, useOrganization: () => ({ data: hoisted.org, isLoading: false, isError: false }) };
 });
 

@@ -9,7 +9,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { renderWithProviders } from '@/__tests__/helpers';
+import { renderInbox } from '@/__tests__/harness/inboxPage';
 import { buildAbility } from '@/lib/ability';
 import type { Email, EmailGroup, ForwardRule, TeamMember } from '@/lib/api/communication';
 
@@ -39,26 +39,19 @@ const GROUPS_FIXTURE: EmailGroup[] = [];
 const FORWARDS_FIXTURE: ForwardRule[] = [];
 const MEMBERS_FIXTURE: TeamMember[] = [];
 
-vi.mock('@/lib/api/communication', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/communication')>();
-  return {
-    ...actual,
-    useEmails: () => ({ data: EMAILS_FIXTURE }),
-    useEmailGroups: () => ({ data: GROUPS_FIXTURE }),
-    useForwardRules: () => ({ data: FORWARDS_FIXTURE }),
-    useTeamMembers: () => ({ data: MEMBERS_FIXTURE }),
-    useSendingIdentity: () => ({ data: hoisted.identity }),
-    useMarkEmailThreadRead: () => ({ mutate: hoisted.markThreadReadMutate }),
-    useMarkEmailThreadUnread: () => ({ mutate: hoisted.markThreadUnreadMutate }),
-    useSendEmail: () => ({ mutate: vi.fn(), isPending: false }),
-  };
-});
-
-import InboxPage from '@/pages/v2/communication/InboxPage';
-
-function renderInbox(rules: Parameters<typeof buildAbility>[0]) {
-  return renderWithProviders(<InboxPage />, { ability: buildAbility(rules) });
-}
+vi.mock('@/lib/api/communication', async (importOriginal) =>
+  (await import('@/__tests__/harness/inboxApiStub')).communicationStubs(await importOriginal<typeof import('@/lib/api/communication')>(), {
+    leave: ['useMyMailbox'],
+    hooks: {
+      useEmails: () => ({ data: EMAILS_FIXTURE }),
+      useEmailGroups: () => ({ data: GROUPS_FIXTURE }),
+      useForwardRules: () => ({ data: FORWARDS_FIXTURE }),
+      useTeamMembers: () => ({ data: MEMBERS_FIXTURE }),
+      useSendingIdentity: () => ({ data: hoisted.identity }),
+      useMarkEmailThreadRead: () => ({ mutate: hoisted.markThreadReadMutate }),
+      useMarkEmailThreadUnread: () => ({ mutate: hoisted.markThreadUnreadMutate }),
+    },
+  }));
 
 describe('v2 InboxPage — email read-state persistence gate (#2049 L1)', () => {
   beforeEach(() => {
@@ -69,10 +62,10 @@ describe('v2 InboxPage — email read-state persistence gate (#2049 L1)', () => 
 
   it('fires the thread-read mutation for a viewer with read + access_inbox but NOT update', async () => {
     const user = userEvent.setup();
-    renderInbox([
+    renderInbox({ ability: buildAbility([
       { action: 'read', subject: 'Communication' },
       { action: 'access_inbox', subject: 'Communication' },
-    ]);
+    ]) });
 
     await user.click(await screen.findByText('AC still not cooling'));
 
@@ -80,7 +73,7 @@ describe('v2 InboxPage — email read-state persistence gate (#2049 L1)', () => 
   });
 
   it('never fires the thread-read mutation for a viewer with no read access', async () => {
-    renderInbox([{ action: 'access_inbox', subject: 'Communication' }]);
+    renderInbox({ ability: buildAbility([{ action: 'access_inbox', subject: 'Communication' }]) });
 
     expect(await screen.findByText("You don't have access to the inbox.")).toBeInTheDocument();
     expect(screen.queryByText('AC still not cooling')).not.toBeInTheDocument();
@@ -92,10 +85,10 @@ describe('v2 InboxPage — email read-state persistence gate (#2049 L1)', () => 
   it('still fires the thread-read mutation for a person who has no sending address yet', async () => {
     hoisted.identity = { status: 'address_needed', address: null, name: null, sendingEnabled: true };
     const user = userEvent.setup();
-    renderInbox([
+    renderInbox({ ability: buildAbility([
       { action: 'read', subject: 'Communication' },
       { action: 'access_inbox', subject: 'Communication' },
-    ]);
+    ]) });
 
     await user.click(await screen.findByText('AC still not cooling'));
 
@@ -105,10 +98,10 @@ describe('v2 InboxPage — email read-state persistence gate (#2049 L1)', () => 
   it('still persists Mark as unread for a person who has no sending address yet', async () => {
     hoisted.identity = { status: 'address_needed', address: null, name: null, sendingEnabled: true };
     const user = userEvent.setup();
-    renderInbox([
+    renderInbox({ ability: buildAbility([
       { action: 'read', subject: 'Communication' },
       { action: 'access_inbox', subject: 'Communication' },
-    ]);
+    ]) });
 
     await user.click(await screen.findByText('AC still not cooling'));
     await user.click(await screen.findByRole('button', { name: /mark as unread/i }));

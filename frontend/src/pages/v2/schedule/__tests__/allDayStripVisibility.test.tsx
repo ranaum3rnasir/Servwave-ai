@@ -1,3 +1,22 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { screen } from '@testing-library/react';
+import { buildAbility } from '@/lib/ability';
+import { renderSchedule, serveSchedule } from '@/__tests__/harness/schedulePage';
+import api from '@/lib/axios';
+import { useAuthStore } from '@/stores/auth.store';
+
+// Each test starts from the setup file's signed-in user and bare client calls: reset them here, so a test states its own user
+// and answers in its own `beforeEach` (`clearAllMocks` keeps implementations).
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(useAuthStore).mockReset();
+  vi.mocked(api.get).mockReset();
+  vi.mocked(api.post).mockReset();
+  vi.mocked(api.patch).mockReset();
+  vi.mocked(api.put).mockReset();
+  vi.mocked(api.delete).mockReset();
+});
+
 /**
  * A cross-midnight job must be VISIBLE on the routed board.
  *
@@ -15,19 +34,10 @@
  * The class is asserted rather than a pixel height because jsdom applies no stylesheet -
  * `has-allday-events` IS the switch schedule-dark.css keys the strip's height off.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen } from '@testing-library/react';
 
-import api from '@/lib/axios';
-import { buildAbility } from '@/lib/ability';
-import { renderWithProviders } from '@/__tests__/helpers';
 // App.tsx wraps the whole tree in this one provider; the board's kit tooltips throw without it.
-import { TooltipProvider } from '@/ui-kit/components/ui/tooltip';
-
-import SchedulePage from '../SchedulePage';
 
 const ADMIN = buildAbility([{ action: 'manage', subject: 'all' }]);
-const mockApi = vi.mocked(api);
 
 class ResizeObserverStub {
   observe() {}
@@ -49,15 +59,7 @@ const job = (over: Record<string, unknown>) => ({
 });
 
 function mockJobs(jobs: Array<Record<string, unknown>>) {
-  mockApi.get.mockImplementation((url: string) => {
-    if (url === '/api/jobs') return Promise.resolve({ data: { jobs } });
-    if (url === '/api/departments') return Promise.resolve({ data: { departments: [] } });
-    if (url === '/api/leads') return Promise.resolve({ data: { leads: [] } });
-    if (url === '/api/users') return Promise.resolve({ data: { users: [] } });
-    if (url === '/api/organization') return Promise.resolve({ data: {} });
-    if (url === '/api/service-plans/scheduler-bucket') return Promise.resolve({ data: { plans: [] } });
-    return Promise.resolve({ data: {} });
-  });
+  serveSchedule({ jobs, bucketJobs: jobs });
 }
 
 /** The container schedule-dark.css keys the strip's collapse off. */
@@ -76,12 +78,7 @@ describe('v2 schedule board - the all-day strip opens for anything rbc puts in i
       scheduled_end: '2026-08-21T13:00:00.000Z',
     })]);
 
-    const { container } = renderWithProviders(
-      <TooltipProvider>
-        <SchedulePage />
-      </TooltipProvider>,
-      { ability: ADMIN },
-    );
+    const { container } = renderSchedule({ ability: ADMIN });
 
     // The board renders the job in more than one place (grid + sidebar); any of them proves
     // the query resolved and the memo has run.
@@ -96,12 +93,7 @@ describe('v2 schedule board - the all-day strip opens for anything rbc puts in i
       scheduled_end: '2026-08-18T04:00:00.000Z',
     })]);
 
-    const { container } = renderWithProviders(
-      <TooltipProvider>
-        <SchedulePage />
-      </TooltipProvider>,
-      { ability: ADMIN },
-    );
+    const { container } = renderSchedule({ ability: ADMIN });
 
     // The board renders the job in more than one place (grid + sidebar); any of them proves
     // the query resolved and the memo has run.
@@ -117,12 +109,7 @@ describe('v2 schedule board - the all-day strip opens for anything rbc puts in i
       scheduled_end: '2026-08-17T15:00:00.000Z',
     })]);
 
-    const { container } = renderWithProviders(
-      <TooltipProvider>
-        <SchedulePage />
-      </TooltipProvider>,
-      { ability: ADMIN },
-    );
+    const { container } = renderSchedule({ ability: ADMIN });
 
     // The board renders the job in more than one place (grid + sidebar); any of them proves
     // the query resolved and the memo has run.

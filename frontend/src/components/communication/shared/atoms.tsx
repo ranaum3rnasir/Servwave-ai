@@ -8,7 +8,7 @@
  * - "no job" = muted background.
  * - StateChip = SAGE, reserved for genuine business state (Approved / Paid).
  */
-import type { RecordTie } from '@/lib/api/communication';
+import type { RecordTie } from '@/lib/api/communication-shared';
 import { Badge } from '@/ui-kit/components/ui/badge';
 import { Banknote, ClipboardCheck, type LucideIcon, Mail, MessageCircle, MessageSquare, PencilLine, Phone } from 'lucide-react';
 

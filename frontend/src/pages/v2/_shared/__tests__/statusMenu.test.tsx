@@ -34,6 +34,7 @@ function onDevice(shape: DeviceShape) {
 afterEach(() => {
   restoreDevice?.();
   restoreDevice = undefined;
+  vi.useRealTimers();
 });
 
 function renderMenu(options: readonly (string | StatusMenuOption)[] = OPTIONS, onValueChange = vi.fn()) {
@@ -212,14 +213,17 @@ describe.each([
   });
 
   it('shows no tooltip on the status button', async () => {
+    // Fake clock (real time still flows for the user-event library) so the tooltip's open delay is
+    // stepped over, not slept through.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     onDevice(shape);
     const { user } = renderMenu();
     await user.hover(trigger());
     await act(async () => {
       trigger().focus();
-      // Past the tooltip's open delay, so "nothing opened" is a fact and not just "not yet".
-      await new Promise((resolve) => setTimeout(resolve, 500));
     });
+    // Past the tooltip's open delay, so "nothing opened" is a fact and not just "not yet".
+    await vi.advanceTimersByTimeAsync(500);
     expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
   });
 });

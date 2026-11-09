@@ -24,6 +24,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 import { createHmac, randomBytes, randomUUID } from 'crypto';
 import request from 'supertest';
+import { afterResponseDrained } from '../lib/after-response';
 import type { PrismaClient } from '@prisma/client';
 
 const { clientPromise, fetchReceived, listAttachments, downloadAttachment, queries } = vi.hoisted(() => {
@@ -85,9 +86,9 @@ suite('received mail: cleaned HTML and stored attachments (real database, real w
 
   beforeAll(async () => {
     db = (await clientPromise) as PrismaClient;
-    app = (await import('../app.js')).default as never;
-    fx = switchFixture(db, async () => app);
-    // The webhook reads its secret from the environment object at request time.
+    fx = switchFixture(db, async () => (await import('../app.js')).default as never);
+
+    app = await fx.listener();    // The webhook reads its secret from the environment object at request time.
     (env as { RESEND_WEBHOOK_SECRET?: string }).RESEND_WEBHOOK_SECRET = WEBHOOK_SECRET;
   }, 120_000);
 
@@ -280,13 +281,9 @@ suite('received mail: cleaned HTML and stored attachments (real database, real w
     return { res, eventId, providerId, files };
   }
 
-  /** The webhook answers first and finishes after, so a case reads the tables only once the database has been quiet a moment. */
+  /** The webhook answers first and announces after: a case reads the bells once ALL of that work (tracked in lib/after-response.ts) is over. A drain that times out fails the case. */
   async function settle() {
-    let seen = -1;
-    for (let waited = 0; waited < 10_000 && seen !== queries.length; waited += 250) {
-      seen = queries.length;
-      await new Promise((r) => setTimeout(r, 250));
-    }
+    await afterResponseDrained();
   }
 
   const storedCopy = async (providerId: string) => {

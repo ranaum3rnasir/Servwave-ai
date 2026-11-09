@@ -11,20 +11,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 
 import api from '@/lib/axios';
-import { buildAbility } from '@/lib/ability';
-import { renderWithProviders, LEAD_FIXTURE, ALL_JOB_ACTIONS } from '@/__tests__/helpers';
+import { LEAD_FIXTURE, ALL_JOB_ACTIONS } from '@/__tests__/helpers';
 import { catalogToggle } from '@/__tests__/support/backendSwitchCatalog';
-import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
-import LeadDetailPage from '@/pages/v2/leads/LeadDetailPage';
+import { mountJobDetail, stubBrowser } from '@/__tests__/harness/jobDetailPage';
+import { renderLeadDetail, serveLeadDetail } from '@/__tests__/harness/leadDetailPage';
 
 vi.mock('@/components/tasks/JobLeadTasksTab', () => ({ JobLeadTasksTab: () => null }));
 
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 const routeId = vi.hoisted(() => ({ value: 'j0000000-0000-0000-0000-000000000001' }));
 vi.mock('react-router-dom', async () => {
@@ -33,7 +27,6 @@ vi.mock('react-router-dom', async () => {
 });
 
 const mockApi = vi.mocked(api);
-const adminAbility = buildAbility([{ action: 'manage', subject: 'all' }]);
 
 const CUSTOMER_ID = 'c0000000-0000-0000-0000-000000000001';
 const CUSTOMER = {
@@ -91,26 +84,18 @@ function meAnswer({ view, edit, editContact = true }: Held) {
 function renderJobPage(held: Held, job: Record<string, unknown> = JOB) {
   routeId.value = JOB.id;
   localStorage.clear();
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url === '/api/permission-switches/me') return { data: meAnswer(held) };
-    if (url.includes('/api/jobs/')) return { data: { job } };
-    return { data: {} };
+  return mountJobDetail({
+    job,
+    routes: [{ match: (url) => url === '/api/permission-switches/me', data: meAnswer(held) }],
   });
-  return renderWithProviders(<JobDetailPage />, { ability: adminAbility });
 }
 
 function renderLeadPage(held: Held, status = 'CONTACTED') {
   routeId.value = 'e0000000-0000-0000-0000-000000000001';
   localStorage.clear();
   const lead = { ...LEAD_FIXTURE, status, customer: { ...LEAD_FIXTURE.customer, id: CUSTOMER_ID } };
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url === '/api/permission-switches/me') return { data: meAnswer(held) };
-    if (url.includes('/api/leads/')) return { data: { lead } };
-    if (url.includes('/api/users')) return { data: { users: [] } };
-    if (url.includes('/api/tags')) return { data: { tags: [] } };
-    return { data: {} };
-  });
-  return renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+  serveLeadDetail({ lead, me: meAnswer(held) });
+  return renderLeadDetail();
 }
 
 /** The page has drawn the customer, and the person's switches have arrived and been applied. */

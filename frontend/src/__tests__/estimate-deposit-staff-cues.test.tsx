@@ -15,12 +15,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
-import { renderWithProviders } from './helpers';
-import { buildAbility } from '@/lib/ability';
-import EstimateWorkspacePage from '@/pages/v2/estimates/EstimateWorkspacePage';
+import { renderEstimateWorkspace, serveEstimateWorkspace } from '@/__tests__/harness/estimateWorkspacePage';
 import type { CommItem } from '@/lib/api/jobCommunications';
 
-const adminAbility = buildAbility([{ action: 'manage', subject: 'all' }]);
 
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');
@@ -130,12 +127,7 @@ function deposit(over: Record<string, unknown> = {}) {
 
 function load(over: Record<string, unknown>) {
   const estimate = { ...BASE, ...over };
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.includes('/state-tax-rates')) return { data: { data: [] } };
-    if (url.includes('/api/estimates/')) return { data: { estimate } };
-    if (url.includes('/communications')) return { data: { items: [] } };
-    return { data: {} };
-  });
+  serveEstimateWorkspace({ estimate, routes: [{ match: (url) => url.includes('/communications'), data: { items: [] } }] });
   mockApi.post.mockResolvedValue({ data: {} });
 }
 
@@ -148,7 +140,7 @@ beforeEach(() => {
 describe('staff deposit box after a part payment (slice 15 acceptance 4)', () => {
   it('shows what is left to pay, not only the original deposit', async () => {
     load({ status: 'SENT', send_config: sentConfig, invoices: [deposit({ status: 'PARTIAL', amount_due: '300.00', payments: [{ id: 'p1', amount: '200.00', method: 'CASH' }] })] });
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     expect(await screen.findByText('Left to pay')).toBeInTheDocument();
     expect(screen.getByText('$300.00')).toBeInTheDocument();
@@ -156,7 +148,7 @@ describe('staff deposit box after a part payment (slice 15 acceptance 4)', () =>
 
   it('shows one figure: the part left to pay is the headline, not a second line under the full deposit', async () => {
     load({ status: 'SENT', send_config: sentConfig, invoices: [deposit({ status: 'PARTIAL', amount_due: '300.00', payments: [{ id: 'p1', amount: '200.00', method: 'CASH', state: 'SUCCEEDED' }] })] });
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     await screen.findByText('Left to pay');
     expect(screen.queryByText('Deposit due now')).toBeNull();
@@ -166,7 +158,7 @@ describe('staff deposit box after a part payment (slice 15 acceptance 4)', () =>
 
   it('shows a bank payment in flight on the deposit', async () => {
     load({ status: 'SENT', send_config: sentConfig, invoices: [deposit({ payments: [{ id: 'p2', amount: '500.00', method: 'ACH', state: 'PROCESSING', voided_at: null }] })] });
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     expect(await screen.findByTestId('processing-badge')).toHaveTextContent('Processing $500.00');
   });
@@ -176,7 +168,7 @@ describe('staff deposit box after a part payment (slice 15 acceptance 4)', () =>
       { id: 'p3', amount: '500.00', method: 'ACH', state: 'SUCCEEDED', voided_at: null },
       { id: 'p4', amount: '500.00', method: 'ACH', state: 'PROCESSING', voided_at: '2026-10-02T00:00:00Z' },
     ] })] });
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     await screen.findByText('Deposit due now');
     expect(screen.queryByTestId('processing-badge')).toBeNull();
@@ -184,7 +176,7 @@ describe('staff deposit box after a part payment (slice 15 acceptance 4)', () =>
 
   it('shows no "left to pay" line while nothing has been paid', async () => {
     load({ status: 'SENT', send_config: sentConfig, invoices: [deposit()] });
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     await screen.findByText('Deposit due now');
     expect(screen.queryByText('Left to pay')).toBeNull();
@@ -194,7 +186,7 @@ describe('staff deposit box after a part payment (slice 15 acceptance 4)', () =>
 describe('a voided deposit that leaves the estimate SENT (slice 15 acceptance 5)', () => {
   it('tells staff the customer has nothing to pay and what to do next', async () => {
     load({ status: 'SENT', send_config: sentConfig, invoices: [deposit({ status: 'VOIDED' })] });
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     expect(await screen.findByText(/The deposit was voided, so the customer has nothing to pay/i)).toBeInTheDocument();
     expect(screen.getByText(/mark the estimate Approved from its status menu, or recall it to Draft and send it again/i)).toBeInTheDocument();
@@ -202,7 +194,7 @@ describe('a voided deposit that leaves the estimate SENT (slice 15 acceptance 5)
 
   it('says nothing when the deposit is open', async () => {
     load({ status: 'SENT', send_config: sentConfig, invoices: [deposit()] });
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     await screen.findByText('Deposit due now');
     expect(screen.queryByText(/The deposit was voided/i)).toBeNull();
@@ -210,7 +202,7 @@ describe('a voided deposit that leaves the estimate SENT (slice 15 acceptance 5)
 
   it('says nothing once the estimate is approved (a waived deposit approves it)', async () => {
     load({ status: 'WON', send_config: sentConfig, invoices: [deposit({ status: 'VOIDED' })] });
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     await waitFor(() => expect(screen.getAllByText('E00777').length).toBeGreaterThan(0));
     expect(screen.queryByText(/The deposit was voided/i)).toBeNull();
@@ -220,7 +212,7 @@ describe('a voided deposit that leaves the estimate SENT (slice 15 acceptance 5)
 describe('a pay-later estimate: WON with its deposit still open (slice 27)', () => {
   it('offers Waive deposit and Record Payment on the WON estimate', async () => {
     load({ status: 'WON', deposit_policy: 'PAY_LATER', send_config: sentConfig, invoices: [deposit()] });
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     expect(await screen.findByRole('button', { name: 'Waive deposit' })).toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: /record payment/i }).length).toBeGreaterThan(0);
@@ -228,7 +220,7 @@ describe('a pay-later estimate: WON with its deposit still open (slice 27)', () 
 
   it('offers no Record Payment on a WON estimate whose deposit is paid', async () => {
     load({ status: 'WON', send_config: sentConfig, invoices: [deposit({ status: 'PAID', amount_due: '0.00', payments: [{ id: 'p1', amount: '500.00', method: 'CASH' }] })] });
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     await waitFor(() => expect(screen.getAllByText('E00777').length).toBeGreaterThan(0));
     expect(screen.queryByRole('button', { name: /record payment/i })).toBeNull();
@@ -236,7 +228,7 @@ describe('a pay-later estimate: WON with its deposit still open (slice 27)', () 
 
   it('offers no Record Payment on a WON estimate that never had a deposit', async () => {
     load({ status: 'WON', invoices: [] });
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     await waitFor(() => expect(screen.getAllByText('E00777').length).toBeGreaterThan(0));
     expect(screen.queryByRole('button', { name: /record payment/i })).toBeNull();
@@ -245,7 +237,7 @@ describe('a pay-later estimate: WON with its deposit still open (slice 27)', () 
   it('the waive dialog on a WON estimate says the estimate stays approved and offers no cancel choice', async () => {
     const user = userEvent.setup();
     load({ status: 'WON', deposit_policy: 'PAY_LATER', send_config: sentConfig, invoices: [deposit()] });
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     await user.click(await screen.findByRole('button', { name: 'Waive deposit' }));
 

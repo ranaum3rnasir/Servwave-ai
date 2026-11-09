@@ -17,7 +17,7 @@ import { renderWithProviders } from './helpers';
 
 const mockApi = vi.mocked(api);
 
-vi.mock('@/lib/api/organization', () => ({
+vi.mock('@/lib/api/shared/organization', () => ({
   useOrganization: () => ({ data: { deposit_default_type: 'PERCENTAGE', deposit_default_percentage: 50, accepted_payment_methods: [] } }),
 }));
 vi.mock('@/components/payments/PaymentsSetupBanner', () => ({ PaymentsSetupBanner: () => null }));

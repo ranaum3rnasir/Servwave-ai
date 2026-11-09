@@ -6,7 +6,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { renderWithProviders } from '@/__tests__/helpers';
+import { renderInbox, serveInbox } from '@/__tests__/harness/inboxPage';
 import { buildAbility } from '@/lib/ability';
 import type { Email, MailboxList } from '@/lib/api/communication';
 
@@ -14,8 +14,6 @@ const ability = buildAbility([
   { action: 'read', subject: 'Communication' },
   { action: 'access_inbox', subject: 'Communication' },
 ]);
-
-const NOTHING: unknown[] = [];
 
 const hoisted = vi.hoisted(() => ({ attachmentGet: vi.fn() }));
 
@@ -36,37 +34,11 @@ const LIST: MailboxList = {
 
 let rows: Email[] = [MAIL];
 
-vi.mock('@/lib/axios', () => ({
-  default: {
-    get: (url: string, config?: unknown) =>
-      url.includes('/attachments/')
-        ? hoisted.attachmentGet(url, config)
-        : Promise.resolve({ data: url.endsWith('/mailboxes') ? LIST : { emails: rows } }),
-  },
-}));
+vi.mock('@/lib/api/communication', async (importOriginal) =>
+  (await import('@/__tests__/harness/inboxApiStub')).communicationStubs(await importOriginal<typeof import('@/lib/api/communication')>()));
 
-vi.mock('@/lib/api/communication', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/communication')>();
-  return {
-    ...actual,
-    useEmailGroups: () => ({ data: NOTHING }),
-    useForwardRules: () => ({ data: NOTHING }),
-    useTeamMembers: () => ({ data: NOTHING }),
-    useSendingIdentity: () => ({ data: undefined }),
-    useMarkEmailThreadRead: () => ({ mutate: vi.fn() }),
-    useMarkEmailThreadUnread: () => ({ mutate: vi.fn() }),
-    useSendEmail: () => ({ mutate: vi.fn(), isPending: false }),
-    useMyMailbox: () => ({ data: { mailbox: null } }),
-  };
-});
-
-vi.mock('@/lib/entitlements', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/lib/entitlements')>()),
-  useFeature: () => true,
-  useEntitlementsReady: () => true,
-}));
-
-import InboxPage from '@/pages/v2/communication/InboxPage';
+vi.mock('@/lib/entitlements', async (importOriginal) =>
+  (await import('@/__tests__/harness/inboxApiStub')).inboxEntitlements(await importOriginal<typeof import('@/lib/entitlements')>()));
 
 const refusal = (status: number) => Promise.reject({ response: { status, data: { error: 'Insufficient permissions' } } });
 
@@ -81,7 +53,7 @@ const tabAt = (n: number): FakeTab => {
 
 async function openMail() {
   const user = userEvent.setup();
-  renderWithProviders(<InboxPage />, { ability, initialEntries: ['/communication/inbox'] });
+  renderInbox({ ability, entry: '/communication/inbox' });
   await user.click(await screen.findByText('Photos of the damaged door'));
   return user;
 }
@@ -90,6 +62,13 @@ beforeEach(() => {
   rows = [MAIL];
   tabs = [];
   hoisted.attachmentGet.mockReset();
+  serveInbox({
+    // An attachment's bytes come from the test's own spy, which answers the whole client response (or refuses).
+    routes: [{ match: (url) => url.includes('/attachments/'), data: (url, config) => hoisted.attachmentGet(url, config), raw: true }],
+    mailboxes: LIST,
+    emails: () => rows,
+    otherwise: () => ({ emails: rows }),
+  });
   window.open = vi.fn(() => {
     const tab: FakeTab = { location: { href: '' }, opener: {}, close: vi.fn() };
     tabs.push(tab);

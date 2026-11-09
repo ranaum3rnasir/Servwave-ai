@@ -8,9 +8,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import api from '@/lib/axios';
-import { renderWithProviders, ALL_JOB_ACTIONS } from './helpers';
-import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
+import { ALL_JOB_ACTIONS } from './helpers';
+import { renderJobDetail, serveJobDetail, stubBrowser } from '@/__tests__/harness/jobDetailPage';
 import { buildAbility } from '@/lib/ability';
 import { requestCall } from '@/lib/communication/phoneTabHandoff';
 import { CALL_NOT_SET_UP_MESSAGE } from '@/components/contact/contactDisplayPolicy';
@@ -19,12 +18,7 @@ import { catalogToggle } from './support/backendSwitchCatalog';
 vi.mock('@/components/tasks/JobLeadTasksTab', () => ({ JobLeadTasksTab: () => null }));
 vi.mock('@/lib/communication/phoneTabHandoff', () => ({ requestCall: vi.fn() }));
 
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 const mockNavigate = vi.fn();
 vi.mock('react-router-dom', async () => {
@@ -43,7 +37,6 @@ vi.mock('@/lib/entitlements', async (importOriginal) => ({
   useFeature: () => phoneService.value,
 }));
 
-const mockApi = vi.mocked(api);
 const adminAbility = buildAbility([{ action: 'manage', subject: 'all' }]);
 
 type Switches = { copyPhone: boolean; copyEmail: boolean; contact: boolean; view: boolean };
@@ -106,12 +99,13 @@ const JOB = {
 
 function renderJobPage(switches: Switches, opts: { service?: boolean } = {}) {
   phoneService.value = opts.service ?? true;
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url === '/api/permission-switches/me') return { data: meAnswer(switches) };
-    if (url.includes('/api/jobs/')) return { data: { job: JOB } };
-    return { data: {} };
+  serveJobDetail({
+    job: JOB,
+    routes: [
+      { match: (url) => url === '/api/permission-switches/me', data: meAnswer(switches) },
+    ],
   });
-  return renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+  return renderJobDetail({ ability: adminAbility });
 }
 
 /** The Overview tab's customer card, and whatever else on the page is outside it (the header). */

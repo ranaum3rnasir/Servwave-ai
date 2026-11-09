@@ -225,7 +225,7 @@ suite('a sweep stopped during the delivery or the planning of a summary (#3108, 
 
     /** A delivery event as the provider sends it, signed with the shared secret, for one of Spider's summary emails. */
     async function bounce(email: { id: string; to: string }, summaryId: string, svixId: string) {
-      const app = (await import('../app.js')).default as never;
+      const app = await fx.listener();
       const body = JSON.stringify({
         type: 'email.bounced',
         created_at: new Date().toISOString(),

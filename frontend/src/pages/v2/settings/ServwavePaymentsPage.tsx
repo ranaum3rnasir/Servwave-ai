@@ -5,7 +5,7 @@ import NotAuthorizedPage from '@/components/NotAuthorizedPage';
 import { PaymentsStatusBody } from '@/components/payments/PaymentsStatusCard';
 import { NewTabLink } from '@/components/ui/new-tab-link';
 import { useAppAbility } from '@/contexts/AbilityContext';
-import { useOrganization, useRefreshStripeStatus, useStripeStatus } from '@/lib/api/organization';
+import { useOrganization, useRefreshStripeStatus, useStripeStatus } from '@/lib/api/shared/organization';
 import { useFeature } from '@/lib/entitlements';
 import { Skeleton } from '@/ui-kit/components/ui/skeleton';
 

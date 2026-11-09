@@ -10,17 +10,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { AxiosRequestConfig } from 'axios';
 
-import api from '@/lib/axios';
 import { buildAbility } from '@/lib/ability';
 import { useAuthStore } from '@/stores/auth.store';
 import { renderWithProviders, LEAD_FIXTURE } from '@/__tests__/helpers';
-import LeadDetailPage from '@/pages/v2/leads/LeadDetailPage';
+import { renderLeadDetail, serveLeadDetail } from '@/__tests__/harness/leadDetailPage';
 import LeadsPage from '@/pages/v2/leads/LeadsPage';
-import LeadFormPage from '@/pages/v2/leads/LeadFormPage';
-import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
+import { renderJobDetail, serveJobDetail } from '@/__tests__/harness/jobDetailPage';
 import JobFormPage from '@/pages/v2/jobs/JobFormPage';
+import { renderLeadForm, serveLeadForm } from '@/__tests__/harness/leadFormPage';
 
 type AuthState = ReturnType<typeof useAuthStore.getState>;
 
@@ -31,7 +29,7 @@ const hoisted = vi.hoisted(() => ({
 vi.mock('@/lib/inventory/csv', () => ({ toCSV: hoisted.toCSV, downloadCSV: hoisted.downloadCSV }));
 
 vi.mock('@/components/tasks/JobLeadTasksTab', () => ({ JobLeadTasksTab: () => null }));
-vi.mock('@/lib/api/organization', () => ({
+vi.mock('@/lib/api/shared/organization', () => ({
   useOrganization: () => ({ data: { job_type_options: [], source_options: [], timezone: 'America/New_York' } }),
   useUpdateOrganization: () => ({ mutate: vi.fn() }),
 }));
@@ -53,7 +51,6 @@ class ResizeObserverStub {
 }
 
 const CREATOR = { id: 'u-creator', first_name: 'Casey', last_name: 'Creator' };
-const mockApi = vi.mocked(api);
 const everything = buildAbility([{ action: 'manage', subject: 'all' }]);
 
 /** The words a person can read on the page: its text, and what sits in placeholders, labels and titles. */
@@ -108,13 +105,8 @@ beforeEach(() => {
 describe('the lead page', () => {
   it('names the empty Owner and Dispatcher for what they are, with nothing unassigned and no Assigned To', async () => {
     route.id = LEAD_WITH_NOBODY.id;
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url.includes('/api/leads/')) return { data: { lead: LEAD_WITH_NOBODY } };
-      if (url.includes('/api/users')) return { data: { users: [] } };
-      if (url.includes('/api/tags')) return { data: { tags: [] } };
-      return { data: {} };
-    });
-    renderWithProviders(<LeadDetailPage />, { ability: everything });
+    serveLeadDetail({ lead: LEAD_WITH_NOBODY });
+    renderLeadDetail({ ability: everything });
 
     await screen.findByText('Owner');
     expect(await screen.findByText('No owner')).toBeInTheDocument();
@@ -132,18 +124,17 @@ describe('the Leads list', () => {
   };
 
   beforeEach(() => {
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url === '/api/leads') {
-        return {
-          data: {
-            leads: [LEAD_ROW],
-            pagination: { page: 1, limit: 25, total: 1, totalPages: 1 },
-            stats: { total: 1, new_this_week: 0, no_owner: 1, won: 0, lost: 0 },
-          },
-        };
-      }
-      if (url === '/api/users/assignable') return { data: [{ id: 'u-1', first_name: 'Olive', last_name: 'Owner', role: 'SALES', department: null }] };
-      return { data: {} };
+    serveLeadForm({
+      // The Leads list this block draws (a different page from the form).
+      routes: [{
+        match: (url) => url === '/api/leads',
+        data: {
+          leads: [LEAD_ROW],
+          pagination: { page: 1, limit: 25, total: 1, totalPages: 1 },
+          stats: { total: 1, new_this_week: 0, no_owner: 1, won: 0, lost: 0 },
+        },
+      }],
+      assignable: [{ id: 'u-1', first_name: 'Olive', last_name: 'Owner', role: 'SALES', department: null }],
     });
   });
 
@@ -191,19 +182,15 @@ describe('the Leads list', () => {
 
 describe('the new-lead form', () => {
   it('says Owner and Dispatcher, and an empty one reads No owner or No dispatcher', async () => {
-    mockApi.get.mockImplementation(async (url: string, _config?: AxiosRequestConfig) => {
-      if (url === '/api/leads/creator-prefill') return { data: { prefill: { owner_id: null, dispatcher_id: null } } };
-      if (url === '/api/users/assignable') return { data: [] };
-      return { data: {} };
-    });
+    serveLeadForm({ creatorPrefill: { prefill: { owner_id: null, dispatcher_id: null } }, assignable: [] });
     // Create leads needs View leads and Edit leads.
-    renderWithProviders(<LeadFormPage />, {
+    renderLeadForm({
       ability: buildAbility([
         { action: 'read', subject: 'Lead' },
         { action: 'update', subject: 'Lead' },
         { action: 'create', subject: 'Lead' },
       ]),
-      initialEntries: ['/leads/create'],
+      entry: '/leads/create',
     });
 
     expect(await screen.findByText('No owner')).toBeInTheDocument();
@@ -212,12 +199,8 @@ describe('the new-lead form', () => {
   });
 
   it('says the same for a person who can choose the people, with the pickers empty', async () => {
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url === '/api/leads/creator-prefill') return { data: { prefill: { owner_id: null, dispatcher_id: null } } };
-      if (url === '/api/users/assignable') return { data: [] };
-      return { data: {} };
-    });
-    renderWithProviders(<LeadFormPage />, {
+    serveLeadForm({ creatorPrefill: { prefill: { owner_id: null, dispatcher_id: null } }, assignable: [] });
+    renderLeadForm({
       // Create leads needs View leads and Edit leads; Assign people to leads needs View leads.
       ability: buildAbility([
         { action: 'read', subject: 'Lead' },
@@ -226,7 +209,7 @@ describe('the new-lead form', () => {
         { action: 'assign', subject: 'Lead' },
         { action: 'read', subject: 'User' },
       ]),
-      initialEntries: ['/leads/create'],
+      entry: '/leads/create',
     });
 
     await screen.findByRole('combobox', { name: 'Owner' });
@@ -237,11 +220,7 @@ describe('the new-lead form', () => {
 
 describe('the new-job form', () => {
   it('says Sold By and Dispatcher, and an empty one reads No dispatcher', async () => {
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url === '/api/jobs/creator-prefill') return { data: { prefill: { sold_by_id: null, dispatcher_id: null } } };
-      if (url === '/api/users/assignable') return { data: [] };
-      return { data: {} };
-    });
+    serveLeadForm({ jobCreatorPrefill: { prefill: { sold_by_id: null, dispatcher_id: null } }, assignable: [] });
     renderWithProviders(<JobFormPage />, {
       // Create jobs needs View jobs and Edit jobs.
       ability: buildAbility([{ action: 'create', subject: 'Job' }, { action: 'read', subject: 'Job' }, { action: 'update', subject: 'Job' }]),
@@ -256,17 +235,19 @@ describe('the new-job form', () => {
 describe('the job page Team card', () => {
   it('names an empty Dispatcher, an empty Sold By and an empty crew for what they are', async () => {
     route.id = JOB_WITH_NOBODY.id;
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url.includes('/visits')) return { data: { visits: [] } };
-      if (url.includes('/financials')) return { data: { final_invoice: null, invoices: [], payments: [] } };
-      if (url.includes('/line-items')) return { data: { lines: [], billing: { subtotal: 0, discount_amount: 0, tax_rate: 0, tax_amount: 0, total: 0 } } };
-      if (url.includes('/notes')) return { data: { notes: [] } };
-      if (url.includes('/api/attachments/')) return { data: { attachments: [] } };
-      if (url.includes('/communications')) return { data: { items: [] } };
-      if (url.includes(`/api/jobs/${JOB_WITH_NOBODY.id}`)) return { data: { job: JOB_WITH_NOBODY } };
-      return { data: {} };
+    serveJobDetail({
+      jobId: JOB_WITH_NOBODY.id,
+      job: JOB_WITH_NOBODY,
+      lines: [],
+      billing: { subtotal: 0, discount_amount: 0, tax_rate: 0, tax_amount: 0, total: 0 },
+      routes: [
+        { match: (url) => url.includes('/financials'), data: { final_invoice: null, invoices: [], payments: [] } },
+        { match: (url) => url.includes('/notes'), data: { notes: [] } },
+        { match: (url) => url.includes('/api/attachments/'), data: { attachments: [] } },
+        { match: (url) => url.includes('/communications'), data: { items: [] } },
+      ],
     });
-    renderWithProviders(<JobDetailPage />, { ability: everything, initialEntries: [`/jobs/${JOB_WITH_NOBODY.id}`] });
+    renderJobDetail({ ability: everything, entry: `/jobs/${JOB_WITH_NOBODY.id}` });
 
     expect(await screen.findByText('Dispatcher')).toBeInTheDocument();
     expect(await screen.findByText('No dispatcher')).toBeInTheDocument();

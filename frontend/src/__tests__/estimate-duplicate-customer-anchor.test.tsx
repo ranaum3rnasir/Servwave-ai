@@ -18,9 +18,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
-import { renderWithProviders } from './helpers';
-import { buildAbility } from '@/lib/ability';
-import EstimateWorkspacePage from '@/pages/v2/estimates/EstimateWorkspacePage';
+import { DEPOSIT_DEFAULTS, renderEstimateWorkspace, serveEstimateWorkspace } from '@/__tests__/harness/estimateWorkspacePage';
 
 const ESTIMATE_ID = 'est-duplicate-anchor-id';
 const CUSTOMER_ID = 'cust-anchor-1';
@@ -53,7 +51,6 @@ vi.mock('@/components/estimates/SendEstimateDialog', () => ({ SendEstimateDialog
 vi.mock('@/components/estimates/WaiveDepositDialog', () => ({ WaiveDepositDialog: () => null }));
 vi.mock('@/components/estimates/RefundDepositDialog', () => ({ RefundDepositDialog: () => null }));
 
-const adminAbility = buildAbility([{ action: 'manage', subject: 'all' }]);
 
 const CUSTOMER = {
   id: CUSTOMER_ID,
@@ -119,31 +116,26 @@ const CUSTOMER_ANCHORED = {
  * leaves the picker empty.
  */
 function setupMocks(fixture: Record<string, unknown>) {
-  vi.mocked(api.get).mockImplementation(
-    async (url: string, config?: { params?: Record<string, unknown> }) => {
-      if (url.includes('/state-tax-rates')) return { data: { data: [] } };
-      if (url === '/api/leads') {
-        if (config?.params?.customer_id !== CUSTOMER_ID) return { data: { leads: [] } };
+  serveEstimateWorkspace({
+    estimate: fixture,
+    organization: DEPOSIT_DEFAULTS,
+    routes: [{
+      match: (url) => url === '/api/leads',
+      data: (config) => {
+        if (config?.params?.customer_id !== CUSTOMER_ID) return { leads: [] };
         return {
-          data: {
-            leads: [
-              {
-                id: 'lead-other',
-                status: 'NEW',
-                service_request: OTHER_LEAD_REQUEST,
-                created_at: '2026-07-02T00:00:00.000Z',
-              },
-            ],
-          },
+          leads: [
+            {
+              id: 'lead-other',
+              status: 'NEW',
+              service_request: OTHER_LEAD_REQUEST,
+              created_at: '2026-07-02T00:00:00.000Z',
+            },
+          ],
         };
-      }
-      if (url.includes('/api/estimates/')) return { data: { estimate: fixture } };
-      if (url === '/api/organization') {
-        return { data: { accepted_payment_methods: ['CARD'], deposit_default_type: 'PERCENTAGE', deposit_default_percentage: 50 } };
-      }
-      return { data: {} };
-    },
-  );
+      },
+    }],
+  });
 }
 
 /** Open the Duplicate dialog from the Actions dropdown. */
@@ -161,7 +153,7 @@ beforeEach(() => {
 describe('EstimateWorkspacePage - Duplicate target leads on a lead-less estimate', () => {
   it("offers the customer's other leads when the estimate is customer-anchored", async () => {
     setupMocks(CUSTOMER_ANCHORED);
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     await openDuplicateDialog();
 
@@ -171,7 +163,7 @@ describe('EstimateWorkspacePage - Duplicate target leads on a lead-less estimate
 
   it("asks /api/leads for the estimate's own customer, not the (absent) lead's", async () => {
     setupMocks(CUSTOMER_ANCHORED);
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     await openDuplicateDialog();
     await screen.findByText(OTHER_LEAD_REQUEST);
@@ -184,7 +176,7 @@ describe('EstimateWorkspacePage - Duplicate target leads on a lead-less estimate
 
   it('still shows the empty state when the customer has no other leads', async () => {
     setupMocks({ ...CUSTOMER_ANCHORED, customer_id: 'cust-with-no-leads', customer: { ...CUSTOMER, id: 'cust-with-no-leads' } });
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     await openDuplicateDialog();
 

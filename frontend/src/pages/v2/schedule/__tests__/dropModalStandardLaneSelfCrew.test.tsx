@@ -1,3 +1,45 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { screen, fireEvent, within } from '@testing-library/react';
+import { buildAbility } from '@/lib/ability';
+import { useAuthStore } from '@/stores/auth.store';
+import { renderSchedule, serveSchedule } from '@/__tests__/harness/schedulePage';
+import api from '@/lib/axios';
+
+vi.mock('react-big-calendar/lib/addons/dragAndDrop', () => ({
+  default: () =>
+    function StubDnDCalendar(props: { onDropFromOutside?: (args: unknown) => void }) {
+      // A `div role="button"` rather than a `<button>`: the design system's raw-tag rule reads
+      // every JSX file, and a test stub is not the place to spend an exemption.
+      return (
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={() =>
+            props.onDropFromOutside?.({
+              start: new Date(2026, 5, 10, 9, 0),
+              end: new Date(2026, 5, 10, 11, 0),
+              allDay: false,
+            })
+          }
+        >
+          drop on a standard time lane
+        </div>
+      );
+    },
+}));
+
+// Each test starts from the setup file's signed-in user and bare client calls: reset them here, so a test states its own user
+// and answers in its own `beforeEach` (`clearAllMocks` keeps implementations).
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(useAuthStore).mockReset();
+  vi.mocked(api.get).mockReset();
+  vi.mocked(api.post).mockReset();
+  vi.mocked(api.patch).mockReset();
+  vi.mocked(api.put).mockReset();
+  vi.mocked(api.delete).mockReset();
+});
+
 /**
  * THE DEAD END ON THE BOARD, driven end to end - a bucket card that ALREADY CARRIES CREW, dropped
  * on a lane that names no member, by somebody who may name nobody but themselves.
@@ -23,17 +65,8 @@
  * a visit's drag) and lacks `assign User`, so the board has one lane and the standard calendar is the
  * only board there is (Roles & Permissions S04.11).
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, fireEvent, within } from '@testing-library/react';
-
-import api from '@/lib/axios';
-import { buildAbility } from '@/lib/ability';
-import { useAuthStore } from '@/stores/auth.store';
-import { renderWithProviders } from '@/__tests__/helpers';
-import { TooltipProvider } from '@/ui-kit/components/ui/tooltip';
 
 // `vi.mock` is hoisted above this, so the page below is built on the stubbed addon.
-import SchedulePage from '../SchedulePage';
 
 /**
  * The drag-and-drop addon, replaced by a button that fires the ONE callback this suite is about.
@@ -46,28 +79,6 @@ import SchedulePage from '../SchedulePage';
  * `handleDropFromOutside` classifies as a TIMED drop, i.e. the `standard-time` target. That is
  * the target with no member in it, and therefore the one whose draft crew is the card's own.
  */
-vi.mock('react-big-calendar/lib/addons/dragAndDrop', () => ({
-  default: () =>
-    function StubDnDCalendar(props: { onDropFromOutside?: (args: unknown) => void }) {
-      // A `div role="button"` rather than a `<button>`: the design system's raw-tag rule reads
-      // every JSX file, and a test stub is not the place to spend an exemption.
-      return (
-        <div
-          role="button"
-          tabIndex={0}
-          onClick={() =>
-            props.onDropFromOutside?.({
-              start: new Date(2026, 5, 10, 9, 0),
-              end: new Date(2026, 5, 10, 11, 0),
-              allDay: false,
-            })
-          }
-        >
-          drop on a standard time lane
-        </div>
-      );
-    },
-}));
 
 class ResizeObserverStub {
   observe() {}
@@ -114,26 +125,13 @@ const CREWED_BUCKET_JOB = {
   visits: [],
 };
 
-const mockApi = vi.mocked(api);
-
 /** The roster the SERVER would answer a self-only caller with: one row, and it is them. */
 function mockBoard() {
-  mockApi.get.mockImplementation((url: string, config?: { params?: unknown }) => {
-    if (url === '/api/jobs') {
-      const status = (config?.params as { status?: unknown } | undefined)?.status;
-      const wantsBucket = status === 'UNSCHEDULED'
-        || (Array.isArray(status) && status.includes('UNSCHEDULED'));
-      return Promise.resolve({ data: { jobs: wantsBucket ? [CREWED_BUCKET_JOB] : [] } });
-    }
-    if (url === '/api/departments') return Promise.resolve({ data: { departments: [] } });
-    if (url === '/api/leads') return Promise.resolve({ data: { leads: [] } });
-    if (url === '/api/users' || url === '/api/users/assignable') {
-      return Promise.resolve({ data: [{ ...ACTOR, is_active: true, role: 'ADMIN', department: null }] });
-    }
-    if (url === '/api/organization') return Promise.resolve({ data: {} });
-    if (url === '/api/service-plans/scheduler-bucket') return Promise.resolve({ data: { plans: [] } });
-    if (url === '/api/calendar-entries') return Promise.resolve({ data: { calendar_entries: [] } });
-    return Promise.resolve({ data: {} });
+  serveSchedule({
+    jobs: [],
+    bucketJobs: [CREWED_BUCKET_JOB],
+    // The roster answers a bare list here, as the page reads it.
+    routes: [{ match: (url) => url === '/api/users' || url === '/api/users/assignable', data: [{ ...ACTOR, is_active: true, role: 'ADMIN', department: null }] }],
   });
 }
 
@@ -163,12 +161,7 @@ function dragPayload() {
 /** Mounts the board, starts the card's drag (which is what sets the page's drag ref), drops it. */
 async function dropCrewedCardOnStandardLane(ability = SELF_ONLY) {
   mockBoard();
-  renderWithProviders(
-    <TooltipProvider>
-      <SchedulePage />
-    </TooltipProvider>,
-    { ability },
-  );
+  renderSchedule({ ability });
   const card = (await screen.findAllByText(/J00043/))[0]!.closest('[draggable]');
   expect(card).not.toBeNull();
   // The real drag-out: `handleDropFromOutside` reads `draggingJobIdRef.current`, and nothing but

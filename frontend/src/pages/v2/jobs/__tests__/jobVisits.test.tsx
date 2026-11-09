@@ -15,9 +15,9 @@ import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
 import { toast } from '@/components/ui/use-toast';
 import { buildAbility } from '@/lib/ability';
-import { renderWithProviders, ALL_JOB_ACTIONS } from '@/__tests__/helpers';
+import { ALL_JOB_ACTIONS } from '@/__tests__/helpers';
 
-import JobDetailPage from '../JobDetailPage';
+import { renderJobDetail, serveJobDetail, stubBrowser } from '@/__tests__/harness/jobDetailPage';
 
 const ORG_TZ = 'Asia/Manila'; // UTC+8, no DST.
 const JOB_ID = 'j0000000-0000-0000-0000-000000000001';
@@ -38,12 +38,7 @@ vi.mock('@/lib/api/users', async (importOriginal) => {
   };
 });
 
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');
@@ -51,8 +46,8 @@ vi.mock('react-router-dom', async () => {
 });
 
 // useScheduleTimezone reads org.timezone through this module.
-vi.mock('@/lib/api/organization', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/organization')>();
+vi.mock('@/lib/api/shared/organization', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/api/shared/organization')>();
   return {
     ...actual,
     useOrganization: () => ({ data: { id: 'org-1', timezone: ORG_TZ }, isLoading: false, isError: false }),
@@ -146,11 +141,12 @@ const VISIT_3_CANCELLED = {
 };
 
 function mockJobWithVisits(visits: Array<Record<string, unknown>>) {
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.includes('/visits')) return { data: { visits } };
-    if (url.includes('/financials')) return { data: { final_invoice: null, invoices: [], payments: [] } };
-    if (url.includes(`/api/jobs/${JOB_ID}`)) return { data: { job: BASE_JOB } };
-    return { data: {} };
+  serveJobDetail({
+    job: BASE_JOB,
+    visits,
+    routes: [
+      { match: (url) => url.includes('/financials'), data: { final_invoice: null, invoices: [], payments: [] } },
+    ],
   });
 }
 
@@ -186,7 +182,7 @@ describe('v2 job page - the visits list', () => {
   it('lists every visit with its number and its org-zone time', async () => {
     mockJobWithVisits([VISIT_1, VISIT_2]);
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
 
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
@@ -203,7 +199,7 @@ describe('v2 job page - the visits list', () => {
     // the row would make the first-time-fix / callback data unrecoverable.
     mockJobWithVisits([VISIT_1, VISIT_2, VISIT_3_CANCELLED]);
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
 
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
@@ -222,7 +218,7 @@ describe('v2 job page - the hero reads Next Visit (D14a)', () => {
   it('labels the hero tile Next Visit and renders it on the org clock', async () => {
     mockJobWithVisits([VISIT_1, VISIT_2]);
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
 
     await screen.findByRole('heading', { name: /J00001/ });
 
@@ -244,11 +240,12 @@ describe('v2 job page - Add visit', () => {
     // The list the server holds. The POST appends to it, so the refetch after the mutation shows
     // what a real user would see.
     const serverVisits: Array<Record<string, unknown>> = [VISIT_1];
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url.includes('/visits')) return { data: { visits: serverVisits } };
-      if (url.includes('/financials')) return { data: { final_invoice: null, invoices: [], payments: [] } };
-      if (url.includes(`/api/jobs/${JOB_ID}`)) return { data: { job: BASE_JOB } };
-      return { data: {} };
+    serveJobDetail({
+      job: BASE_JOB,
+      visits: serverVisits,
+      routes: [
+        { match: (url) => url.includes('/financials'), data: { final_invoice: null, invoices: [], payments: [] } },
+      ],
     });
     mockApi.post.mockImplementation(async (url: string) => {
       if (url.endsWith('/visits')) {
@@ -258,7 +255,7 @@ describe('v2 job page - Add visit', () => {
       return { data: {} };
     });
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
 
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
@@ -309,7 +306,7 @@ describe('v2 job page - Reschedule a visit', () => {
     mockJobWithVisits([VISIT_1, VISIT_2]);
     mockApi.patch.mockResolvedValue({ data: { visit: VISIT_2 } });
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
 
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
@@ -359,11 +356,12 @@ describe('v2 job page - booking an all-day visit', () => {
 
   it('posts is_all_day and the inclusive span as an exclusive-midnight window', async () => {
     const serverVisits: Array<Record<string, unknown>> = [VISIT_1];
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url.includes('/visits')) return { data: { visits: serverVisits } };
-      if (url.includes('/financials')) return { data: { final_invoice: null, invoices: [], payments: [] } };
-      if (url.includes(`/api/jobs/${JOB_ID}`)) return { data: { job: BASE_JOB } };
-      return { data: {} };
+    serveJobDetail({
+      job: BASE_JOB,
+      visits: serverVisits,
+      routes: [
+        { match: (url) => url.includes('/financials'), data: { final_invoice: null, invoices: [], payments: [] } },
+      ],
     });
     mockApi.post.mockImplementation(async (url: string) => {
       if (url.endsWith('/visits')) {
@@ -374,7 +372,7 @@ describe('v2 job page - booking an all-day visit', () => {
       return { data: {} };
     });
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
 
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
@@ -435,7 +433,7 @@ describe('v2 job page - Reschedule an all-day visit', () => {
     mockJobWithVisits([VISIT_ALLDAY]);
     mockApi.patch.mockResolvedValue({ data: { visit: VISIT_ALLDAY } });
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
 
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
@@ -476,7 +474,7 @@ describe('v2 job page - an inverted window cannot be saved', () => {
     // longer match the job at all - double-booking checks silently pass.
     mockJobWithVisits([VISIT_1, VISIT_2]);
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
 
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
@@ -524,16 +522,15 @@ describe('v2 job page - the Visits controls follow the ROW, not the subject', ()
     // reschedule's OWN_JOB, this job fails the assignment half, and the POST 403s. The job's own
     // action list leaves `schedule` out, and a rendered button here would be the "button the API
     // refuses" both pages' own comments exist to prevent.
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url.includes('/visits')) return { data: { visits: [VISIT_1] } };
-      if (url.includes('/financials')) return { data: { final_invoice: null, invoices: [], payments: [] } };
-      if (url.includes(`/api/jobs/${JOB_ID}`)) {
-        return { data: { job: { ...BASE_JOB, created_by_id: TECH_ID, assignees: [], actions: [] } } };
-      }
-      return { data: {} };
+    serveJobDetail({
+      job: { ...BASE_JOB, created_by_id: TECH_ID, assignees: [], actions: [] },
+      visits: [VISIT_1],
+      routes: [
+        { match: (url) => url.includes('/financials'), data: { final_invoice: null, invoices: [], payments: [] } },
+      ],
     });
 
-    renderWithProviders(<JobDetailPage />, { ability: technicianAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: technicianAbility, entry: `/jobs/${JOB_ID}` });
 
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
@@ -546,24 +543,19 @@ describe('v2 job page - the Visits controls follow the ROW, not the subject', ()
   });
 
   it('offers them on a job the same technician IS crewed on', async () => {
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url.includes('/visits')) return { data: { visits: [VISIT_1] } };
-      if (url.includes('/financials')) return { data: { final_invoice: null, invoices: [], payments: [] } };
-      if (url.includes(`/api/jobs/${JOB_ID}`)) {
-        return {
-          data: {
-            job: {
+    serveJobDetail({
+      job: {
               ...BASE_JOB,
               created_by_id: TECH_ID,
               assignees: [{ user: { id: TECH_ID, first_name: 'Test', last_name: 'Tech' } }],
             },
-          },
-        };
-      }
-      return { data: {} };
+      visits: [VISIT_1],
+      routes: [
+        { match: (url) => url.includes('/financials'), data: { final_invoice: null, invoices: [], payments: [] } },
+      ],
     });
 
-    renderWithProviders(<JobDetailPage />, { ability: technicianAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: technicianAbility, entry: `/jobs/${JOB_ID}` });
 
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
@@ -591,7 +583,7 @@ describe('v2 job page - the Visits card names each visit\'s crew', () => {
       { ...VISIT_2, assignees: [SAM] },
     ]);
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
 
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
@@ -638,7 +630,7 @@ describe('v2 job page - naming the crew on a visit', () => {
     mockJobWithVisits([VISIT_1]);
     mockApi.post.mockResolvedValue({ data: { visit: VISIT_2 } });
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
 
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
@@ -678,7 +670,7 @@ describe('v2 job page - naming the crew on a visit', () => {
     mockJobWithVisits([VISIT_1, { ...VISIT_2, assignees: [DANA] }]);
     mockApi.patch.mockResolvedValue({ data: { visit: VISIT_2 } });
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
 
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
@@ -719,27 +711,22 @@ describe('v2 job page - a reschedule-only principal gets the visit dialog withou
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url.includes('/visits')) return { data: { visits: [VISIT_1] } };
-      if (url.includes('/financials')) return { data: { final_invoice: null, invoices: [], payments: [] } };
-      if (url.includes(`/api/jobs/${JOB_ID}`)) {
-        return {
-          data: {
-            job: {
+    serveJobDetail({
+      job: {
               ...BASE_JOB,
               assignees: [{ user: { id: TECH_ID, first_name: 'Test', last_name: 'Tech' } }],
               // The server lists Schedule visits for this person on this job, and no Assign people to jobs.
               actions: ['schedule'],
             },
-          },
-        };
-      }
-      return { data: {} };
+      visits: [VISIT_1],
+      routes: [
+        { match: (url) => url.includes('/financials'), data: { final_invoice: null, invoices: [], payments: [] } },
+      ],
     });
   });
 
   it('keeps the four time fields and drops the crew picker on Add visit', async () => {
-    renderWithProviders(<JobDetailPage />, { ability: rescheduleOnly, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: rescheduleOnly, entry: `/jobs/${JOB_ID}` });
 
     await screen.findByRole('heading', { name: /J00001/ });
     await userEvent.click(await screen.findByRole('tab', { name: 'Visits' }));
@@ -752,7 +739,7 @@ describe('v2 job page - a reschedule-only principal gets the visit dialog withou
   });
 
   it('keeps them and drops the crew picker on Reschedule too', async () => {
-    renderWithProviders(<JobDetailPage />, { ability: rescheduleOnly, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: rescheduleOnly, entry: `/jobs/${JOB_ID}` });
 
     await screen.findByRole('heading', { name: /J00001/ });
     await userEvent.click(await screen.findByRole('tab', { name: 'Visits' }));
@@ -781,7 +768,7 @@ describe('v2 job page - a visit shows its real status (S4 B15)', () => {
   it('reads On site for a visit whose crew has arrived, not Scheduled', async () => {
     mockJobWithVisits([VISIT_1_ON_SITE, VISIT_2]);
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
 
@@ -799,7 +786,7 @@ describe('v2 job page - a visit shows its real status (S4 B15)', () => {
   it('renders the arrival stamp on the ORG clock', async () => {
     mockJobWithVisits([VISIT_1_ON_SITE]);
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
 
@@ -813,7 +800,7 @@ describe('v2 job page - a visit shows its real status (S4 B15)', () => {
     mockJobWithVisits([VISIT_1, { ...VISIT_2, status: 'ON_SITE', on_site_at: '2026-09-09T01:02:00.000Z' }]);
     mockApi.post.mockResolvedValue({ data: { visit: { ...VISIT_2, status: 'IN_PROGRESS' } } });
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
 
@@ -838,23 +825,18 @@ describe('v2 job page - a visit shows its real status (S4 B15)', () => {
       { action: 'start', subject: 'Job', conditions: OWN_JOB_COND },
       { action: 'arrive', subject: 'Job', conditions: OWN_JOB_COND },
     ] as never);
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url.includes('/visits')) return { data: { visits: [{ ...VISIT_1, status_steps: ['arrive', 'start', 'complete'] }] } };
-      if (url.includes('/financials')) return { data: { final_invoice: null, invoices: [], payments: [] } };
-      if (url.includes(`/api/jobs/${JOB_ID}`)) {
-        return {
-          data: {
-            job: {
+    serveJobDetail({
+      job: {
               ...BASE_JOB,
               assignees: [{ user: { id: TECH_ID, first_name: 'Test', last_name: 'Tech' } }],
             },
-          },
-        };
-      }
-      return { data: {} };
+      visits: [{ ...VISIT_1, status_steps: ['arrive', 'start', 'complete'] }],
+      routes: [
+        { match: (url) => url.includes('/financials'), data: { final_invoice: null, invoices: [], payments: [] } },
+      ],
     });
 
-    renderWithProviders(<JobDetailPage />, { ability: crewAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: crewAbility, entry: `/jobs/${JOB_ID}` });
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
 
@@ -877,7 +859,7 @@ describe('v2 job page - a visit shows its real status (S4 B15)', () => {
       { ...VISIT_3_CANCELLED },
     ]);
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
 
@@ -894,7 +876,7 @@ describe('v2 job page - a visit shows its real status (S4 B15)', () => {
       { ...VISIT_1, status: 'ON_SITE', on_site_at: '2026-09-05T01:02:00.000Z', status_steps: ['en-route', 'arrive'] },
     ]);
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
 
@@ -907,7 +889,7 @@ describe('v2 job page - a visit shows its real status (S4 B15)', () => {
     const { status_steps: _omitted, ...bare } = VISIT_1;
     mockJobWithVisits([bare]);
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
 
@@ -923,7 +905,7 @@ describe('v2 job page - a visit shows its real status (S4 B15)', () => {
     mockJobWithVisits([VISIT_1]);
     mockApi.post.mockRejectedValue({ response: { status: 403, data: { error: 'Insufficient permissions' } } });
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
 
@@ -938,7 +920,7 @@ describe('v2 job page - a visit shows its real status (S4 B15)', () => {
     mockJobWithVisits([VISIT_1]);
     const readOnly = buildAbility([{ action: 'read', subject: 'Job' }]);
 
-    renderWithProviders(<JobDetailPage />, { ability: readOnly, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: readOnly, entry: `/jobs/${JOB_ID}` });
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
 
@@ -954,11 +936,12 @@ describe('v2 job page - acting on a visit refreshes the card (S4 B16)', () => {
 
   it('shows the new status without a manual remount', async () => {
     let visits: Array<Record<string, unknown>> = [VISIT_1, VISIT_2];
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url.includes('/visits')) return { data: { visits } };
-      if (url.includes('/financials')) return { data: { final_invoice: null, invoices: [], payments: [] } };
-      if (url.includes(`/api/jobs/${JOB_ID}`)) return { data: { job: BASE_JOB } };
-      return { data: {} };
+    serveJobDetail({
+      job: BASE_JOB,
+      visits: () => visits,
+      routes: [
+        { match: (url) => url.includes('/financials'), data: { final_invoice: null, invoices: [], payments: [] } },
+      ],
     });
     mockApi.post.mockImplementation(async () => {
       // What the refetch will now see.
@@ -966,7 +949,7 @@ describe('v2 job page - acting on a visit refreshes the card (S4 B16)', () => {
       return { data: { visit: {} } };
     });
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
 
@@ -1007,7 +990,7 @@ describe('v2 job page - cancelling one visit (S4 D19)', () => {
     // actionable" has to hold.
     mockJobWithVisits([VISIT_1, VISIT_4_COMPLETED, VISIT_3_CANCELLED]);
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
 
@@ -1023,11 +1006,12 @@ describe('v2 job page - cancelling one visit (S4 D19)', () => {
 
   it('posts the typed reason to THAT visit, and the row then reads Cancelled with it', async () => {
     let visits: Array<Record<string, unknown>> = [VISIT_1, VISIT_2];
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url.includes('/visits')) return { data: { visits } };
-      if (url.includes('/financials')) return { data: { final_invoice: null, invoices: [], payments: [] } };
-      if (url.includes(`/api/jobs/${JOB_ID}`)) return { data: { job: BASE_JOB } };
-      return { data: {} };
+    serveJobDetail({
+      job: BASE_JOB,
+      visits: () => visits,
+      routes: [
+        { match: (url) => url.includes('/financials'), data: { final_invoice: null, invoices: [], payments: [] } },
+      ],
     });
     mockApi.post.mockImplementation(async () => {
       // What the refetch after the mutation will see.
@@ -1043,7 +1027,7 @@ describe('v2 job page - cancelling one visit (S4 D19)', () => {
       return { data: { visit: {} } };
     });
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
 
@@ -1080,20 +1064,15 @@ describe('v2 job page - cancelling one visit (S4 D19)', () => {
       { action: 'start', subject: 'Job', conditions: OWN_JOB_COND },
       { action: 'arrive', subject: 'Job', conditions: OWN_JOB_COND },
     ] as never);
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url.includes('/visits')) return { data: { visits: [{ ...VISIT_1, status_steps: ['arrive', 'start', 'complete'] }] } };
-      if (url.includes('/financials')) return { data: { final_invoice: null, invoices: [], payments: [] } };
-      if (url.includes(`/api/jobs/${JOB_ID}`)) {
-        return {
-          data: {
-            job: { ...BASE_JOB, assignees: [{ user: { id: TECH_ID, first_name: 'Test', last_name: 'Tech' } }], actions: [] },
-          },
-        };
-      }
-      return { data: {} };
+    serveJobDetail({
+      job: { ...BASE_JOB, assignees: [{ user: { id: TECH_ID, first_name: 'Test', last_name: 'Tech' } }], actions: [] },
+      visits: [{ ...VISIT_1, status_steps: ['arrive', 'start', 'complete'] }],
+      routes: [
+        { match: (url) => url.includes('/financials'), data: { final_invoice: null, invoices: [], payments: [] } },
+      ],
     });
 
-    renderWithProviders(<JobDetailPage />, { ability: crewAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: crewAbility, entry: `/jobs/${JOB_ID}` });
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
 
@@ -1110,7 +1089,7 @@ describe('v2 job page - cancelling one visit (S4 D19)', () => {
     // .min(1) once the server trims nothing for us.
     mockJobWithVisits([VISIT_1]);
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
 
@@ -1147,7 +1126,7 @@ describe('v2 job page - the lifecycle rail acts per visit (S5 B3)', () => {
     mockJobWithVisits([VISIT_1, VISIT_2]);
     mockApi.post.mockResolvedValue({ data: { visit: {} } });
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
     await screen.findByRole('heading', { name: /J00001/ });
 
     const node = within(await screen.findByRole('group', { name: 'Visit 2' }));
@@ -1170,16 +1149,15 @@ describe('v2 job page - the lifecycle rail dates on the ORG clock (S5 B8)', () =
 
   it('dates Job Created on the org calendar day, not New York', async () => {
     // 17:00Z on Aug 1 is Aug 2 in Manila and Aug 1 in both UTC and New York.
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url.includes('/visits')) return { data: { visits: [] } };
-      if (url.includes('/financials')) return { data: { final_invoice: null, invoices: [], payments: [] } };
-      if (url.includes(`/api/jobs/${JOB_ID}`)) {
-        return { data: { job: { ...BASE_JOB, created_at: '2026-08-01T17:00:00.000Z' } } };
-      }
-      return { data: {} };
+    serveJobDetail({
+      job: { ...BASE_JOB, created_at: '2026-08-01T17:00:00.000Z' },
+      visits: [],
+      routes: [
+        { match: (url) => url.includes('/financials'), data: { final_invoice: null, invoices: [], payments: [] } },
+      ],
     });
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
     await screen.findByRole('heading', { name: /J00001/ });
 
     const node = within(await screen.findByRole('group', { name: 'Job Created' }));
@@ -1204,14 +1182,17 @@ describe('v2 job page - the rail waits for the visit list (S5)', () => {
   });
 
   it('draws neither the Scheduled placeholder nor the job-level Start while the visits are still loading', async () => {
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url.includes('/visits')) return new Promise(() => {});
-      if (url.includes('/financials')) return { data: { final_invoice: null, invoices: [], payments: [] } };
-      if (url.includes(`/api/jobs/${JOB_ID}`)) return { data: { job: BASE_JOB } };
-      return { data: {} };
+    serveJobDetail({
+      jobId: JOB_ID,
+      job: BASE_JOB,
+      routes: [
+        // The visit list never answers.
+        { match: (url) => url.includes('/visits'), data: () => new Promise(() => {}) },
+        { match: (url) => url.includes('/financials'), data: { final_invoice: null, invoices: [], payments: [] } },
+      ],
     });
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
     await screen.findByRole('heading', { name: /J00001/ });
 
     // The rail itself IS on screen - this is not an assertion about an unrendered page.
@@ -1233,11 +1214,12 @@ describe('v2 job page - the visit dialog offers no notify fields and sends no no
   });
 
   function mockServer() {
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url.includes('/visits')) return { data: { visits: [VISIT_1, VISIT_2] } };
-      if (url.includes('/financials')) return { data: { final_invoice: null, invoices: [], payments: [] } };
-      if (url.includes(`/api/jobs/${JOB_ID}`)) return { data: { job: BASE_JOB } };
-      return { data: {} };
+    serveJobDetail({
+      job: BASE_JOB,
+      visits: [VISIT_1, VISIT_2],
+      routes: [
+        { match: (url) => url.includes('/financials'), data: { final_invoice: null, invoices: [], payments: [] } },
+      ],
     });
     mockApi.post.mockResolvedValue({ data: { visit: VISIT_2 } });
     mockApi.patch.mockResolvedValue({ data: { visit: VISIT_2 } });
@@ -1245,7 +1227,7 @@ describe('v2 job page - the visit dialog offers no notify fields and sends no no
 
   async function openJob() {
     mockServer();
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
   }
@@ -1323,24 +1305,21 @@ describe('v2 job page - the visits card never reads the announcement stamp as a 
   });
 
   it('prints no "customer notified" line for a stamped trip, and none for an unstamped one', async () => {
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url.includes('/visits')) {
-        return {
-          data: {
-            visits: [
-              // 2026-09-01T02:00:00Z is 10:00 AM Sep 1 in Manila.
-              { ...VISIT_1, customer_email_sent_at: '2026-09-01T02:00:00.000Z' },
-              { ...VISIT_2, customer_email_sent_at: null },
-            ],
-          },
-        };
-      }
-      if (url.includes('/financials')) return { data: { final_invoice: null, invoices: [], payments: [] } };
-      if (url.includes(`/api/jobs/${JOB_ID}`)) return { data: { job: BASE_JOB } };
-      return { data: {} };
+    serveJobDetail({
+      job: BASE_JOB,
+      routes: [
+        { match: (url) => url.includes('/visits'), data: {
+                    visits: [
+                      // 2026-09-01T02:00:00Z is 10:00 AM Sep 1 in Manila.
+                      { ...VISIT_1, customer_email_sent_at: '2026-09-01T02:00:00.000Z' },
+                      { ...VISIT_2, customer_email_sent_at: null },
+                    ],
+                  } },
+        { match: (url) => url.includes('/financials'), data: { final_invoice: null, invoices: [], payments: [] } },
+      ],
     });
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
 
@@ -1367,20 +1346,25 @@ describe('v2 job page - a visits fetch that failed is not an empty list', () => 
 
   it('says the list could not load - and Retry recovers it without a reload', async () => {
     let failuresLeft = 1;
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url.includes('/visits')) {
-        if (failuresLeft > 0) {
-          failuresLeft -= 1;
-          throw new Error('network down');
-        }
-        return { data: { visits: [VISIT_1] } };
-      }
-      if (url.includes('/financials')) return { data: { final_invoice: null, invoices: [], payments: [] } };
-      if (url.includes(`/api/jobs/${JOB_ID}`)) return { data: { job: BASE_JOB } };
-      return { data: {} };
+    serveJobDetail({
+      jobId: JOB_ID,
+      job: BASE_JOB,
+      routes: [
+        {
+          match: (url) => url.includes('/visits'),
+          data: () => {
+            if (failuresLeft > 0) {
+              failuresLeft -= 1;
+              throw new Error('network down');
+            }
+            return { visits: [VISIT_1] };
+          },
+        },
+        { match: (url) => url.includes('/financials'), data: { final_invoice: null, invoices: [], payments: [] } },
+      ],
     });
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
 
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
@@ -1412,7 +1396,7 @@ describe('v2 job page - the visit row offers one next step and a Skip to menu (s
   it('shows Mark on the way as the primary step and the later milestones under Skip to', async () => {
     mockJobWithVisits([VISIT_1]);
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
 
@@ -1430,7 +1414,7 @@ describe('v2 job page - the visit row offers one next step and a Skip to menu (s
   it('offers an on-site trip Start work as the primary step and Finish visit under Skip to', async () => {
     mockJobWithVisits([VISIT_1_ON_SITE]);
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
 
@@ -1447,7 +1431,7 @@ describe('v2 job page - the visit row offers one next step and a Skip to menu (s
     mockJobWithVisits([VISIT_1, VISIT_2]);
     mockApi.post.mockResolvedValue({ data: { visit: { ...VISIT_2, status: 'IN_PROGRESS' } } });
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
 
@@ -1461,7 +1445,7 @@ describe('v2 job page - the visit row offers one next step and a Skip to menu (s
   it('offers a trip with one permitted step left no Skip to menu at all', async () => {
     mockJobWithVisits([{ ...VISIT_1, status: 'IN_PROGRESS', started_at: '2026-09-05T01:30:00.000Z' }]);
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
 
@@ -1476,7 +1460,7 @@ describe('v2 job page - the visit row offers one next step and a Skip to menu (s
   it('keeps Reschedule and Cancel in an office group apart from the milestone step (story 21)', async () => {
     mockJobWithVisits([VISIT_1]);
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
 
@@ -1501,7 +1485,7 @@ describe('v2 job page - the visit row offers one next step and a Skip to menu (s
       on_site_at: '2026-09-05T01:12:00.000Z',
     }]);
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
 
@@ -1525,7 +1509,7 @@ describe('v2 job page - the visit row stays intact on a narrow viewport (slice 0
     // same rules the lead walkthrough tab's live row already uses.
     mockJobWithVisits([VISIT_1]);
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
 
@@ -1564,7 +1548,7 @@ describe('v2 job page - a visit is finished, never completed (S04.15)', () => {
   it('reads Finished on a finished visit, in its status and in its stamps, and never Completed', async () => {
     mockJobWithVisits([FINISHED_VISIT]);
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
 
@@ -1580,7 +1564,7 @@ describe('v2 job page - a visit is finished, never completed (S04.15)', () => {
   it('labels the last step of a live visit Finish visit, and no visit button says Complete', async () => {
     mockJobWithVisits([{ ...VISIT_1, status: 'IN_PROGRESS', started_at: '2026-09-05T01:30:00.000Z' }]);
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
 
@@ -1593,7 +1577,7 @@ describe('v2 job page - a visit is finished, never completed (S04.15)', () => {
     mockJobWithVisits([{ ...VISIT_1, status: 'IN_PROGRESS', started_at: '2026-09-05T01:30:00.000Z' }]);
     mockApi.post.mockResolvedValue({ data: { visit: { ...VISIT_1, status: 'COMPLETED' } } });
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
     await screen.findByRole('heading', { name: /J00001/ });
     await openVisitsTab();
 

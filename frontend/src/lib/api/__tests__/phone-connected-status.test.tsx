@@ -15,12 +15,13 @@ import api from '@/lib/axios';
 import { AbilityProvider } from '@/contexts/AbilityContext';
 import { communicationSectionAbility } from '@/__tests__/helpers';
 import { useAuthStore } from '@/stores/auth.store';
-import { useCalls, useCtmStatus, useMessageThreads } from '@/lib/api/communication';
+import { useCalls, useMessageThreads } from '@/lib/api/communication';
+import { useCtmStatus } from '@/lib/api/shared/phoneStatus';
 
 const mockApi = vi.mocked(api);
 const org = vi.hoisted(() => ({ current: {} as Record<string, unknown> }));
 
-vi.mock('@/lib/api/organization', () => ({
+vi.mock('@/lib/api/shared/organization', () => ({
   useOrganization: () => ({ data: org.current }),
 }));
 vi.mock('@/lib/useIsDemoOrg', () => ({ useIsDemoOrg: () => true }));

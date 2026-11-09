@@ -34,7 +34,7 @@ import { InvoiceLineItemsEditor, InvoiceScopeOfWorkCard } from '@/components/inv
 import { InvoiceReceiptCard } from '@/components/invoices/InvoiceReceiptCard';
 import { PdfPreviewDialog } from '@/components/estimates/PdfPreviewDialog';
 import { InternalCostsCard } from '@/components/crm/InternalCostsCard';
-import { useOrganization, type PaymentMethod } from '@/lib/api/organization';
+import { useOrganization, type PaymentMethod } from '@/lib/api/shared/organization';
 import { useScheduleTimezone } from '@/lib/schedule-tz';
 import { PAYMENT_METHOD_LABELS } from '@/lib/payment-methods';
 import { SectionCard } from '@/components/jobs/overview/SectionCard';
@@ -46,7 +46,8 @@ import { EmptyState } from '@/components/ui/empty-state';
 import { toast } from '@/components/ui/use-toast';
 import { updateInvoiceBilling, fetchStateTaxRates, createInvoicePaymentLink } from '@/lib/api/invoices';
 import { isInvoiceEditable, isInvoiceRenumberLocked } from '@/lib/invoiceEditable';
-import type { InvoiceLineItem, Scope } from '@/lib/api/jobs';
+import type { InvoiceLineItem } from '@/lib/api/jobs';
+import type { Scope } from '@/lib/api/shared/scope';
 import {
   Send,
   DollarSign,

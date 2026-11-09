@@ -6,7 +6,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { paymentsPageKeys, usePaymentsSummary } from '@/lib/api/paymentsPage';
 import { channelAvailable, subscribe } from '@/lib/paymentsChannel';
 import { formatCurrency } from '@/lib/utils';
-import { useStripeStatus } from '@/lib/api/organization';
+import { useStripeStatus } from '@/lib/api/shared/organization';
 import { useAppAbility, useCanSeePrices } from '@/contexts/AbilityContext';
 import { useScheduleTimezone } from '@/lib/schedule-tz';
 

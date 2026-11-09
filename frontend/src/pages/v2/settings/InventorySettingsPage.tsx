@@ -15,7 +15,7 @@ import {
   useOrganization,
   useUpdateOrganization,
   type OrgFormValues,
-} from '@/lib/api/organization';
+} from '@/lib/api/shared/organization';
 import { useLocations } from '@/lib/api/inventory';
 
 import { Label } from '@/ui-kit/components/ui/label';

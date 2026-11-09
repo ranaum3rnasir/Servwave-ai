@@ -18,7 +18,7 @@ import api from '@/lib/axios';
 import { renderWithProviders } from '@/__tests__/helpers';
 import { abilityWithSwitches, presetSwitchLabels } from '@/__tests__/support/backendSwitchCatalog';
 import { Toaster as KitToaster, toast } from '@/ui-kit/components/ui/sonner';
-import type { PhoneNumberRow } from '@/lib/api/communication';
+import type { PhoneNumberRow } from '@/lib/api/shared/ownedNumber';
 import { BACKGROUND_SYNC_RETRY_MS } from '@/lib/api/backgroundNumberSync';
 
 vi.mock('@/components/communication/phone/CallsView', () => ({ CallsView: () => null }));

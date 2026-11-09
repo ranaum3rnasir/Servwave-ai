@@ -37,7 +37,7 @@ import {
   CLOSE_OUT_UPGRADE_EVENT, CLOSE_OUT_UPGRADE_MIGRATION, CLOSE_OUT_UPGRADE_NOTE, closeOutUpgradePlanSql,
   dryRunReport, formatDryRunReport, formatProofReport, proofReport,
 } from '../lib/job-close-out-upgrade';
-import { deployFrom, prepareMigrationsDir } from './migration-deploy-support';
+import { deployFrom, deployMigrations, prepareMigrationsDir, createMigrationDatabase } from './migration-deploy-support';
 
 const url = process.env.TEST_DATABASE_URL;
 const suite = url ? describe : describe.skip;
@@ -390,18 +390,22 @@ suite('the job close-out upgrade (real database)', () => {
 
   beforeAll(async () => {
     template = `s0632_tpl_${randomUUID().slice(0, 8)}`;
-    await admin.$executeRawUnsafe(`CREATE DATABASE "${template}"`);
+    await createMigrationDatabase(admin, template, CLOSE_OUT_UPGRADE_MIGRATION, tempDirs);
     databases.push(template);
-    deployFrom(urlOf(template), prepareMigrationsDir(CLOSE_OUT_UPGRADE_MIGRATION, 'before', tempDirs));
+    deployMigrations(urlOf(template), CLOSE_OUT_UPGRADE_MIGRATION, 'before', tempDirs);
     throughMigrationsDir = prepareMigrationsDir(CLOSE_OUT_UPGRADE_MIGRATION, 'through', tempDirs);
   }, 600_000);
 
+  // Every DROP DATABASE forces an immediate checkpoint on the server, and the server's settings are durable (spec #3234: no
+  // non-durable settings). This file drops a dozen scratch databases one after another, and the other lanes' files do the same, so
+  // under lanes the drops queue behind each other's checkpoints: measured 47 s with only these two files in the lanes, and past the lane
+  // run's 60 s hook limit in two full runs at load 8-13. It is slow teardown, not a stuck one, so this hook alone gets the room.
   afterAll(async () => {
     await Promise.all(clients.map((c) => c.$disconnect()));
     for (const name of databases.reverse()) await admin.$executeRawUnsafe(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
     await admin.$disconnect();
     for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
-  });
+  }, 300_000);
 
   // ── What the rest of the database looks like, so "nothing else was written" is a fact, not a claim ──
 

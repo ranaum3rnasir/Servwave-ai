@@ -29,7 +29,7 @@ import { asWallClock } from '@/lib/schedule-tz';
 import { cardAddressText } from '@/components/schedule/ScheduleCardBody';
 import type { BoardEvent, SchedulableEvent } from '@/components/schedule/scheduleModel';
 
-import { ScheduleEvent } from '../SchedulePage';
+import { ScheduleEvent } from '@/__tests__/harness/schedulePage';
 
 vi.mock('react-router-dom', async (orig) => ({
   ...((await orig()) as object),

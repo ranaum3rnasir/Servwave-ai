@@ -15,9 +15,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { renderWithProviders } from '@/__tests__/helpers';
 import { useAuthStore } from '@/stores/auth.store';
-import PublicEstimatePage from '@/pages/v2/auth-public/PublicEstimatePage';
+import { renderPublicEstimate, servePublicEstimate } from '@/__tests__/harness/publicEstimatePage';
 import { CAPTURED, PUBLIC_PAYLOAD_DEPOSIT_OUTSTANDING } from '@/__tests__/fixtures/public-estimate-payload';
 
 type Point = { x: number; y: number; time: number; color: string };
@@ -62,15 +61,7 @@ vi.mock('react-signature-canvas', async () => {
   return { default: FakeSignatureCanvas };
 });
 
-const routeParams = vi.hoisted(() => ({ id: '' }));
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
-  return {
-    ...actual,
-    useParams: () => ({ id: routeParams.id }),
-    useSearchParams: () => [new URLSearchParams('token=tok-1'), vi.fn()],
-  };
-});
+vi.mock('react-router-dom', async () => (await import('@/__tests__/harness/publicEstimateMocks')).publicRouter());
 
 /** A ResizeObserver whose callbacks the test fires, standing in for a real layout change. */
 const observers: Array<{ cb: ResizeObserverCallback; targets: Element[] }> = [];
@@ -132,13 +123,10 @@ beforeEach(() => {
       setTransform: (...args: number[]) => pad.calls.push(['setTransform', ...args]),
     } as unknown as CanvasRenderingContext2D;
   } as unknown as HTMLCanvasElement['getContext']);
-  fetchMock = vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
-    if (init?.method === 'POST') {
-      return { ok: true, json: async () => ({ estimate: { ...(payload().estimate as object), status: 'WON' } }) };
-    }
-    return { ok: true, json: async () => payload() };
+  fetchMock = servePublicEstimate({
+    page: () => payload(),
+    write: () => ({ body: { estimate: { ...(payload().estimate as object), status: 'WON' } } }),
   });
-  vi.stubGlobal('fetch', fetchMock);
   vi.mocked(useAuthStore).mockImplementation(((selector?: (s: unknown) => unknown) =>
     selector ? selector(SIGNED_OUT) : SIGNED_OUT) as unknown as typeof useAuthStore);
 });
@@ -150,8 +138,7 @@ afterEach(() => {
 });
 
 async function renderPage() {
-  routeParams.id = CAPTURED.estimateId;
-  renderWithProviders(<PublicEstimatePage />, { initialEntries: [`/p/estimates/${CAPTURED.estimateId}?token=tok-1`] });
+  renderPublicEstimate({ id: CAPTURED.estimateId, entry: `/p/estimates/${CAPTURED.estimateId}?token=tok-1` });
   await screen.findByText('Door install');
   // The page's only canvas (the label has its own test, so every other test fails on behaviour).
   const canvas = document.querySelector('canvas');

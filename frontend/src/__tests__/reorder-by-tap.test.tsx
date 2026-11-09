@@ -13,14 +13,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import api from '@/lib/axios';
-import { renderWithProviders, serveDashboard } from './helpers';
+import { renderWithProviders } from './helpers';
+import { renderDashboard, serveDashboard } from '@/__tests__/harness/dashboardPage';
 import { installListsServer, row } from './listsFake';
 import { buildAbility } from '@/lib/ability';
 import { moveInList } from '@/lib/moveInList';
 import DeclineReasonsPage from '@/pages/v2/settings/DeclineReasonsPage';
 import JobSubStatusesPage from '@/pages/v2/settings/JobSubStatusesPage';
 import ListsPage from '@/pages/v2/settings/ListsPage';
-import DashboardPage from '@/pages/v2/dashboard/DashboardPage';
 import CatalogDrawer from '@/components/dashboard/CatalogDrawer';
 import { dashboardSeed } from '@/lib/api/_mock/dashboard';
 
@@ -207,7 +207,7 @@ describe('Dashboard widgets in edit mode', () => {
    * line once the data arrives (Recurring has no plans to show), so the cells are only stable after that.
    */
   async function settled() {
-    renderWithProviders(<DashboardPage />, { ability: ADMIN });
+    renderDashboard({ ability: ADMIN });
     // 10 s, not waitFor's 1 s: the dashboard's first data pass is slow on a loaded machine.
     await waitFor(() => expect(screen.getByText('No active plans')).toBeInTheDocument(), { timeout: 10_000 });
   }

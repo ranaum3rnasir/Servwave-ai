@@ -1,3 +1,23 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { screen } from '@testing-library/react';
+import { buildAbility } from '@/lib/ability';
+import { renderSchedule, serveSchedule } from '@/__tests__/harness/schedulePage';
+import { addDays, startOfWeek } from 'date-fns';
+import api from '@/lib/axios';
+import { useAuthStore } from '@/stores/auth.store';
+
+// Each test starts from the setup file's signed-in user and bare client calls: reset them here, so a test states its own user
+// and answers in its own `beforeEach` (`clearAllMocks` keeps implementations).
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(useAuthStore).mockReset();
+  vi.mocked(api.get).mockReset();
+  vi.mocked(api.post).mockReset();
+  vi.mocked(api.patch).mockReset();
+  vi.mocked(api.put).mockReset();
+  vi.mocked(api.delete).mockReset();
+});
+
 /**
  * Roles & Permissions, PRD 4, slice S04.10 - a "To be scheduled" walkthrough on the routed Schedule page.
  *
@@ -7,19 +27,8 @@
  * the server tells the board's window from the bucket's feed, and each is answered with the lead rows the
  * server serves for it.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen } from '@testing-library/react';
-import { addDays, startOfWeek } from 'date-fns';
-
-import api from '@/lib/axios';
-import { buildAbility } from '@/lib/ability';
-import { renderWithProviders } from '@/__tests__/helpers';
-import { TooltipProvider } from '@/ui-kit/components/ui/tooltip';
-
-import SchedulePage from '../SchedulePage';
 
 const ADMIN = buildAbility([{ action: 'manage', subject: 'all' }]);
-const mockApi = vi.mocked(api);
 
 class ResizeObserverStub {
   observe() {}
@@ -59,22 +68,7 @@ const TO_BE_SCHEDULED_LEAD = {
 };
 
 function mockBoard(windowLeads: Array<Record<string, unknown>>, bucketLeads: Array<Record<string, unknown>>) {
-  mockApi.get.mockImplementation((url: string, config?: { params?: unknown }) => {
-    if (url === '/api/leads') {
-      const wantsBucket = (config?.params as { walkthrough_status?: string } | undefined)?.walkthrough_status === 'needs_scheduling';
-      return Promise.resolve({ data: { leads: wantsBucket ? bucketLeads : windowLeads } });
-    }
-    if (url === '/api/jobs') return Promise.resolve({ data: { jobs: [] } });
-    if (url === '/api/departments') return Promise.resolve({ data: { departments: [] } });
-    if (url === '/api/users' || url === '/api/users/assignable') {
-      return Promise.resolve({
-        data: { users: [{ id: 'm-alice', first_name: 'Alice', last_name: 'Ng', is_active: true, role: 'TECHNICIAN' }] },
-      });
-    }
-    if (url === '/api/organization') return Promise.resolve({ data: {} });
-    if (url === '/api/service-plans/scheduler-bucket') return Promise.resolve({ data: { plans: [] } });
-    return Promise.resolve({ data: {} });
-  });
+  serveSchedule({ jobs: [], bucketJobs: [], leads: (p) => (p.walkthrough_status === 'needs_scheduling' ? bucketLeads : windowLeads), users: [{ id: 'm-alice', first_name: 'Alice', last_name: 'Ng', is_active: true, role: 'TECHNICIAN' }] });
 }
 
 const boardIds = (container: HTMLElement) =>
@@ -93,12 +87,7 @@ describe('a "To be scheduled" walkthrough on the routed Schedule page (S04.10)',
     };
     mockBoard([withUntimedBeside], [TO_BE_SCHEDULED_LEAD]);
 
-    const { container } = renderWithProviders(
-      <TooltipProvider>
-        <SchedulePage />
-      </TooltipProvider>,
-      { ability: ADMIN },
-    );
+    const { container } = renderSchedule({ ability: ADMIN });
 
     // The bucket card: its lead number, the crew kept on it (Alice, by name) and nowhere else.
     const bucketNumber = await screen.findByText('L00502');

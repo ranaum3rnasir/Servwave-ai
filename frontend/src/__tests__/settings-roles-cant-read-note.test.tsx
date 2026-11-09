@@ -14,7 +14,8 @@ import { renderWithProviders } from './helpers';
 import RolesPage from '@/pages/v2/settings/RolesPage';
 import { useSettingsGuard } from '@/stores/settingsGuard.store';
 import type { SettingsSaver } from '@/lib/settings/types';
-import { CANT_READ_ROLE_NOTE, type BuiltInRoleKey, type RoleSwitchSet, type SwitchSet } from '@/lib/api/permissionSwitches';
+import { CANT_READ_ROLE_NOTE, type BuiltInRoleKey } from '@/lib/api/permissionSwitches';
+import { type RoleSwitchSet, type SwitchSet } from '@/lib/api/shared/switchTypes';
 import { FIXTURE_CATALOG, catalogSwitch, presetSet } from './support/permissionCatalogFixture';
 
 vi.mock('@/components/ui/use-toast', () => ({ toast: vi.fn() }));

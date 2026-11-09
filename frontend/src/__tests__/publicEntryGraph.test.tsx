@@ -21,6 +21,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { CAPTURED, PUBLIC_PAYLOAD_DEPOSIT_OUTSTANDING } from '@/__tests__/fixtures/public-estimate-payload';
 import { PublicRoutes } from '@/PublicApp';
+import { servePublicEstimate } from '@/__tests__/harness/publicEstimatePage';
 import { replaceLocation } from '@/lib/platform/replaceLocation';
 import { importChain, relativeToSrc, staticImportGraph } from './staticImportGraph';
 import { parseRoutes } from '@/pages/v2/__tests__/routeTable';
@@ -205,7 +206,7 @@ describe('PublicRoutes renders with none of the staff providers', () => {
     estimate.invoices = [];
     estimate.send_config = null;
     estimate.status = 'SENT';
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => payload }));
+    servePublicEstimate({ page: payload });
 
     bare(`/p/estimates/${CAPTURED.estimateId}?token=tok-1`);
 
@@ -218,7 +219,7 @@ describe('PublicRoutes renders with none of the staff providers', () => {
     estimate.invoices = [];
     estimate.send_config = null;
     estimate.status = 'SENT';
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => payload }));
+    servePublicEstimate({ page: payload });
     const { default: userEvent } = await import('@testing-library/user-event');
 
     bare(`/p/estimates/${CAPTURED.estimateId}?token=tok-1`);

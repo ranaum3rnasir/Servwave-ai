@@ -72,8 +72,8 @@ vi.mock('@/lib/api/inventory', async (importOriginal) => {
   return { ...actual, useLocations: () => ({ data: locations, isLoading: false, isError: false }) };
 });
 
-vi.mock('@/lib/api/organization', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/organization')>();
+vi.mock('@/lib/api/shared/organization', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/api/shared/organization')>();
   const org = { id: 'org-1', default_inventory_location_id: hoisted.LOC_MAIN_ID, block_negative_stock: false };
   return { ...actual, useOrganization: () => ({ data: org, isLoading: false, isError: false }) };
 });

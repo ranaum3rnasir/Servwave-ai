@@ -11,7 +11,7 @@ import api from '@/lib/axios';
 import { buildAbility } from '@/lib/ability';
 import { toast } from '@/ui-kit/components/ui/sonner';
 import ListsPage from '@/pages/v2/settings/ListsPage';
-import { useOrganization } from '@/lib/api/organization';
+import { useOrganization } from '@/lib/api/shared/organization';
 import { renderWithProviders } from './helpers';
 import { installListsServer, row, savedToasts } from './listsFake';
 

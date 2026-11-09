@@ -24,7 +24,7 @@ vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
   return { ...actual, useNavigate: () => mockNavigate };
 });
-vi.mock('@/lib/api/organization', () => ({
+vi.mock('@/lib/api/shared/organization', () => ({
   useOrganization: () => ({ data: { job_type_options: [], source_options: [], timezone: 'America/New_York' } }),
 }));
 // The routed page reports through the kit's toaster, which the test render does not mount.

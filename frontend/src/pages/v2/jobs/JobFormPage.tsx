@@ -6,7 +6,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import api from '@/lib/axios';
 import { refreshAfterVisitWrite } from '@/lib/refreshAfterVisitWrite';
-import { useOrganization } from '@/lib/api/organization';
+import { useOrganization } from '@/lib/api/shared/organization';
 import { useAssignableUsers } from '@/lib/api/users';
 import { useJobCreatorPrefill } from '@/lib/api/jobs';
 import { useAuthStore } from '@/stores/auth.store';

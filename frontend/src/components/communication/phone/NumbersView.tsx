@@ -28,27 +28,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { PhoneInput } from "@/ui-kit/components/form/phoneInput";
 import { Check, ChevronDown, Plus, RotateCw, Search } from "lucide-react";
-import {
-  customFlowOptions,
-  flowNameForId,
-  fmtPhone,
-  mapOwnedNumber,
-  useBuyNumber,
-  useSearchNumbers,
-  useReassignNumberFlow,
-  useRefreshNumbers,
-  useReleaseNumber,
-  useUpdateNumberForwarding,
-} from "@/lib/api/communication";
+import { customFlowOptions, flowNameForId, fmtPhone, useBuyNumber, useSearchNumbers, useReassignNumberFlow, useRefreshNumbers, useReleaseNumber, useUpdateNumberForwarding } from '@/lib/api/communication';
+import { mapOwnedNumber } from '@/lib/api/shared/ownedNumber';
 import { useBackgroundNumberSync } from "@/lib/api/backgroundNumberSync";
-import type {
-  AvailableNumber,
-  CallFlow,
-  NumberSyncResponse,
-  NumberType,
-  OwnedNumber,
-  PhoneNumberRow,
-} from "@/lib/api/communication";
+import type { AvailableNumber, CallFlow, NumberSyncResponse, NumberType, OwnedNumber } from '@/lib/api/communication';
+import type { PhoneNumberRow } from '@/lib/api/shared/ownedNumber';
 import { useAppAbility } from "@/contexts/AbilityContext";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Modal } from "@/components/ui/modal";

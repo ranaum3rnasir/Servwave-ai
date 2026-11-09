@@ -1,4 +1,4 @@
-import { useMySwitches } from '@/lib/api/mySwitches';
+import { useMySwitches } from '@/lib/api/shared/mySwitches';
 import { NewTabLink } from '@/components/ui/new-tab-link';
 
 /**

@@ -2,8 +2,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/axios';
 import { toast } from '@/components/ui/use-toast';
 import { extractApiError } from '@/lib/utils';
-import { allPersonSwitchesKey, type RoleSwitchSet } from '@/lib/api/permissionSwitches';
-import { resetChangeLogs } from '@/lib/api/permissionChangeLog';
+import { allPersonSwitchesKey, resetChangeLogs } from '@/lib/api/shared/queryKeys';
+import { type RoleSwitchSet } from '@/lib/api/shared/switchTypes';
 
 export interface RoleSummary {
   role: string;

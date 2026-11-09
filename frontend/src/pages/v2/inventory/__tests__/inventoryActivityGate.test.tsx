@@ -1,3 +1,26 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { screen, within, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import api from '@/lib/axios';
+import { buildAbility, type AbilityRule } from '@/lib/ability';
+import { renderInventory, serveInventory } from '@/__tests__/harness/inventoryPage';
+import type { Item, Location, Movement } from '@/lib/api/inventory';
+import { useAuthStore } from '@/stores/auth.store';
+
+vi.mock('@/lib/axios');
+
+// Each test starts from the setup file's signed-in user and bare client calls: reset them here, so a test states its own user
+// and answers in its own `beforeEach` (`clearAllMocks` keeps implementations).
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(useAuthStore).mockReset();
+  vi.mocked(api.get).mockReset();
+  vi.mocked(api.post).mockReset();
+  vi.mocked(api.patch).mockReset();
+  vi.mocked(api.put).mockReset();
+  vi.mocked(api.delete).mockReset();
+});
+
 /**
  * Roles & Permissions S07.12 - the Activity tab and an item's movement history follow See inventory activity.
  *
@@ -5,15 +28,6 @@
  * grants the server compiles the switches into (read Inventory, see_inventory_activity), never from a role name:
  * the page reads only the ability.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, within, waitFor } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
-
-import api from '@/lib/axios';
-import { buildAbility, type AbilityRule } from '@/lib/ability';
-import { renderWithProviders } from '@/__tests__/helpers';
-import InventoryPage from '@/pages/v2/inventory/InventoryPage';
-import type { Item, Location, Movement } from '@/lib/api/inventory';
 
 class ResizeObserverStub {
   observe() {}
@@ -23,7 +37,6 @@ class ResizeObserverStub {
 global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
 
 const mockApi = vi.mocked(api);
-vi.mock('@/lib/axios');
 
 const WAREHOUSE = 'a0000000-0000-0000-0000-0000000000w1';
 const ITEM_ID = 'b0000000-0000-0000-0000-00000000b001';
@@ -47,28 +60,22 @@ const movementCalls = () => mockApi.get.mock.calls.filter((c) => String(c[0]).st
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockApi.get.mockImplementation((async (url: string) => {
-    // The Stock tabs show with View stock (the rule, also read from the person's own switches).
-    if (url === '/api/permission-switches/me') return { data: { admin_box: false, values: { view_stock: true }, rules: [] } };
-    if (url.startsWith('/api/inventory/movements')) return { data: { data: [MOVEMENT], meta: { page: 1, limit: 25, total: 41, totalPages: 2 } } };
-    if (url.startsWith('/api/inventory/items')) return { data: { data: ITEMS } };
-    if (url.startsWith('/api/inventory/locations')) return { data: { locations: LOCATIONS } };
-    if (url.startsWith('/api/inventory/assets')) return { data: { data: [], meta: { total: 0 } } };
-    if (url.startsWith('/api/logistic-orders')) return { data: { data: [], page: 1, limit: 50, total: 0 } };
-    return {
-      data: {
-        data: [], meta: { page: 1, limit: 1, total: 0, totalPages: 1 }, vendors: [], categories: [], branches: [], brands: [],
-        jobStages: [], purchaseOrders: [], users: [], finishes: [], techs: [], itemGroups: [], total: 0,
-      },
-    };
-  }) as typeof mockApi.get);
+  serveInventory({
+    items: ITEMS,
+    locations: LOCATIONS,
+    routes: [
+      // The Stock tabs show with View stock (the rule, also read from the person's own switches).
+      { match: (url) => url === '/api/permission-switches/me', data: { admin_box: false, values: { view_stock: true }, rules: [] } },
+      { match: (url) => url.startsWith('/api/inventory/movements'), data: { data: [MOVEMENT], meta: { page: 1, limit: 25, total: 41, totalPages: 2 } } },
+    ],
+  });
 });
 
 const ACTIVITY = { action: 'see_inventory_activity', subject: 'Inventory' } as const;
 const held = (...rules: AbilityRule[]) => buildAbility([{ action: 'read', subject: 'Inventory' }, ...rules]);
 
 function renderAt(path: string, rules: AbilityRule[]) {
-  return renderWithProviders(<InventoryPage />, { initialEntries: [path], ability: held(...rules) });
+  return renderInventory({ entry: path, ability: held(...rules) });
 }
 
 describe('Activity tab - See inventory activity', () => {

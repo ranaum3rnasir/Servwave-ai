@@ -12,21 +12,19 @@
  * the behaviour: what a click on a draft opens, what that menu does, and what the header button
  * toggles.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // usePlanMode reads its storage key off a per-tab id at MODULE LOAD, so it has to exist before
 // SchedulePage (and through it the hook) is imported.
 vi.hoisted(() => sessionStorage.setItem('plan-mode-tab-id', 'm60-tap-test'));
 
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { addDays, format, startOfWeek } from 'date-fns';
 
 import api from '@/lib/axios';
 import { buildAbility } from '@/lib/ability';
-import { renderWithProviders } from '@/__tests__/helpers';
-import { TooltipProvider } from '@/ui-kit/components/ui/tooltip';
 import type { GhostEvent } from '@/hooks/usePlanMode';
-import SchedulePage from '@/pages/v2/schedule/SchedulePage';
+import { renderSchedule, serveSchedule } from '@/__tests__/harness/schedulePage';
 
 class ResizeObserverStub {
   observe() {}
@@ -65,23 +63,11 @@ function seedDraft() {
 }
 
 function mockBoard() {
-  mockApi.get.mockImplementation((url: string) => {
-    if (url === '/api/jobs') return Promise.resolve({ data: { jobs: [] } });
-    if (url === '/api/departments') return Promise.resolve({ data: { departments: [] } });
-    if (url === '/api/leads') return Promise.resolve({ data: { leads: [] } });
-    if (url === '/api/users' || url === '/api/users/assignable') return Promise.resolve({ data: { users: [] } });
-    if (url === '/api/service-plans/scheduler-bucket') return Promise.resolve({ data: { plans: [] } });
-    return Promise.resolve({ data: {} });
-  });
+  serveSchedule({ jobs: [], bucketJobs: [] });
 }
 
 function renderPage() {
-  return renderWithProviders(
-    <TooltipProvider>
-      <SchedulePage />
-    </TooltipProvider>,
-    { ability: ADMIN },
-  );
+  return renderSchedule({ ability: ADMIN });
 }
 
 /** The draft's card on the standard calendar: the event wrapper that holds the "draft" badge. */
@@ -91,6 +77,8 @@ async function findDraftCard(): Promise<HTMLElement> {
 }
 
 const overlayMenu = () => document.querySelector<HTMLElement>('[data-schedule-overlay]');
+
+afterEach(() => { vi.useRealTimers(); });
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -216,10 +204,12 @@ describe('a day of the week view can be widened by tap', () => {
   });
 
   it('the tap widens only: it does not also drill into that day', async () => {
+    // Fake clock (real time still flows for the testing library): the header's drill-down delay is stepped over.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     renderPage();
     fireEvent.click(await screen.findByRole('button', { name: `Widen ${dayName(2)}` }));
-    // The header's own click drills into Day view after a short delay; wait past it.
-    await new Promise((r) => setTimeout(r, 400));
+    // The header's own click drills into Day view after a short delay; step past it.
+    await act(async () => { await vi.advanceTimersByTimeAsync(400); });
     // Still the week view (Day view has one header, so the seven buttons would be gone) and the
     // column is still widened (a view change resets it).
     expect(screen.getAllByRole('button', { name: /^Widen / })).toHaveLength(7);

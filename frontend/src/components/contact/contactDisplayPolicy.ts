@@ -1,5 +1,5 @@
 import { formatPhone } from '@/lib/utils';
-import type { SwitchSet } from '@/lib/api/permissionSwitches';
+import type { SwitchSet } from '@/lib/api/shared/switchTypes';
 
 /**
  * The contact display policy (Roles & Permissions, PRD 5): the one pure function that decides how a

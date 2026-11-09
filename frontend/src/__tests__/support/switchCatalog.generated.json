@@ -1,0 +1,3460 @@
+[
+  {
+    "key": "apply_discounts",
+    "label": "Apply discounts",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "apply_discount",
+        "subject": "Estimate"
+      },
+      {
+        "action": "apply_discount",
+        "subject": "Invoice"
+      },
+      {
+        "action": "apply_discount",
+        "subject": "Job"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "leads_scope",
+    "label": "Leads scope",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [],
+    "presets": null
+  },
+  {
+    "key": "jobs_scope",
+    "label": "Jobs scope",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [],
+    "presets": null
+  },
+  {
+    "key": "see_prices",
+    "label": "See prices",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "read",
+        "subject": "Prices"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "see_costs",
+    "label": "See costs",
+    "requires": [
+      "see_prices"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "read",
+        "subject": "Pricing"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "see_company_figures",
+    "label": "See company figures",
+    "requires": [
+      "see_prices"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "read",
+        "subject": "CompanyFigures"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "view_customers",
+    "label": "View customers",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "read",
+        "subject": "Customer"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "create_customers",
+    "label": "Create customers",
+    "requires": [
+      "view_customers",
+      "edit_customers"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "create",
+        "subject": "Customer"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "edit_customers",
+    "label": "Edit customers",
+    "requires": [
+      "view_customers"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "update",
+        "subject": "Customer"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "delete_customers",
+    "label": "Delete customers",
+    "requires": [
+      "view_customers"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "delete",
+        "subject": "Customer"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "export_customers",
+    "label": "Export customers",
+    "requires": [
+      "view_customers"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "export",
+        "subject": "Customer"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "archive_customers",
+    "label": "Archive customers",
+    "requires": [
+      "view_customers"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "archive",
+        "subject": "Customer"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "edit_customer_record_ids",
+    "label": "Edit record ID numbers (customers)",
+    "requires": [
+      "view_customers"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "renumber",
+        "subject": "Customer"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "change_customer_created_date",
+    "label": "Change customer created date",
+    "requires": [
+      "edit_customers"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "change_created_date",
+        "subject": "Customer"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "copy_customer_phone",
+    "label": "Copy customer phone",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "copy_customer_email",
+    "label": "Copy customer email",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "view_leads",
+    "label": "View leads",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "read",
+        "subject": "Lead"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "create_leads",
+    "label": "Create leads",
+    "requires": [
+      "view_leads",
+      "edit_leads"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "create",
+        "subject": "Lead"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "edit_leads",
+    "label": "Edit leads",
+    "requires": [
+      "view_leads"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "update",
+        "subject": "Lead"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "change_lead_status_by_hand",
+    "label": "Change lead status by hand",
+    "requires": [
+      "edit_leads"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "change_status",
+        "subject": "Lead"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "delete_leads",
+    "label": "Delete leads",
+    "requires": [
+      "view_leads"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "delete",
+        "subject": "Lead"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "export_leads",
+    "label": "Export leads",
+    "requires": [
+      "view_leads"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "export",
+        "subject": "Lead"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "assign_people_to_leads",
+    "label": "Assign people to leads",
+    "requires": [
+      "view_leads"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "assign",
+        "subject": "Lead"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "log_contact_attempts",
+    "label": "Log contact attempts",
+    "requires": [
+      "view_leads"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "contact",
+        "subject": "Lead"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "mark_leads_lost",
+    "label": "Mark leads lost",
+    "requires": [
+      "view_leads"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "mark_lost",
+        "subject": "Lead"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "reopen_leads",
+    "label": "Reopen leads",
+    "requires": [
+      "view_leads"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "reopen",
+        "subject": "Lead"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "book_walkthroughs",
+    "label": "Book walkthroughs",
+    "requires": [
+      "view_leads"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "schedule_walkthrough",
+        "subject": "Lead"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "perform_walkthroughs",
+    "label": "Perform walkthroughs",
+    "requires": [
+      "view_leads"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "perform_walkthrough",
+        "subject": "Lead"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "edit_lead_record_ids",
+    "label": "Edit record ID numbers (leads)",
+    "requires": [
+      "view_leads"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "renumber",
+        "subject": "Lead"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "alert_every_lead",
+    "label": "Alert me about every lead",
+    "requires": [
+      "view_leads"
+    ],
+    "requiresAny": [],
+    "grants": [],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "view_jobs",
+    "label": "View jobs",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "read",
+        "subject": "Job"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "create_jobs",
+    "label": "Create jobs",
+    "requires": [
+      "view_jobs",
+      "edit_jobs"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "create",
+        "subject": "Job"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "edit_jobs",
+    "label": "Edit jobs",
+    "requires": [
+      "view_jobs"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "update",
+        "subject": "Job"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "delete_jobs",
+    "label": "Delete jobs",
+    "requires": [
+      "view_jobs"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "delete",
+        "subject": "Job"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "export_jobs",
+    "label": "Export jobs",
+    "requires": [
+      "view_jobs"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "export",
+        "subject": "Job"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "edit_job_and_lead_contact_details",
+    "label": "Edit job and lead contact details",
+    "requires": [],
+    "requiresAny": [
+      "view_jobs",
+      "view_leads"
+    ],
+    "grants": [
+      {
+        "action": "edit_contact_details",
+        "subject": "Job"
+      },
+      {
+        "action": "edit_contact_details",
+        "subject": "Lead"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "assign_work_to_others",
+    "label": "Assign work to other people",
+    "requires": [
+      "view_jobs"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "assign",
+        "subject": "User"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "schedule_visits",
+    "label": "Schedule visits",
+    "requires": [
+      "view_jobs"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "reschedule",
+        "subject": "Job"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "mark_on_my_way",
+    "label": "Mark on my way",
+    "requires": [
+      "view_jobs"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "en_route",
+        "subject": "Job"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "mark_arrived",
+    "label": "Mark arrived",
+    "requires": [
+      "view_jobs"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "arrive",
+        "subject": "Job"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "assign_people_to_jobs",
+    "label": "Assign people to jobs",
+    "requires": [
+      "view_jobs"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "assign",
+        "subject": "Job"
+      },
+      {
+        "action": "unassign",
+        "subject": "Job"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "start_and_finish_visits",
+    "label": "Start and finish visits",
+    "requires": [
+      "view_jobs"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "start",
+        "subject": "Job"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "complete_jobs",
+    "label": "Complete jobs",
+    "requires": [
+      "view_jobs"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "complete",
+        "subject": "Job"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "duplicate_jobs",
+    "label": "Duplicate jobs",
+    "requires": [
+      "view_jobs",
+      "create_jobs"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "duplicate",
+        "subject": "Job"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "edit_job_line_items",
+    "label": "Edit job line items",
+    "requires": [
+      "view_jobs"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "manage_lines",
+        "subject": "Job"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "office_review",
+    "label": "Office review",
+    "requires": [
+      "view_jobs"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "office_review",
+        "subject": "Job"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "close_jobs",
+    "label": "Close jobs",
+    "requires": [
+      "view_jobs"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "close",
+        "subject": "Job"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "close_jobs_with_money_owed",
+    "label": "Close jobs with money owed",
+    "requires": [
+      "view_jobs"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "close_with_money_owed",
+        "subject": "Job"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "cancel_jobs",
+    "label": "Cancel jobs",
+    "requires": [
+      "view_jobs"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "cancel",
+        "subject": "Job"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "reopen_done_jobs",
+    "label": "Reopen Done jobs",
+    "requires": [
+      "view_jobs"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "reopen",
+        "subject": "Job"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "change_locked_jobs",
+    "label": "Change locked jobs",
+    "requires": [
+      "view_jobs"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "change_locked",
+        "subject": "Job"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "edit_job_record_ids",
+    "label": "Edit record ID numbers (jobs)",
+    "requires": [
+      "view_jobs"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "renumber",
+        "subject": "Job"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "alert_every_job",
+    "label": "Alert me about every job",
+    "requires": [
+      "view_jobs"
+    ],
+    "requiresAny": [],
+    "grants": [],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "view_estimates",
+    "label": "View estimates",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "read",
+        "subject": "Estimate"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "create_estimates",
+    "label": "Create estimates",
+    "requires": [
+      "view_estimates",
+      "edit_estimates",
+      "see_prices"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "create",
+        "subject": "Estimate"
+      },
+      {
+        "action": "duplicate",
+        "subject": "Estimate"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "standalone_estimates",
+    "label": "Standalone estimates",
+    "requires": [
+      "create_estimates"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "create_standalone",
+        "subject": "Estimate"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "edit_estimates",
+    "label": "Edit estimates",
+    "requires": [
+      "view_estimates",
+      "see_prices"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "update",
+        "subject": "Estimate"
+      },
+      {
+        "action": "send",
+        "subject": "Estimate"
+      },
+      {
+        "action": "cancel",
+        "subject": "Estimate"
+      },
+      {
+        "action": "revise",
+        "subject": "Estimate"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "delete_estimates",
+    "label": "Delete estimates",
+    "requires": [
+      "view_estimates"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "delete",
+        "subject": "Estimate"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "export_estimates",
+    "label": "Export estimates",
+    "requires": [
+      "view_estimates"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "export",
+        "subject": "Estimate"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "approve_estimates",
+    "label": "Approve estimates",
+    "requires": [
+      "view_estimates"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "approve",
+        "subject": "Estimate"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "decline_estimates",
+    "label": "Decline estimates",
+    "requires": [
+      "view_estimates"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "decline",
+        "subject": "Estimate"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "waive_deposits",
+    "label": "Waive deposits",
+    "requires": [
+      "view_estimates"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "waive_deposit",
+        "subject": "Estimate"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "edit_estimate_record_ids",
+    "label": "Edit record ID numbers (estimates)",
+    "requires": [
+      "view_estimates"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "renumber",
+        "subject": "Estimate"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "alert_every_estimate",
+    "label": "Alert me about every estimate",
+    "requires": [
+      "view_estimates"
+    ],
+    "requiresAny": [],
+    "grants": [],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "view_invoices",
+    "label": "View invoices",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "read",
+        "subject": "Invoice"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "create_invoices",
+    "label": "Create invoices",
+    "requires": [
+      "view_invoices",
+      "edit_invoices",
+      "see_prices"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "create",
+        "subject": "Invoice"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "standalone_invoices",
+    "label": "Standalone invoices",
+    "requires": [
+      "create_invoices"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "create_standalone",
+        "subject": "Invoice"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "edit_invoices",
+    "label": "Edit invoices",
+    "requires": [
+      "view_invoices",
+      "see_prices"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "update",
+        "subject": "Invoice"
+      },
+      {
+        "action": "send",
+        "subject": "Invoice"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "delete_invoices",
+    "label": "Delete invoices",
+    "requires": [
+      "view_invoices"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "delete",
+        "subject": "Invoice"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "view_payments",
+    "label": "View payments and payouts",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "view_payments",
+        "subject": "Organization"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "export_invoices",
+    "label": "Export invoices",
+    "requires": [
+      "view_invoices"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "export",
+        "subject": "Invoice"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "record_payments",
+    "label": "Record payments",
+    "requires": [
+      "see_prices"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "record_payment",
+        "subject": "Invoice"
+      },
+      {
+        "action": "record_payment",
+        "subject": "Estimate"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "refund_payments",
+    "label": "Refund payments",
+    "requires": [
+      "view_invoices",
+      "view_payments"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "refund",
+        "subject": "Invoice"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "send_payment_links",
+    "label": "Send payment links",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "send_payment_link",
+        "subject": "Invoice"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "void_invoices",
+    "label": "Void invoices",
+    "requires": [
+      "view_invoices"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "void",
+        "subject": "Invoice"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "apply_credits",
+    "label": "Apply credits",
+    "requires": [
+      "view_invoices"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "credit",
+        "subject": "Invoice"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "void_payments",
+    "label": "Void payments",
+    "requires": [
+      "view_invoices"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "void_payment",
+        "subject": "Invoice"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "edit_invoice_line_items",
+    "label": "Edit invoice line items",
+    "requires": [
+      "view_invoices"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "manage_lines",
+        "subject": "Invoice"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "allowed_payment_methods",
+    "label": "Allowed payment methods",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [],
+    "presets": null
+  },
+  {
+    "key": "edit_invoice_record_ids",
+    "label": "Edit record ID numbers (invoices)",
+    "requires": [
+      "view_invoices"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "renumber",
+        "subject": "Invoice"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "alert_every_invoice",
+    "label": "Alert me about every invoice and payment",
+    "requires": [
+      "view_invoices"
+    ],
+    "requiresAny": [],
+    "grants": [],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "view_service_plans",
+    "label": "View service plans",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "read",
+        "subject": "ServicePlan"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "create_service_plans",
+    "label": "Create service plans",
+    "requires": [
+      "view_service_plans",
+      "edit_service_plans"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "create",
+        "subject": "ServicePlan"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "edit_service_plans",
+    "label": "Edit service plans",
+    "requires": [
+      "view_service_plans"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "update",
+        "subject": "ServicePlan"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "delete_service_plans",
+    "label": "Delete service plans",
+    "requires": [
+      "view_service_plans"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "delete",
+        "subject": "ServicePlan"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "view_automations",
+    "label": "View automations",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "read",
+        "subject": "Automation"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "create_automations",
+    "label": "Create automations",
+    "requires": [
+      "view_automations",
+      "edit_automations"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "create",
+        "subject": "Automation"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "edit_automations",
+    "label": "Edit automations",
+    "requires": [
+      "view_automations"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "update",
+        "subject": "Automation"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "delete_automations",
+    "label": "Delete automations",
+    "requires": [
+      "view_automations"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "delete",
+        "subject": "Automation"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "view_tasks",
+    "label": "View tasks",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "read",
+        "subject": "Task"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "create_tasks",
+    "label": "Create tasks",
+    "requires": [
+      "view_tasks",
+      "edit_tasks"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "create",
+        "subject": "Task"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "edit_tasks",
+    "label": "Edit tasks",
+    "requires": [
+      "view_tasks"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "update",
+        "subject": "Task"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "delete_tasks",
+    "label": "Delete tasks",
+    "requires": [
+      "view_tasks"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "delete",
+        "subject": "Task"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "assign_tasks_to_others",
+    "label": "Assign tasks to others",
+    "requires": [
+      "view_tasks"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "assign",
+        "subject": "Task"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "tasks_scope",
+    "label": "Tasks scope",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [],
+    "presets": null
+  },
+  {
+    "key": "view_events",
+    "label": "View events",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "read",
+        "subject": "CalendarEntry"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "create_events",
+    "label": "Create events",
+    "requires": [
+      "view_events",
+      "edit_events"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "create",
+        "subject": "CalendarEntry"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "edit_events",
+    "label": "Edit events",
+    "requires": [
+      "view_events"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "update",
+        "subject": "CalendarEntry"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "delete_events",
+    "label": "Delete events",
+    "requires": [
+      "view_events"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "delete",
+        "subject": "CalendarEntry"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "events_scope",
+    "label": "Events scope",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [],
+    "presets": null
+  },
+  {
+    "key": "add_notes",
+    "label": "Add notes",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "add_note",
+        "subject": "Job"
+      },
+      {
+        "action": "add_note",
+        "subject": "Lead"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "view_users",
+    "label": "View users",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "read",
+        "subject": "User"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "can_own_leads",
+    "label": "Can own leads / be Sold By",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": false,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "can_be_dispatcher",
+    "label": "Can be a dispatcher",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "can_be_on_crew",
+    "label": "Can be on a crew",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": false,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "view_departments",
+    "label": "View departments",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "read",
+        "subject": "Department"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "create_departments",
+    "label": "Create departments",
+    "requires": [
+      "view_departments",
+      "edit_departments"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "create",
+        "subject": "Department"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "edit_departments",
+    "label": "Edit departments",
+    "requires": [
+      "view_departments"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "update",
+        "subject": "Department"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "delete_departments",
+    "label": "Delete departments",
+    "requires": [
+      "view_departments"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "delete",
+        "subject": "Department"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "view_locations",
+    "label": "View locations",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "read",
+        "subject": "Location"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "create_locations",
+    "label": "Create locations",
+    "requires": [
+      "view_locations",
+      "edit_locations"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "create",
+        "subject": "Location"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "edit_locations",
+    "label": "Edit locations",
+    "requires": [
+      "view_locations"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "update",
+        "subject": "Location"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "delete_locations",
+    "label": "Delete locations",
+    "requires": [
+      "view_locations"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "delete",
+        "subject": "Location"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "create_tags",
+    "label": "Create tags",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "create",
+        "subject": "Tag"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "manage_tags",
+    "label": "Manage tags",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "update",
+        "subject": "Tag"
+      },
+      {
+        "action": "delete",
+        "subject": "Tag"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "manage_task_categories",
+    "label": "Manage task categories",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "create",
+        "subject": "TaskCategory"
+      },
+      {
+        "action": "update",
+        "subject": "TaskCategory"
+      },
+      {
+        "action": "delete",
+        "subject": "TaskCategory"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "manage_payout_account",
+    "label": "Manage payout account",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "manage_payout_account",
+        "subject": "Organization"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "access_schedule",
+    "label": "Access Schedule",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "access",
+        "subject": "Schedule"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "access_reports",
+    "label": "Access Reports",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "read",
+        "subject": "Report"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "export_reports",
+    "label": "Export reports",
+    "requires": [
+      "access_reports"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "export",
+        "subject": "Report"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "access_billing",
+    "label": "Access Billing",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "access",
+        "subject": "Billing"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "access_marketing",
+    "label": "Access Marketing",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "timesheets_scope",
+    "label": "Timesheets scope",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [],
+    "presets": null
+  },
+  {
+    "key": "view_stock",
+    "label": "View stock",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "read",
+        "subject": "Inventory"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "create_stock",
+    "label": "Create stock",
+    "requires": [
+      "view_stock",
+      "edit_stock"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "create",
+        "subject": "Inventory"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "edit_stock",
+    "label": "Edit stock",
+    "requires": [
+      "view_stock"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "update",
+        "subject": "Inventory"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "delete_stock",
+    "label": "Delete stock",
+    "requires": [
+      "view_stock"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "delete",
+        "subject": "Inventory"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "export_stock",
+    "label": "Export stock",
+    "requires": [
+      "view_stock"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "export",
+        "subject": "Inventory"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "see_inventory_activity",
+    "label": "See inventory activity",
+    "requires": [
+      "view_stock"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "see_inventory_activity",
+        "subject": "Inventory"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "assets_scope",
+    "label": "Assets scope",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [],
+    "presets": null
+  },
+  {
+    "key": "inventory_view",
+    "label": "Inventory view",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [],
+    "presets": null
+  },
+  {
+    "key": "restrict_stock_to_own_van",
+    "label": "Restrict stock to own van",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [],
+    "presets": {
+      "ADMIN": false,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "pick_up_staged_items",
+    "label": "Pick up staged items",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "pick_up_staged",
+        "subject": "Inventory"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "record_pickup_for_someone_else",
+    "label": "Record pickup for someone else",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "record_pickup_for_other",
+        "subject": "Inventory"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "view_purchase_orders",
+    "label": "View purchase orders",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "read",
+        "subject": "PurchaseOrder"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "create_purchase_orders",
+    "label": "Create purchase orders",
+    "requires": [
+      "view_purchase_orders",
+      "edit_purchase_orders"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "create",
+        "subject": "PurchaseOrder"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "edit_purchase_orders",
+    "label": "Edit purchase orders",
+    "requires": [
+      "view_purchase_orders"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "update",
+        "subject": "PurchaseOrder"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "delete_purchase_orders",
+    "label": "Delete purchase orders",
+    "requires": [
+      "view_purchase_orders"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "delete",
+        "subject": "PurchaseOrder"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "export_purchase_orders",
+    "label": "Export purchase orders",
+    "requires": [
+      "view_purchase_orders"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "export",
+        "subject": "PurchaseOrder"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "view_vendors",
+    "label": "View vendors",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "read",
+        "subject": "Vendor"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "create_vendors",
+    "label": "Create vendors",
+    "requires": [
+      "view_vendors",
+      "edit_vendors"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "create",
+        "subject": "Vendor"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "edit_vendors",
+    "label": "Edit vendors",
+    "requires": [
+      "view_vendors"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "update",
+        "subject": "Vendor"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "delete_vendors",
+    "label": "Delete vendors",
+    "requires": [
+      "view_vendors"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "delete",
+        "subject": "Vendor"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "export_vendors",
+    "label": "Export vendors",
+    "requires": [
+      "view_vendors"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "export",
+        "subject": "Vendor"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "view_logistic_orders",
+    "label": "View logistic orders",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "read",
+        "subject": "LogisticOrder"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "create_logistic_orders",
+    "label": "Create logistic orders",
+    "requires": [
+      "view_logistic_orders",
+      "edit_logistic_orders"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "create",
+        "subject": "LogisticOrder"
+      },
+      {
+        "action": "submit",
+        "subject": "LogisticOrder"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "edit_logistic_orders",
+    "label": "Edit logistic orders",
+    "requires": [
+      "view_logistic_orders"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "update",
+        "subject": "LogisticOrder"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "delete_logistic_orders",
+    "label": "Delete logistic orders",
+    "requires": [
+      "view_logistic_orders"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "delete",
+        "subject": "LogisticOrder"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "approve_logistic_orders",
+    "label": "Approve logistic orders",
+    "requires": [
+      "view_logistic_orders"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "approve",
+        "subject": "LogisticOrder"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "process_logistic_orders",
+    "label": "Process logistic orders",
+    "requires": [
+      "view_logistic_orders"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "process",
+        "subject": "LogisticOrder"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "cancel_logistic_orders",
+    "label": "Cancel logistic orders",
+    "requires": [
+      "view_logistic_orders"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "cancel",
+        "subject": "LogisticOrder"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "view_price_book",
+    "label": "View price book",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "read",
+        "subject": "PriceBook"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "create_price_book_items",
+    "label": "Create price book items",
+    "requires": [
+      "view_price_book",
+      "edit_price_book_items"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "create",
+        "subject": "PriceBook"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "edit_price_book_items",
+    "label": "Edit price book items",
+    "requires": [
+      "view_price_book"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "update",
+        "subject": "PriceBook"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "delete_price_book_items",
+    "label": "Delete price book items",
+    "requires": [
+      "view_price_book"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "delete",
+        "subject": "PriceBook"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "export_price_book",
+    "label": "Export price book",
+    "requires": [
+      "view_price_book"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "export",
+        "subject": "PriceBook"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "view_communication",
+    "label": "View communication",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "read",
+        "subject": "Communication"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "contact_customers",
+    "label": "Contact customers",
+    "requires": [
+      "view_communication"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "create",
+        "subject": "Communication"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "attach_conversations",
+    "label": "Attach conversations to jobs and leads",
+    "requires": [
+      "view_communication"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "attach",
+        "subject": "Communication"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "edit_communication_records",
+    "label": "Edit communication records",
+    "requires": [
+      "view_communication"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "update",
+        "subject": "Communication"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "delete_communication_records",
+    "label": "Delete communication records",
+    "requires": [
+      "view_communication"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "delete",
+        "subject": "Communication"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "access_communication",
+    "label": "Access Communication",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "access_inbox",
+        "subject": "Communication"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "show_phone",
+    "label": "Show Phone",
+    "requires": [
+      "access_communication"
+    ],
+    "requiresAny": [],
+    "grants": [],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "show_text",
+    "label": "Show Text",
+    "requires": [
+      "access_communication"
+    ],
+    "requiresAny": [],
+    "grants": [],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "show_email",
+    "label": "Show Email",
+    "requires": [
+      "access_communication"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "show_email",
+        "subject": "Communication"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "communication_scope",
+    "label": "Communication scope",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [],
+    "presets": null
+  },
+  {
+    "key": "see_main_line_when_no_number",
+    "label": "See the main line when I have no number",
+    "requires": [],
+    "requiresAny": [],
+    "grants": [],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "play_recording",
+    "label": "Play recording",
+    "requires": [
+      "view_communication"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "play_recording",
+        "subject": "Communication"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "view_transcript",
+    "label": "View transcript",
+    "requires": [
+      "view_communication"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "view_transcript",
+        "subject": "Communication"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "download_recording",
+    "label": "Download recording",
+    "requires": [
+      "view_communication"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "download_recording",
+        "subject": "Communication"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "download_transcript",
+    "label": "Download transcript",
+    "requires": [
+      "view_communication"
+    ],
+    "requiresAny": [],
+    "grants": [],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "see_call_insights",
+    "label": "See call insights",
+    "requires": [
+      "view_communication"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "see_call_insights",
+        "subject": "Communication"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "export_call_log",
+    "label": "Export call log",
+    "requires": [
+      "access_communication"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "export",
+        "subject": "Communication"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "log_past_communications",
+    "label": "Log past communications",
+    "requires": [
+      "view_communication"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "log_past",
+        "subject": "Communication"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": true
+    }
+  },
+  {
+    "key": "edit_others_logged_communications",
+    "label": "Edit other people's logged communications",
+    "requires": [
+      "log_past_communications"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "edit_others_log",
+        "subject": "Communication"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": false,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "phone_numbers_tab",
+    "label": "Phone numbers tab",
+    "requires": [
+      "access_communication"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "phone_numbers_tab",
+        "subject": "Communication"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "call_flows_tab",
+    "label": "Call flows tab",
+    "requires": [
+      "access_communication"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "call_flows_tab",
+        "subject": "Communication"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "call_masking_tab",
+    "label": "Call masking tab",
+    "requires": [
+      "access_communication"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "call_masking_tab",
+        "subject": "Communication"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "call_groups_tab",
+    "label": "Call groups tab",
+    "requires": [
+      "access_communication"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "call_groups_tab",
+        "subject": "Communication"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "training_tab",
+    "label": "Training tab",
+    "requires": [
+      "access_communication"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "training_tab",
+        "subject": "Communication"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "blocked_callers_tab",
+    "label": "Blocked callers tab",
+    "requires": [
+      "access_communication"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "blocked_callers_tab",
+        "subject": "Communication"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": false,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  },
+  {
+    "key": "office_phone_in_browser",
+    "label": "Office phone in the browser",
+    "requires": [
+      "contact_customers"
+    ],
+    "requiresAny": [],
+    "grants": [
+      {
+        "action": "use_browser_phone",
+        "subject": "Communication"
+      }
+    ],
+    "presets": {
+      "ADMIN": true,
+      "SALES": true,
+      "DISPATCHER": true,
+      "TECHNICIAN": false
+    }
+  }
+]

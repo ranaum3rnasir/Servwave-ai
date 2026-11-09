@@ -1,3 +1,50 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { screen } from '@testing-library/react';
+import api from '@/lib/axios';
+import { buildAbility } from '@/lib/ability';
+import { renderEstimateWorkspace, serveEstimateWorkspace } from '@/__tests__/harness/estimateWorkspacePage';
+import { ESTIMATE_STATUS } from '@/constants/estimateStatus';
+import { CONVERT_BLOCK_REASONS } from '@/features/estimate-workspace/lib/convertToJob';
+import { useAuthStore } from '@/stores/auth.store';
+
+vi.mock('react-router-dom', async () => {
+  const actual = await vi.importActual('react-router-dom');
+  return { ...actual, useParams: () => ({ id: __route.id }), useNavigate: () => vi.fn() };
+});
+vi.mock('@/features/estimate-workspace/components/EstimateTabs', () => ({ EstimateTabs: () => null }));
+vi.mock('@/components/estimates/EstimateLineItemsEditor', () => ({
+  EstimateLineItemsEditor: () => null,
+  EstimateScopeOfWorkCard: () => null,
+  estimateLinesToInvoiceShape: (lines: unknown) => lines,
+}));
+vi.mock('@/features/estimate-workspace/components/SignatureCard', () => ({ SignatureCard: () => null }));
+vi.mock('@/features/estimate-workspace/components/NotesCard', () => ({ NotesCard: () => null }));
+vi.mock('@/features/estimate-workspace/components/HistoryPanel', () => ({ HistoryPanel: () => null }));
+vi.mock('@/components/tasks/JobLeadTasksTab', () => ({ JobLeadTasksTab: () => null }));
+vi.mock('@/components/estimates/PdfPreviewDialog', () => ({ PdfPreviewDialog: () => null }));
+vi.mock('@/components/estimates/CancelEstimateDialog', () => ({ CancelEstimateDialog: () => null }));
+vi.mock('@/components/estimates/SendEstimateDialog', () => ({ SendEstimateDialog: () => null }));
+vi.mock('@/components/estimates/RecordEstimatePaymentDialog', () => ({ RecordEstimatePaymentDialog: () => null }));
+vi.mock('@/components/estimates/DuplicateEstimateDialog', () => ({ DuplicateEstimateDialog: () => null }));
+vi.mock('@/components/estimates/WaiveDepositDialog', () => ({ WaiveDepositDialog: () => null }));
+vi.mock('@/components/estimates/RefundDepositDialog', () => ({ RefundDepositDialog: () => null }));
+
+const __route = vi.hoisted(() => ({ id: '' }));
+
+// Each test starts from the setup file's signed-in user and bare client calls: reset them here, so a test states its own user
+// and answers in its own `beforeEach` (`clearAllMocks` keeps implementations).
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(useAuthStore).mockReset();
+  vi.mocked(api.get).mockReset();
+  vi.mocked(api.post).mockReset();
+  vi.mocked(api.patch).mockReset();
+  vi.mocked(api.put).mockReset();
+  vi.mocked(api.delete).mockReset();
+});
+
+// The router mock reads the id this block's file used to fix.
+beforeEach(() => { __route.id = ESTIMATE_ID; });
 /**
  * EstimateWorkspacePage - the "Create Job" hero button, and the two DIFFERENT job links it has to
  * clear before offering a conversion:
@@ -16,45 +63,12 @@
  * control is indistinguishable from a capability the product does not have. That is what made an
  * operator conclude a lead can only ever produce one job.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen } from '@testing-library/react';
-import api from '@/lib/axios';
-import { renderWithProviders } from './helpers';
-import { buildAbility } from '@/lib/ability';
-import EstimateWorkspacePage from '@/pages/v2/estimates/EstimateWorkspacePage';
-import { ESTIMATE_STATUS } from '@/constants/estimateStatus';
-import { CONVERT_BLOCK_REASONS } from '@/features/estimate-workspace/lib/convertToJob';
 
 const ESTIMATE_ID = 'est-create-job-gate-id';
 
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual('react-router-dom');
-  return { ...actual, useParams: () => ({ id: ESTIMATE_ID }), useNavigate: () => vi.fn() };
-});
-
 // Heavy sub-surfaces with no bearing on the hero buttons - stubbed out (same set as
 // estimate-copy-to-invoice.test.tsx, the sibling suite exercising this same page).
-vi.mock('@/features/estimate-workspace/components/EstimateTabs', () => ({ EstimateTabs: () => null }));
-vi.mock('@/components/estimates/EstimateLineItemsEditor', () => ({
-  EstimateLineItemsEditor: () => null,
-  EstimateScopeOfWorkCard: () => null,
-  estimateLinesToInvoiceShape: (lines: unknown) => lines,
-}));
-vi.mock('@/features/estimate-workspace/components/SignatureCard', () => ({
-  SignatureCard: () => null,
-}));
-vi.mock('@/features/estimate-workspace/components/NotesCard', () => ({ NotesCard: () => null }));
-vi.mock('@/features/estimate-workspace/components/HistoryPanel', () => ({ HistoryPanel: () => null }));
-vi.mock('@/components/tasks/JobLeadTasksTab', () => ({ JobLeadTasksTab: () => null }));
-vi.mock('@/components/estimates/PdfPreviewDialog', () => ({ PdfPreviewDialog: () => null }));
-vi.mock('@/components/estimates/CancelEstimateDialog', () => ({ CancelEstimateDialog: () => null }));
-vi.mock('@/components/estimates/SendEstimateDialog', () => ({ SendEstimateDialog: () => null }));
-vi.mock('@/components/estimates/RecordEstimatePaymentDialog', () => ({ RecordEstimatePaymentDialog: () => null }));
-vi.mock('@/components/estimates/DuplicateEstimateDialog', () => ({ DuplicateEstimateDialog: () => null }));
-vi.mock('@/components/estimates/WaiveDepositDialog', () => ({ WaiveDepositDialog: () => null }));
-vi.mock('@/components/estimates/RefundDepositDialog', () => ({ RefundDepositDialog: () => null }));
 
-const adminAbility = buildAbility([{ action: 'manage', subject: 'all' }]);
 // Everything EXCEPT `create Job` - the one case that must still render nothing at all.
 const noJobAbility = buildAbility([
   { action: 'manage', subject: 'Estimate' },
@@ -122,11 +136,7 @@ const WON_ESTIMATE = {
 };
 
 function setupMocks(fixture: Record<string, unknown>) {
-  vi.mocked(api.get).mockImplementation(async (url: string) => {
-    if (url.includes('/state-tax-rates')) return { data: { data: [] } };
-    if (url.includes('/api/estimates/')) return { data: { estimate: fixture } };
-    return { data: {} };
-  });
+  serveEstimateWorkspace({ estimate: fixture });
 }
 
 beforeEach(() => {
@@ -136,14 +146,14 @@ beforeEach(() => {
 describe('EstimateWorkspacePage - "Create Job" gating', () => {
   it('offers Create Job on a WON estimate with neither a provenance job nor a job anchor', async () => {
     setupMocks(WON_ESTIMATE);
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     expect(await screen.findByRole('button', { name: /Create Job/i })).toBeInTheDocument();
   });
 
   it('a JOB-ANCHORED estimate (attached to ANOTHER job) shows the button DISABLED, with its reason', async () => {
     setupMocks({ ...WON_ESTIMATE, job_id: 'job-anchor-1', job: null });
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     const button = await screen.findByRole('button', { name: /Create Job/i });
     expect(button).toBeDisabled();
@@ -152,7 +162,7 @@ describe('EstimateWorkspacePage - "Create Job" gating', () => {
 
   it('a SENT estimate shows the button DISABLED, saying it must be won first', async () => {
     setupMocks({ ...WON_ESTIMATE, status: ESTIMATE_STATUS.SENT, approved_at: null });
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     const button = await screen.findByRole('button', { name: /Create Job/i });
     expect(button).toBeDisabled();
@@ -163,7 +173,7 @@ describe('EstimateWorkspacePage - "Create Job" gating', () => {
     // Cause and effect, stated as the pair. The gate reads `estimate.status` on every render and
     // latches nothing, so the moment the status mutation lands the control is live.
     setupMocks(WON_ESTIMATE);
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     const button = await screen.findByRole('button', { name: 'Create Job' });
     expect(button).toBeEnabled();
@@ -180,7 +190,7 @@ describe('EstimateWorkspacePage - "Create Job" gating', () => {
       job_id: 'job-1',
       job: { id: 'job-1', job_number: 'J00010', status: 'SCHEDULED' },
     });
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     const button = await screen.findByRole('button', { name: 'View Job' });
     expect(button).toBeEnabled();
@@ -197,7 +207,7 @@ describe('EstimateWorkspacePage - "Create Job" gating', () => {
       estimate_number: 'L00005-2',
       lead: { ...WON_ESTIMATE.lead, status: 'WON' },
     });
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     const button = await screen.findByRole('button', { name: /Create Job/i });
     expect(button).toBeEnabled();
@@ -205,7 +215,7 @@ describe('EstimateWorkspacePage - "Create Job" gating', () => {
 
   it('renders NO control at all for a requester without create Job - a grant must not advertise itself', async () => {
     setupMocks({ ...WON_ESTIMATE, status: ESTIMATE_STATUS.SENT, approved_at: null });
-    renderWithProviders(<EstimateWorkspacePage />, { ability: noJobAbility });
+    renderEstimateWorkspace({ ability: noJobAbility });
 
     // Wait for the estimate to actually LAND before asserting absence - otherwise "no button"
     // would pass trivially on the loading state.

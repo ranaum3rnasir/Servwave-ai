@@ -223,7 +223,7 @@ suite('the alerts that have no record (real database)', () => {
         // The person's one live invite, as an admin's invitation makes it.
         const inviteToken = await issueInviteToken(invitee);
         vi.mocked(supabaseAdmin.auth.admin.createUser).mockResolvedValue({ data: { user: { id: randomUUID() } }, error: null } as never);
-        const app = (await import('../app.js')).default as never;
+        const app = await fx.listener();
         const res = await request(app).post('/api/auth/accept-invite')
           .send({ token: inviteToken, password: 'sup3rsecret99', accepted_terms: true });
         expect(res.status, JSON.stringify(res.body)).toBe(200);

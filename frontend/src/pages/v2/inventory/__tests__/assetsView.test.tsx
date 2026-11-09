@@ -25,9 +25,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-import { renderWithProviders, inventoryWriteAbility, seedMySwitches } from '@/__tests__/helpers';
+import { inventoryWriteAbility, seedMySwitches } from '@/__tests__/helpers';
 import { buildAbility } from '@/lib/ability';
-import InventoryPage from '@/pages/v2/inventory/InventoryPage';
+import { renderInventory } from '@/__tests__/harness/inventoryPage';
 
 const h = vi.hoisted(() => {
   const ACTIVE_ASSET = {
@@ -133,33 +133,21 @@ const h = vi.hoisted(() => {
 });
 
 vi.mock('@/lib/api/inventory', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/inventory')>();
-  const EMPTY: never[] = [];
-  const stable =
-    <T,>(data: T) =>
-    () => ({ data, isLoading: false, isError: false });
-  const mutation = () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false });
-  return {
-    ...actual,
-    useInventoryItems: stable(EMPTY),
-    useLocations: stable(EMPTY),
-    useVendors: stable(EMPTY),
-    useCategories: stable(EMPTY),
-    useBranches: stable(EMPTY),
-    useBrands: stable(EMPTY),
-    useJobStages: stable(EMPTY),
-    useMovements: stable(EMPTY),
-    useLowStock: stable(EMPTY),
-    usePurchaseOrders: stable(EMPTY),
-    useUpsertItem: mutation,
-    useAssets: h.useAssetsMock,
-    useAssetEvents: h.useAssetEventsMock,
-    useCreateAsset: mutation,
-    useUpdateAsset: mutation,
-    useDeleteAsset: () => h.DELETE_ASSET,
-    useAssetAction: mutation,
-    useUploadAssetPhoto: mutation,
-  };
+  return (await import('@/__tests__/harness/inventoryApiStub')).inventoryApi(
+    await importOriginal<typeof import('@/lib/api/inventory')>(),
+    {
+      reads: {
+        useLowStock: [],
+        usePurchaseOrders: [],
+      },
+      mutations: ['useUpsertItem', 'useCreateAsset', 'useUpdateAsset', 'useAssetAction', 'useUploadAssetPhoto'],
+      custom: {
+        useAssets: h.useAssetsMock,
+        useAssetEvents: h.useAssetEventsMock,
+        useDeleteAsset: () => h.DELETE_ASSET,
+      },
+    },
+  );
 });
 
 // The v2 page carries a Logistic Orders tab the legacy page's assets spec
@@ -188,8 +176,8 @@ vi.mock('@/lib/api/users', async (importOriginal) => {
 function renderAssetsView() {
   // A writer who sees every asset (Assets scope All), as today: the holder filter and the Assignee column show.
   seedMySwitches({ assets_scope: 'all' });
-  return renderWithProviders(<InventoryPage />, {
-    initialEntries: ['/inventory/assets'],
+  return renderInventory({
+    entry: '/inventory/assets',
     // #2043 - the row kebab, the history panel and its actions all gate on
     // update/delete Inventory now; this suite exercises the writer's path.
     ability: inventoryWriteAbility(),
@@ -385,8 +373,8 @@ describe('v2 InventoryPage - Assets tab', () => {
   });
 
   it('an empty timeline drops the hint to a bare "No history yet." for a read-only requester', async () => {
-    renderWithProviders(<InventoryPage />, {
-      initialEntries: ['/inventory/assets'],
+    renderInventory({
+      entry: '/inventory/assets',
       ability: buildAbility([{ action: 'read', subject: 'Inventory' }]),
     });
     await screen.findByText('DeWalt Hammer Drill');
@@ -402,8 +390,8 @@ describe('v2 InventoryPage - Assets tab', () => {
   // Add note, Edit, Retire) gates on `update Inventory` as one boolean; this
   // pair pins both directions so a regression that drops that gate is caught.
   it('assetHistoryPanel: hides Transfer / Return / Add note / Edit / Retire for a read-only ability, keeps the timeline', async () => {
-    renderWithProviders(<InventoryPage />, {
-      initialEntries: ['/inventory/assets'],
+    renderInventory({
+      entry: '/inventory/assets',
       ability: buildAbility([{ action: 'read', subject: 'Inventory' }]),
     });
     fireEvent.click(await screen.findByText('DeWalt Hammer Drill'));

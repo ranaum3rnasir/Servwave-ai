@@ -88,7 +88,7 @@ suite('Pages and settings follow switches; the dashboard and reference data answ
 
     it('still answers nobody who is not signed in', async () => {
       await fx.newOrg();
-      const server = (await import('../app.js')).default as never;
+      const server = await fx.listener();
       expect((await request(server).get('/api/dashboard')).status).toBe(401);
     });
   });
@@ -131,7 +131,7 @@ suite('Pages and settings follow switches; the dashboard and reference data answ
     });
 
     it('stays closed to a person who is not signed in', async () => {
-      const server = (await import('../app.js')).default as never;
+      const server = await fx.listener();
       for (const path of ['/api/organization', '/api/org-tax-rates', '/api/state-tax-rates', '/api/job-sub-statuses']) {
         expect((await request(server).get(path)).status, path).toBe(401);
       }

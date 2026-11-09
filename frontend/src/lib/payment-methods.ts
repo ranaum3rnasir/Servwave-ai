@@ -1,4 +1,4 @@
-import type { PaymentMethod } from '@/lib/api/organization';
+import type { PaymentMethod } from '@/lib/api/shared/organization';
 
 // User-facing copy only. The processor behind CARD is Stripe, but that name never appears in the
 // UI (Ran, 2026-08-04) - orgs and their customers see the payment METHOD, not the vendor we route

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 
 import { useAppAbility } from '@/contexts/AbilityContext';
-import { useOrganization, useUpdateOrganization, type OrgFormValues } from '@/lib/api/organization';
+import { useOrganization, useUpdateOrganization, type OrgFormValues } from '@/lib/api/shared/organization';
 import { formatPhone } from '@/lib/utils';
 
 import { Input } from '@/ui-kit/components/ui/input';

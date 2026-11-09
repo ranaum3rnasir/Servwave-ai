@@ -40,7 +40,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ReceiptCard } from '@/components/jobs/items/ReceiptCard';
 import { toNum, netOf, countsTowardTotals } from '@/components/jobs/items/money';
 import { resolveDepositState, round2 } from '@/lib/deposit';
-import { useOrganization } from '@/lib/api/organization';
+import { useOrganization } from '@/lib/api/shared/organization';
 import { fetchStateTaxRates } from '@/lib/api/invoices';
 import { updateEstimate, type EstimateLineItem, type Scope } from '@/lib/api/estimates';
 import { toast } from '@/components/ui/use-toast';

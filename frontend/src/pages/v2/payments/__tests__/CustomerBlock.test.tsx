@@ -15,8 +15,8 @@ const state = vi.hoisted(() => ({
   bridge: false,
 }));
 
-vi.mock('@/lib/api/mySwitches', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/lib/api/mySwitches')>()),
+vi.mock('@/lib/api/shared/mySwitches', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/api/shared/mySwitches')>()),
   useMySwitches: () => ({ admin_box: false, values: state.switches }),
 }));
 vi.mock('@/lib/entitlements', async (importOriginal) => ({

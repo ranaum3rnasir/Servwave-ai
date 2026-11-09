@@ -16,7 +16,7 @@ vi.mock("@/components/contact/useContactPolicyInput", () => ({
     phoneService: true,
   }),
 }));
-vi.mock("@/lib/api/organization", () => ({
+vi.mock("@/lib/api/shared/organization", () => ({
   useOrganization: () => ({ data: { timezone: "America/New_York" } }),
 }));
 vi.mock("@/lib/api/communication", () => ({

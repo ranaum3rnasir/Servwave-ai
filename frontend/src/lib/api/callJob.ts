@@ -10,8 +10,8 @@
 
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/axios';
-import type { ConversationLinkResult } from '@/lib/api/communication';
-import { invalidateAllLeadViews } from '@/lib/api/jobCommunications';
+import type { ConversationLinkResult } from '@/lib/api/shared/conversationTypes';
+import { invalidateAllLeadViews } from '@/lib/api/shared/leadViews';
 
 /** Every surface that renders a call row, invalidated as one. */
 function useCallLinkInvalidation() {

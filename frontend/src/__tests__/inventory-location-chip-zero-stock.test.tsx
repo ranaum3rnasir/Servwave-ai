@@ -19,8 +19,7 @@
 // tooltip names them. Both halves are asserted here - they are one behaviour.
 import { describe, it, expect, vi } from 'vitest';
 import { screen, within } from '@testing-library/react';
-import { renderWithProviders } from './helpers';
-import InventoryPage from '@/pages/v2/inventory/InventoryPage';
+import { renderInventory } from '@/__tests__/harness/inventoryPage';
 import { buildAbility } from '@/lib/ability';
 
 const h = vi.hoisted(() => ({
@@ -35,11 +34,6 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock('@/lib/api/inventory', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/inventory')>();
-  const EMPTY: never[] = [];
-  const stable =
-    <T,>(data: T) =>
-    () => ({ data, isLoading: false, isError: false });
   const base = {
     category: 'Hardware',
     trade: 'locksmith',
@@ -54,61 +48,59 @@ vi.mock('@/lib/api/inventory', async (importOriginal) => {
     vendor: '',
     updatedAt: '2026-08-11T00:00:00.000Z',
   };
-  return {
-    ...actual,
-    useInventoryItems: stable([
-      {
-        ...base,
-        id: h.ZERO_ITEM,
-        sku: 'ZERO-1',
-        name: 'Cable 18/6',
-        // Stocked at the warehouse (positive) AND assigned to the van at zero.
-        stock: [
-          { locationId: h.LOC_WH, onHand: 4 },
-          { locationId: h.LOC_VAN, onHand: 0 },
-        ],
+  return (await import('@/__tests__/harness/inventoryApiStub')).inventoryApi(
+    await importOriginal<typeof import('@/lib/api/inventory')>(),
+    {
+      reads: {
+        useInventoryItems: [
+        {
+          ...base,
+          id: h.ZERO_ITEM,
+          sku: 'ZERO-1',
+          name: 'Cable 18/6',
+          // Stocked at the warehouse (positive) AND assigned to the van at zero.
+          stock: [
+            { locationId: h.LOC_WH, onHand: 4 },
+            { locationId: h.LOC_VAN, onHand: 0 },
+          ],
+        },
+        {
+          ...base,
+          id: h.NEG_ITEM,
+          sku: 'NEG-1',
+          name: 'Door Closer CX5016',
+          stock: [{ locationId: h.LOC_WH, onHand: -1 }],
+        },
+        {
+          ...base,
+          id: h.NOSTOCK_ITEM,
+          sku: 'NOSTOCK-1',
+          name: 'Unassigned Widget',
+          stock: [],
+        },
+        {
+          ...base,
+          id: h.MANY_ITEM,
+          sku: 'MANY-1',
+          name: 'Strike Plate SP2',
+          // Four assignments: two chips render, the other two collapse into "+2".
+          stock: [
+            { locationId: h.LOC_WH, onHand: 4 },
+            { locationId: h.LOC_VAN, onHand: 0 },
+            { locationId: h.LOC_VAN2, onHand: 2 },
+            { locationId: h.LOC_VAN3, onHand: 7 },
+          ],
+        },
+      ],
+        useLocations: [
+        { id: h.LOC_WH, name: 'Alpha HQ', type: 'warehouse', branch: 'HQ' },
+        { id: h.LOC_VAN, name: 'Kai Van', type: 'truck', branch: 'HQ' },
+        { id: h.LOC_VAN2, name: 'Marcus Van', type: 'truck', branch: 'HQ' },
+        { id: h.LOC_VAN3, name: 'Priya Van', type: 'truck', branch: 'HQ' },
+      ],
       },
-      {
-        ...base,
-        id: h.NEG_ITEM,
-        sku: 'NEG-1',
-        name: 'Door Closer CX5016',
-        stock: [{ locationId: h.LOC_WH, onHand: -1 }],
-      },
-      {
-        ...base,
-        id: h.NOSTOCK_ITEM,
-        sku: 'NOSTOCK-1',
-        name: 'Unassigned Widget',
-        stock: [],
-      },
-      {
-        ...base,
-        id: h.MANY_ITEM,
-        sku: 'MANY-1',
-        name: 'Strike Plate SP2',
-        // Four assignments: two chips render, the other two collapse into "+2".
-        stock: [
-          { locationId: h.LOC_WH, onHand: 4 },
-          { locationId: h.LOC_VAN, onHand: 0 },
-          { locationId: h.LOC_VAN2, onHand: 2 },
-          { locationId: h.LOC_VAN3, onHand: 7 },
-        ],
-      },
-    ]),
-    useLocations: stable([
-      { id: h.LOC_WH, name: 'Alpha HQ', type: 'warehouse', branch: 'HQ' },
-      { id: h.LOC_VAN, name: 'Kai Van', type: 'truck', branch: 'HQ' },
-      { id: h.LOC_VAN2, name: 'Marcus Van', type: 'truck', branch: 'HQ' },
-      { id: h.LOC_VAN3, name: 'Priya Van', type: 'truck', branch: 'HQ' },
-    ]),
-    useVendors: stable(EMPTY),
-    useCategories: stable(EMPTY),
-    useBranches: stable(EMPTY),
-    useBrands: stable(EMPTY),
-    useJobStages: stable(EMPTY),
-    useMovements: stable(EMPTY),
-  };
+    },
+  );
 });
 
 const inventoryAbility = () =>
@@ -118,8 +110,8 @@ const inventoryAbility = () =>
   ]);
 
 const renderGrid = () =>
-  renderWithProviders(<InventoryPage />, {
-    initialEntries: ['/inventory'],
+  renderInventory({
+    entry: '/inventory',
     ability: inventoryAbility(),
   });
 

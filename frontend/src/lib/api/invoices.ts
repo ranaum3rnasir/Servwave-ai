@@ -13,9 +13,9 @@
 import api from '@/lib/axios';
 import type { ResolvedCatalogItemFields } from '@/lib/catalog/itemPresentation';
 import type { RefundCategory, VoidPaymentReason, PaymentMethod } from '@/types/entities';
-// Scope is defined once in jobs.ts (Job needs the richer listJobScopes) and imported here so
+// Scope is defined once in shared/scope.ts (jobs.ts and estimates.ts use it too) and re-exported here so
 // Job.scopes / Invoice.scopes — the same JSONB shape on both entities — never silently drift.
-export type { Scope } from './jobs';
+export type { Scope } from './shared/scope';
 
 /** Body for POST /api/invoices/:id/refund — partial-capable. */
 export interface RefundInvoicePayload {

@@ -6,7 +6,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import { useLocation } from 'react-router-dom';
-import { renderWithProviders } from '@/__tests__/helpers';
+import { renderInbox } from '@/__tests__/harness/inboxPage';
 import { buildAbility } from '@/lib/ability';
 import type { Email } from '@/lib/api/communication';
 
@@ -23,27 +23,18 @@ const EMAILS: Email[] = [
   message('m-old', 'thr-asked', { ts: 2 }),
   message('m-new', 'thr-asked', { ts: 3 }),
 ];
-const NOTHING: unknown[] = [];
-
-vi.mock('@/lib/api/communication', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/communication')>();
-  return {
-    ...actual,
-    useEmails: (...args: unknown[]) => {
-      hoisted.emailsAskedFor.push(args);
-      return { data: EMAILS };
+vi.mock('@/lib/api/communication', async (importOriginal) =>
+  (await import('@/__tests__/harness/inboxApiStub')).communicationStubs(await importOriginal<typeof import('@/lib/api/communication')>(), {
+    leave: ['useMyMailbox'],
+    hooks: {
+      useEmails: (...args: unknown[]) => {
+        hoisted.emailsAskedFor.push(args);
+        return { data: EMAILS };
+      },
+      useSendingIdentity: () => ({ data: { status: 'active', address: 'me@mail.test', name: 'Me', sendingEnabled: true } }),
+      useMarkEmailThreadRead: () => ({ mutate: hoisted.markThreadReadMutate }),
     },
-    useEmailGroups: () => ({ data: NOTHING }),
-    useForwardRules: () => ({ data: NOTHING }),
-    useTeamMembers: () => ({ data: NOTHING }),
-    useSendingIdentity: () => ({ data: { status: 'active', address: 'me@mail.test', name: 'Me', sendingEnabled: true } }),
-    useMarkEmailThreadRead: () => ({ mutate: hoisted.markThreadReadMutate }),
-    useMarkEmailThreadUnread: () => ({ mutate: vi.fn() }),
-    useSendEmail: () => ({ mutate: vi.fn(), isPending: false }),
-  };
-});
-
-import InboxPage from '@/pages/v2/communication/InboxPage';
+  }));
 
 function Where() {
   const location = useLocation();
@@ -53,7 +44,7 @@ const ability = buildAbility([
   { action: 'read', subject: 'Communication' },
   { action: 'access_inbox', subject: 'Communication' },
 ]);
-const renderAt = (entry: string) => renderWithProviders(<><InboxPage /><Where /></>, { ability, initialEntries: [entry] });
+const renderAt = (entry: string) => renderInbox({ ability, entry, beside: <Where /> });
 
 beforeEach(() => {
   hoisted.markThreadReadMutate.mockClear();

@@ -6,8 +6,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AbilityProvider } from '@/contexts/AbilityContext';
 import { buildAbility } from '@/lib/ability';
-import type { Organization } from '@/lib/api/organization';
-import { useOrganization } from '@/lib/api/organization';
+import type { Organization } from '@/lib/api/shared/organization';
+import { useOrganization } from '@/lib/api/shared/organization';
 
 import V2AppLayout from '../V2AppLayout';
 
@@ -44,7 +44,7 @@ vi.mock('@/lib/api/communication', () => ({
 }));
 
 // The one query this file does care about.
-vi.mock('@/lib/api/organization', () => ({ useOrganization: vi.fn() }));
+vi.mock('@/lib/api/shared/organization', () => ({ useOrganization: vi.fn() }));
 
 const ORG = {
   id: 'org-1',

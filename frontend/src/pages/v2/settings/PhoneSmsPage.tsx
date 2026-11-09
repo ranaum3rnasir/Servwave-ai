@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 
-import { useOrganization } from '@/lib/api/organization';
-import { isPhoneConnected, isSmsReady } from '@/lib/api/phoneConnected';
+import { useOrganization } from '@/lib/api/shared/organization';
+import { isPhoneConnected, isSmsReady } from '@/lib/api/shared/phoneConnected';
 import { postPhoneOrgAction } from '@/lib/api/phoneOrgActions';
 import { useAppAbility } from '@/contexts/AbilityContext';
 import { extractApiError } from '@/lib/utils';

@@ -11,8 +11,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { screen } from '@testing-library/react';
-import { renderWithProviders } from './helpers';
-import PublicEstimatePage from '@/pages/v2/auth-public/PublicEstimatePage';
+import { renderPublicEstimate, servePublicEstimate } from '@/__tests__/harness/publicEstimatePage';
 
 const dialogLoaded = vi.hoisted(() => ({ value: false }));
 vi.mock('@/pages/v2/auth-public/components/declineDialog', () => {
@@ -20,17 +19,10 @@ vi.mock('@/pages/v2/auth-public/components/declineDialog', () => {
   return { default: () => null, DeclineDialog: () => null };
 });
 
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
-  return {
-    ...actual,
-    useParams: () => ({ id: 'est-warm' }),
-    useSearchParams: () => [new URLSearchParams('token=tok-warm'), vi.fn()],
-  };
-});
+vi.mock('react-router-dom', async () => (await import('@/__tests__/harness/publicEstimateMocks')).publicRouter());
 
 // jsdom has no canvas; the signature pad is not what this test is about.
-vi.mock('react-signature-canvas', () => ({ default: () => null }));
+vi.mock('react-signature-canvas', async () => (await import('@/__tests__/harness/publicEstimateMocks')).blankPad());
 
 const RESPONSE = {
   estimate: {
@@ -67,15 +59,15 @@ describe('public estimate: warming the decline dialog', () => {
 
   it('waits for the estimate to be on screen, and then for a quiet period', async () => {
     // Part 1: a fetch that never answers, so the page stays on its loading state.
-    vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})));
-    const first = renderWithProviders(<PublicEstimatePage />);
+    servePublicEstimate({ never: true });
+    const first = renderPublicEstimate({ id: 'est-warm', token: 'tok-warm' });
     await vi.advanceTimersByTimeAsync(20_000);
     expect(dialogLoaded.value, 'not fetched while the estimate is still loading').toBe(false);
     first.unmount();
 
     // Part 2: the estimate arrives.
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => RESPONSE }));
-    renderWithProviders(<PublicEstimatePage />);
+    servePublicEstimate({ page: RESPONSE });
+    renderPublicEstimate({ id: 'est-warm', token: 'tok-warm' });
     expect(await screen.findByRole('button', { name: /^Decline$/ })).toBeInTheDocument();
     expect(dialogLoaded.value, 'not at the moment the document appears').toBe(false);
     await vi.advanceTimersByTimeAsync(1000);

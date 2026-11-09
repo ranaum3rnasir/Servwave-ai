@@ -7,20 +7,9 @@ import { Card } from '@/ui-kit/components/ui/card';
 import { Checkbox } from '@/ui-kit/components/ui/checkbox';
 import { Switch } from '@/ui-kit/components/ui/switch';
 import { cn } from '@/ui-kit/lib/utils';
-import {
-  ALL_ACCEPTED,
-  type AcceptedPaymentMethods,
-  clearDependents,
-  sameValue,
-  unmetRequirement,
-  type CatalogSwitch,
-  type LayoutExtra,
-  type LayoutModule,
-  type SwitchCatalog,
-  type SwitchSet,
-  type SwitchValue,
-  type UnmetRequirement,
-} from '@/lib/api/permissionSwitches';
+import { ALL_ACCEPTED, clearDependents, sameValue, unmetRequirement, type CatalogSwitch, type LayoutExtra, type LayoutModule, type SwitchCatalog, type UnmetRequirement } from '@/lib/api/permissionSwitches';
+import { type AcceptedPaymentMethods } from '@/lib/api/recordablePaymentMethods';
+import { type SwitchSet, type SwitchValue } from '@/lib/api/shared/switchTypes';
 
 import { HelpIcon } from './HelpIcon';
 import { choiceLabel, optionLabel, valueText } from './switchValueText';

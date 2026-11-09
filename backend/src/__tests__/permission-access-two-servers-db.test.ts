@@ -36,6 +36,8 @@ vi.mock('../lib/email', async (importOriginal) => ({
   sendUserInviteEmail: vi.fn().mockResolvedValue(true),
 }));
 
+import type { RequestListener } from 'http';
+import { listenOnLoopback, closeServer } from './loopback-app';
 import { switchFixture, type Person } from './permission-switches-fixture';
 
 const suite = realClient ? describe : describe.skip;
@@ -45,6 +47,7 @@ type Call = request.Test;
 interface Server {
   as(person: Person): { get(path: string): Call; put(path: string, body: object): Call; patch(path: string, body: object): Call; post(path: string, body?: object): Call; delete(path: string, body?: object): Call };
   providerAdmin: { listUsers: Mock; deleteUser: Mock; signOut: Mock };
+  close(): Promise<void>;
 }
 
 /** Everyone the identity provider knows, by the bearer token it gives them: `Bearer t37-<id>`. */
@@ -52,7 +55,7 @@ const known = new Map<string, Person>();
 
 /** One copy of the app with its own memory, its sign-in answered by the stubbed identity provider. */
 async function loadServer(): Promise<Server> {
-  const app = (await import('../app.js')).default as unknown as Parameters<typeof request>[0];
+  const app = await listenOnLoopback((await import('../app.js')).default as unknown as RequestListener);
   const { supabaseAdmin } = await import('../lib/supabase.js');
   (supabaseAdmin.auth.getUser as Mock).mockImplementation(async (token: string) => {
     const person = known.get(token.replace(/^t37-/, ''));
@@ -66,6 +69,7 @@ async function loadServer(): Promise<Server> {
   admin.listUsers.mockResolvedValue({ data: { users: [], nextPage: null }, error: null });
   return {
     providerAdmin: admin,
+    close: () => closeServer(app),
     as(person: Person) {
       known.set(person.id, person);
       const bearer = `Bearer t37-${person.id}`;
@@ -94,7 +98,11 @@ suite('a change to someone\'s access reaches every server on its next request (r
     vi.resetModules();
     B = await loadServer();
   }, 180_000);
-  afterAll(() => fx.cleanup());
+  afterAll(async () => {
+    await A?.close();
+    await B?.close();
+    await fx.cleanup();
+  });
 
   interface Case {
     change: string;

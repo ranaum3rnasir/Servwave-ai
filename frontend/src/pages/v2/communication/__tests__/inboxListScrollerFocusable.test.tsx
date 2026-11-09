@@ -10,7 +10,7 @@
 // jsdom lays nothing out, so overflow is simulated through scrollHeight / clientHeight.
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { screen } from '@testing-library/react';
-import { renderWithProviders } from '@/__tests__/helpers';
+import { renderInbox } from '@/__tests__/harness/inboxPage';
 import { buildAbility } from '@/lib/ability';
 import type { Email } from '@/lib/api/communication';
 
@@ -34,25 +34,13 @@ const ROW: Email = {
   folder: 'inbox',
 };
 
-const NONE: never[] = [];
 const state = { emails: [] as Email[] };
 
-vi.mock('@/lib/api/communication', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/communication')>();
-  return {
-    ...actual,
-    useEmails: () => ({ data: state.emails }),
-    useEmailGroups: () => ({ data: NONE }),
-    useForwardRules: () => ({ data: NONE }),
-    useTeamMembers: () => ({ data: NONE }),
-    useSendingIdentity: () => ({ data: undefined }),
-    useMarkEmailThreadRead: () => ({ mutate: vi.fn() }),
-    useMarkEmailThreadUnread: () => ({ mutate: vi.fn() }),
-    useSendEmail: () => ({ mutate: vi.fn(), isPending: false }),
-  };
-});
-
-import InboxPage from '@/pages/v2/communication/InboxPage';
+vi.mock('@/lib/api/communication', async (importOriginal) =>
+  (await import('@/__tests__/harness/inboxApiStub')).communicationStubs(await importOriginal<typeof import('@/lib/api/communication')>(), {
+    leave: ['useMyMailbox'],
+    hooks: { useEmails: () => ({ data: state.emails }) },
+  }));
 
 const restore: Array<() => void> = [];
 afterEach(() => {
@@ -74,7 +62,7 @@ function layout(scrollHeight: number, clientHeight: number) {
   }
 }
 
-const render = () => renderWithProviders(<InboxPage />, { ability });
+const render = () => renderInbox({ ability });
 
 describe('inbox list scroller keyboard access (axe scrollable-region-focusable)', () => {
   it('is a focusable, named region while an empty list scrolls', () => {

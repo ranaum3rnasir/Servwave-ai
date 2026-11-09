@@ -13,7 +13,7 @@ import { Input } from "@/components/ui/input";
 import { SelectField } from "@/components/form/SelectField";
 import { FormField } from "@/components/patterns/FormField";
 import { useSetThresholds, type Item, type Location } from "@/lib/api/inventory";
-import { useOrganization } from "@/lib/api/organization";
+import { useOrganization } from "@/lib/api/shared/organization";
 import { extractApiError } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { canAutoFocus } from "@/ui-kit/lib/autoFocus";

@@ -4,7 +4,7 @@ import { Modal } from "@/components/ui/modal";
 import { FormField } from "@/components/patterns/FormField";
 import { useTechs, useBranches, useInventoryItems } from "@/lib/api/inventory";
 import type { StockApproval } from "@/lib/api/inventory";
-import { useOrganization } from "@/lib/api/organization";
+import { useOrganization } from "@/lib/api/shared/organization";
 // `ApprovalActionType` + `approvalTypeLabel` are not re-exported by the seam
 // (`lib/api/inventory.ts`) yet — see `concerns`. Type-only `_mock` import is
 // allowed by the port rules when the seam lacks a needed type; the runtime

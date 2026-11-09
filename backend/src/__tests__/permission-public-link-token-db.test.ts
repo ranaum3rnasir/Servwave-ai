@@ -68,7 +68,7 @@ suite('N0: a customer link opens only with its own token, as plain text (real da
   const fx = switchFixture(db, async () => (await import('../app.js')).default as never);
   let app: Parameters<typeof request>[0];
   beforeAll(async () => {
-    app = (await import('../app.js')).default as never;
+    app = await fx.listener();
   }, 120_000);
   afterAll(() => fx.cleanup());
 

@@ -37,7 +37,7 @@ import { renamedSwitchKey } from '../lib/permissions/switches/presetMigrationRen
 import {
   dryRunReport, driftReport, formatDriftReport, formatDryRunReport, formatProofReport, inReadOnlyTransaction, proofReport,
 } from '../lib/permissions/switches/presetMigrationReport';
-import { deployMigrations } from './migration-deploy-support';
+import { deployMigrations, createMigrationDatabase } from './migration-deploy-support';
 
 // The store reads through the app's client; point it at the scratch database the suite migrates (set once it exists).
 const scratch = vi.hoisted(() => ({ client: undefined as unknown }));
@@ -93,7 +93,7 @@ suite('the preset migration (real database)', () => {
 
   async function createDatabase(): Promise<{ dbUrl: string; client: Db }> {
     const name = `s0122_mig_${randomUUID().slice(0, 8)}`;
-    await admin.$executeRawUnsafe(`CREATE DATABASE "${name}"`);
+    await createMigrationDatabase(admin, name, PRESET_MIGRATION_NAME, tempDirs);
     databases.push(name);
     const u = new URL(server.toString());
     u.pathname = `/${name}`;

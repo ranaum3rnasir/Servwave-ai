@@ -9,10 +9,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import api from '@/lib/axios';
-import { renderWithProviders, ALL_JOB_ACTIONS } from './helpers';
-import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
-import { buildAbility } from '@/lib/ability';
+import { ALL_JOB_ACTIONS } from './helpers';
+import { JOB_ID, mountJobDetail, stubBrowser } from './harness/jobDetailPage';
 import { requestCall } from '@/lib/communication/phoneTabHandoff';
 import { formatPhone } from '@/lib/utils';
 import { catalogToggle } from './support/backendSwitchCatalog';
@@ -20,17 +18,9 @@ import { catalogToggle } from './support/backendSwitchCatalog';
 vi.mock('@/components/tasks/JobLeadTasksTab', () => ({ JobLeadTasksTab: () => null }));
 vi.mock('@/lib/communication/phoneTabHandoff', () => ({ requestCall: vi.fn() }));
 
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual('react-router-dom');
-  return { ...actual, useParams: () => ({ id: 'j0000000-0000-0000-0000-000000000001' }) };
-});
+vi.mock('react-router-dom', async () => (await import('./harness/jobDetailRouter')).jobDetailRouter());
 
 // Whether the company has the phone service, toggled per test.
 const phoneService = vi.hoisted(() => ({ value: true }));
@@ -39,8 +29,6 @@ vi.mock('@/lib/entitlements', async (importOriginal) => ({
   useFeature: () => phoneService.value,
 }));
 
-const mockApi = vi.mocked(api);
-const adminAbility = buildAbility([{ action: 'manage', subject: 'all' }]);
 
 type Switches = { copyPhone: boolean; contact: boolean };
 
@@ -56,7 +44,6 @@ function meAnswer(s: Switches) {
   };
 }
 
-const JOB_ID = 'j0000000-0000-0000-0000-000000000001';
 const DISPATCHER_PHONE = '5551230001';
 const TECH_PHONE = '5551230002';
 
@@ -98,12 +85,10 @@ const JOB = {
 
 function renderJobPage(switches: Switches, opts: { service?: boolean } = {}) {
   phoneService.value = opts.service ?? true;
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url === '/api/permission-switches/me') return { data: meAnswer(switches) };
-    if (url.includes('/api/jobs/')) return { data: { job: JOB } };
-    return { data: {} };
+  return mountJobDetail({
+    job: JOB,
+    routes: [{ match: (url) => url === '/api/permission-switches/me', data: meAnswer(switches) }],
   });
-  return renderWithProviders(<JobDetailPage />, { ability: adminAbility });
 }
 
 /** The crew card, once the page has drawn it. */

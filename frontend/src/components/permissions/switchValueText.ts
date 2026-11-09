@@ -1,6 +1,7 @@
 import { PAYMENT_METHOD_LABELS } from '@/lib/payment-methods';
-import type { PaymentMethod } from '@/lib/api/organization';
-import { ALL_ACCEPTED, type CatalogSwitch, type SwitchValue } from '@/lib/api/permissionSwitches';
+import type { PaymentMethod } from '@/lib/api/shared/organization';
+import { ALL_ACCEPTED, type CatalogSwitch } from '@/lib/api/permissionSwitches';
+import { type SwitchValue } from '@/lib/api/shared/switchTypes';
 
 /**
  * A switch's value in the words the switch-set editor reads it in, shared by the editor and the change logs so a value

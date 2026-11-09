@@ -12,9 +12,9 @@ import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
 import { buildAbility } from '@/lib/ability';
-import { renderWithProviders, LEAD_FIXTURE } from './helpers';
-import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
-import LeadDetailPage from '@/pages/v2/leads/LeadDetailPage';
+import { LEAD_FIXTURE } from './helpers';
+import { renderJobDetail, serveJobDetail } from '@/__tests__/harness/jobDetailPage';
+import { renderLeadDetail, serveLeadDetail } from '@/__tests__/harness/leadDetailPage';
 import type { CommItem } from '@/lib/api/jobCommunications';
 
 const mockApi = vi.mocked(api);
@@ -73,24 +73,17 @@ function stubJob(items: CommItem[]) {
     assignees: [], visits: [], service_location: null, estimate: null, invoices: [], linked_estimates: [], tags: [],
     source_plan_id: null, source_plan: null, locked: false, locked_actions: [], actions: [], ready_to_close: null,
   };
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url === `/api/jobs/${JOB_ID}/communications`) return { data: { items } } as never;
-    if (url === `/api/jobs/${JOB_ID}/visits`) return { data: { visits: [] } } as never;
-    if (url.endsWith('/scopes')) return { data: { scopes: [], billing: { total: 0, invoiced: 0, remaining: 0 } } } as never;
-    if (url.endsWith('/line-items')) return { data: { lines: [], billing: { total: 0, invoiced: 0, remaining: 0 } } } as never;
-    if (url.includes(`/api/jobs/${JOB_ID}`)) return { data: { job } } as never;
-    return { data: {} } as never;
+  serveJobDetail({
+    jobId: JOB_ID,
+    job,
+    routes: [{ match: (url) => url === `/api/jobs/${JOB_ID}/communications`, data: { items } }],
   });
 }
 
 function stubLead(items: CommItem[]) {
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url === `/api/leads/${LEAD_ID}/communications`) return { data: { items } } as never;
-    if (url.includes('/notes')) return { data: { notes: [] } } as never;
-    if (url.includes('/api/users')) return { data: { users: [] } } as never;
-    if (url.includes('/api/tags')) return { data: { tags: [] } } as never;
-    if (url.includes(`/api/leads/${LEAD_ID}`)) return { data: { lead: LEAD_FIXTURE } } as never;
-    return { data: {} } as never;
+  serveLeadDetail({
+    lead: LEAD_FIXTURE,
+    routes: [{ match: (url) => url === `/api/leads/${LEAD_ID}/communications`, data: { items } }],
   });
 }
 
@@ -114,7 +107,7 @@ describe('the routed job page\'s Communication tab', () => {
 
   it('shows the estimate email and the customer\'s reply to it, the reply as a message from the customer', async () => {
     stubJob([ESTIMATE_EMAIL, CUSTOMER_REPLY]);
-    renderWithProviders(<JobDetailPage />, { ability });
+    renderJobDetail({ ability });
     await openCommunicationTab();
 
     expect(await screen.findByText(ESTIMATE_EMAIL.title)).toBeInTheDocument();
@@ -125,7 +118,7 @@ describe('the routed job page\'s Communication tab', () => {
 
   it('shows a conversation started while the record was a lead, beside the lead chip it came with', async () => {
     stubJob([LEAD_ERA_EMAIL, LEAD_ERA_REPLY, ESTIMATE_EMAIL]);
-    renderWithProviders(<JobDetailPage />, { ability });
+    renderJobDetail({ ability });
     await openCommunicationTab();
 
     const reply = rowOf(LEAD_ERA_REPLY.title);
@@ -136,7 +129,7 @@ describe('the routed job page\'s Communication tab', () => {
 
   it('draws nothing for an invoice conversation the server left out, and asks for nothing that could bring it back', async () => {
     stubJob([ESTIMATE_EMAIL]);
-    renderWithProviders(<JobDetailPage />, { ability });
+    renderJobDetail({ ability });
     await openCommunicationTab();
     await screen.findByText(ESTIMATE_EMAIL.title);
 
@@ -152,7 +145,7 @@ describe('the routed lead page\'s Communication tab', () => {
 
   it('shows the lead\'s estimate email and the customer\'s reply to it', async () => {
     stubLead([LEAD_ERA_EMAIL, LEAD_ERA_REPLY]);
-    renderWithProviders(<LeadDetailPage />, { ability });
+    renderLeadDetail({ ability });
     await openCommunicationTab();
 
     expect(await screen.findByText(LEAD_ERA_EMAIL.title)).toBeInTheDocument();
@@ -161,7 +154,7 @@ describe('the routed lead page\'s Communication tab', () => {
 
   it('keeps showing the conversations of the job made from the lead, with the job chip they came with', async () => {
     stubLead([LEAD_ERA_EMAIL, { ...CUSTOMER_REPLY, leadId: LEAD_ID, leadLabel: 'L00001' }, ESTIMATE_EMAIL]);
-    renderWithProviders(<LeadDetailPage />, { ability });
+    renderLeadDetail({ ability });
     await openCommunicationTab();
 
     const reply = rowOf(CUSTOMER_REPLY.title);
@@ -171,7 +164,7 @@ describe('the routed lead page\'s Communication tab', () => {
 
   it('draws nothing for an invoice conversation the server left out', async () => {
     stubLead([LEAD_ERA_EMAIL]);
-    renderWithProviders(<LeadDetailPage />, { ability });
+    renderLeadDetail({ ability });
     await openCommunicationTab();
     await screen.findByText(LEAD_ERA_EMAIL.title);
 

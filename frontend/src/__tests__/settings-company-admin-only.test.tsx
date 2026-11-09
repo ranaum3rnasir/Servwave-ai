@@ -127,10 +127,20 @@ describe('setting up the company is the Admin flag\'s alone', () => {
     first.unmount();
 
     const anyPage = new RegExp(`^(${[...ADMIN_ONLY.map((r) => r[2]), 'Person permissions page', 'Dashboard'].join('|')})$`);
-    for (const path of [...ADMIN_ONLY.map((r) => r[1]), '/settings/users/u1/permissions']) {
+    const paths = [...ADMIN_ONLY.map((r) => r[1]), '/settings/users/u1/permissions'];
+    // First the same addresses for an Admin, which DO draw a page: this loads each lazy page, so what follows is
+    // judged against pages that would appear at once (no timer to wait out a cold chunk).
+    signedIn(true);
+    for (const path of paths) {
+      const admin = open(path);
+      expect(await screen.findByRole('heading', { name: anyPage }), path).toBeInTheDocument();
+      admin.unmount();
+    }
+    signedIn(false);
+    for (const path of paths) {
       const view = open(path);
       await screen.findByRole('navigation', { name: 'Settings' });
-      await expect(screen.findByRole('heading', { name: anyPage }, { timeout: 300 }), path).rejects.toThrow();
+      expect(screen.queryByRole('heading', { name: anyPage }), path).toBeNull();
       expect(where()).toBe(path);
       view.unmount();
     }

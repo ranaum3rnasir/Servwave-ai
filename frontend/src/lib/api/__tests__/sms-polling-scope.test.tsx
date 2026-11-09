@@ -24,7 +24,7 @@ import { useMessageThreads, useMarkThreadRead, useUnreadCounts } from '@/lib/api
 const mockApi = vi.mocked(api);
 
 // Phone service ON - the only state in which anything polled before this slice.
-vi.mock('@/lib/api/organization', () => ({
+vi.mock('@/lib/api/shared/organization', () => ({
   useOrganization: () => ({ data: { ctm_account_id: 'acct-test', ctm_sms_ready: true } }),
 }));
 vi.mock('@/lib/useIsDemoOrg', () => ({ useIsDemoOrg: () => false }));

@@ -1,20 +1,22 @@
 import { useState } from 'react';
+import { useCtmStatus } from '@/lib/api/shared/phoneStatus';
+import { mapOwnedNumber, type PhoneNumberRow } from '@/lib/api/shared/ownedNumber';
+import { MAILBOXES_KEY } from '@/lib/api/shared/queryKeys';
+import type { SendSmsResult, ConversationLinkResult } from '@/lib/api/shared/conversationTypes';
 import { useQuery, useMutation, useQueryClient, useInfiniteQuery, keepPreviousData, type QueryClient } from '@tanstack/react-query';
 import { useFeature, useEntitlementsReady } from '@/lib/entitlements';
 import { useIsDemoOrg } from '@/lib/useIsDemoOrg';
 import { useAppAbility } from '@/contexts/AbilityContext';
 import api from '@/lib/axios';
-import { useOrganization } from '@/lib/api/organization';
-import { switchOn, useMySwitches } from '@/lib/api/mySwitches';
-import { isPhoneConnected, isSmsReady } from '@/lib/api/phoneConnected';
+import { switchOn, useMySwitches } from '@/lib/api/shared/mySwitches';
 import { fmtPhone, isFinalCallStatus } from '@/lib/api/communication-shared';
 import { toast } from '@/components/ui/use-toast';
 import { extractApiError } from '@/lib/utils';
-import { invalidateAllLeadViews, invalidateLeadViews } from '@/lib/api/jobCommunications';
+import { invalidateAllLeadViews, invalidateLeadViews } from '@/lib/api/shared/leadViews';
 import type {
-  CallSession, CallTranscriptTurn, PhoneCustomer, PhoneAgent, Message, MessageThread, TextTemplate,
+  CallSession, CallTranscriptTurn, PhoneCustomer, PhoneAgent, MessageThread, TextTemplate,
   TextAutomation, BlockedNumber, BlockReason, CallFlow, CallGroup, WAChat, EmailGroup,
-  ForwardRule, TeamMember, TrainingScenario, TrainingSession, OwnedNumber, NumberStatus, ComposeOrigin,
+  ForwardRule, TeamMember, TrainingScenario, TrainingSession, OwnedNumber, ComposeOrigin,
   EmailAssignmentView, EmailThread, Email,
 } from '@/lib/api/communication-shared';
 
@@ -34,6 +36,10 @@ export type {
   MessageStatus, DeliveryNote, DeliveryTone,
   EmailAssignmentView, EmailThread,
 } from '@/lib/api/communication-shared';
+
+// These moved to lib/api/shared/*; re-exported so existing imports from this module keep working.
+export { useCtmStatus, mapOwnedNumber, MAILBOXES_KEY };
+export type { PhoneNumberRow, SendSmsResult, ConversationLinkResult };
 
 // Re-export pure label maps / helpers as plain values (NOT hooks).
 export {
@@ -249,17 +255,6 @@ export function useDialerSearch(q: string) {
   });
 }
 
-/** Phone-service status, from the org record (§5.4): `connected` = the
- *  server's `phone_connected` (see `isPhoneConnected` for the deploy-window
- *  fallback); `smsReady` additionally requires the texting approval flag
- *  (`sms_ready`, read through `isSmsReady`).
- *  Gates the SMS composer and the liveness polling. */
-export function useCtmStatus() {
-  const { data: org } = useOrganization();
-  const connected = isPhoneConnected(org);
-  return { connected, smsReady: connected && isSmsReady(org) };
-}
-
 // Liveness (v1 = polling, addendum §A.9): 20s refetch on calls + threads,
 // ONLY while the org is CTM-connected (dashboard.ts conditional precedent).
 const LIVE_POLL_MS = 20_000;
@@ -470,55 +465,6 @@ export function useCallTranscript(callId: string, enabled: boolean) {
 }
 
 // ─── Numbers platform (slice 7) ─────────────────────────────────────────────
-
-/** Wire row from GET /api/communication/numbers (snake_case DB shape). */
-export type PhoneNumberRow = {
-  id: string;
-  e164: string;
-  formatted?: string | null;
-  label?: string | null;
-  source?: string;
-  type?: string | null;
-  sms_enabled?: boolean;
-  /** The number's id at the phone service (not read by the UI). */
-  provider_number_id?: string | null;
-  /** @deprecated Old name of `provider_number_id`, sent one more release.
-   *  TODO(phone-api-neutral-names): drop with the backend alias. */
-  ctm_number_id?: string | null;
-  call_flow_id?: string | null;
-  /** Where this number's calls ring (E.164), or null when it has no simple
-   *  forward set. This IS the routing - see `useUpdateNumberForwarding`. */
-  forward_to?: string | null;
-  status?: string;
-  created_at: string;
-};
-
-/** Statuses the UI knows how to render; anything else falls back to active so
- *  a new server-side state can never blank a row out. */
-const NUMBER_STATUSES = new Set<NumberStatus>([
-  'active',
-  'paused',
-  'released',
-  'pending',
-  'failed',
-]);
-
-/** Map a wire row onto the UI's OwnedNumber shape (NumbersView contract). */
-export function mapOwnedNumber(row: PhoneNumberRow): OwnedNumber {
-  return {
-    id: row.id,
-    number: row.formatted || fmtPhone(row.e164),
-    ...(row.label ? { tag: row.label } : {}),
-    type: row.type === 'tollfree' ? 'Toll-free' : 'Local',
-    flowId: row.call_flow_id ?? '',
-    forwardTo: row.forward_to ?? null,
-    status: NUMBER_STATUSES.has(row.status as NumberStatus)
-      ? (row.status as NumberStatus)
-      : 'active',
-    createdAt: row.created_at,
-    smsEnabled: row.sms_enabled ?? false,
-  };
-}
 
 /** The org's owned numbers — replaces NumbersView's SEED_NUMBERS. */
 export function useNumbers() {
@@ -896,8 +842,6 @@ export type MailboxList = {
   /** Every person's mailbox, one page of it, for a person on All. */
   people: { items: (MailboxEntry & { active: boolean })[]; total: number; offset: number; limit: number } | null;
 };
-
-export const MAILBOXES_KEY = ['communication', 'mailboxes'] as const;
 
 /**
  * GET /api/communication/mailboxes. `selected` is the mailbox the page asks to show; `search` and `offset` page the people
@@ -1448,15 +1392,6 @@ export const useStartTrainingSession = () => useCommMutation<unknown>('/api/comm
 
 // ─── SMS send (slice 6) ─────────────────────────────────────────────────────
 
-/** 201 response of POST /api/communication/sms. `delivery` is present whenever
- *  delivery was considered for an outbound text to a deliverable thread:
- *  'sent' means the provider accepted it, 'failed' means the row exists but
- *  the provider rejected it, and 'skipped' means it was recorded but never
- *  left (a gate held it back). The row's `status`/`statusReason` say why.
- *  `threadId` is present only on compose-to-number sends (slice H7) — the
- *  server-resolved conversation the text landed in. */
-export type SendSmsResult = { message?: Message; threadId?: string; delivery?: 'sent' | 'failed' | 'skipped' };
-
 /** Human copy for a blocked SMS send — maps the compliance gate's 409
  *  `{ error, code }` to short UI strings, falls back to the server's error
  *  text, then to a generic retry line. Callers render this INLINE near the
@@ -1506,15 +1441,6 @@ function invalidateConversationLinks(qc: QueryClient, refetchIf?: (key: readonly
   qc.invalidateQueries({ queryKey: ['job-communications'] });
   qc.invalidateQueries({ queryKey: ['customer-communications'] });
   qc.invalidateQueries({ queryKey: ['lead-communications'] });
-}
-
-/**
- * What a text or email reassign answers. `left` is true when the change took the row out of the person's reach (it was
- * readable only through the job or lead it was taken off): the row is then null, the change is done, and the screen
- * lets it go quietly instead of reporting an error.
- */
-export interface ConversationLinkResult {
-  left?: boolean;
 }
 
 /** One-click reassign — move an SMS message to another job (or clear with

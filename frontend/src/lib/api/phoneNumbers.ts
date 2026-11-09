@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query';
+import { NUMBER_ASSIGNMENTS_KEY } from '@/lib/api/shared/queryKeys';
 import api from '@/lib/axios';
 import { fmtPhone } from '@/lib/api/communication-shared';
 import { toast } from '@/ui-kit/components/ui/sonner';
@@ -99,8 +100,6 @@ export type NumberAssignmentsResponse = {
  *  lives on the number itself - see `useUpdateNumberForwarding`). */
 export type AssignmentMutationResponse = { ok: true };
 
-/** Shared query key — mutations invalidate this exact key. */
-export const NUMBER_ASSIGNMENTS_KEY = ['communication', 'number-assignments'] as const;
 
 /** Fallback when a failed save carries no message meant for a person: a
  *  timeout, a dropped connection or a server error, where the write may still

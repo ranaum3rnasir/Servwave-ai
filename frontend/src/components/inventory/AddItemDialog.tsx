@@ -33,7 +33,7 @@ import {
   type Location,
   type Vendor,
 } from "@/lib/api/inventory";
-import { useOrganization } from "@/lib/api/organization";
+import { useOrganization } from "@/lib/api/shared/organization";
 import { useAppAbility } from "@/contexts/AbilityContext";
 import { canSeePricing as canSeePricingAbility, canSeePrices as canSeePricesAbility } from "@/lib/ability";
 import {

@@ -15,7 +15,7 @@ import {
   type Item,
   type Location,
 } from "@/lib/api/inventory";
-import { useOrganization } from "@/lib/api/organization";
+import { useOrganization } from "@/lib/api/shared/organization";
 import { extractApiError } from "@/lib/utils";
 import { extractShortage } from "@/lib/stockToasts";
 import { POPreviewDialog } from "@/components/inventory/POPreviewDialog";

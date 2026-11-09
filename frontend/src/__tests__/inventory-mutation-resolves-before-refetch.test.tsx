@@ -75,12 +75,9 @@ describe('inventory mutations settle independently of the cache refetch', () => 
 
     const { result } = renderHook(() => useUpsertBrand(), { wrapper });
 
-    const saved = await Promise.race([
-      result.current.mutateAsync({ name: 'Mul-T-Lock' }),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('mutateAsync never settled')), 1000),
-      ),
-    ]);
+    // If the write waited on the stalled query it would never settle, and the test's own time limit
+    // fails it; no timer of ours races it.
+    const saved = await result.current.mutateAsync({ name: 'Mul-T-Lock' });
 
     expect(saved).toMatchObject({ id: 'brd_srv_1' });
   });

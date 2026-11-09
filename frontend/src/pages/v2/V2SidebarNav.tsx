@@ -10,7 +10,7 @@ import { useAppAbility } from '@/contexts/AbilityContext';
 import { useAuthStore } from '@/stores/auth.store';
 import { useSettingsGuard } from '@/stores/settingsGuard.store';
 import { useIsDemoOrg } from '@/lib/useIsDemoOrg';
-import { useMySwitches } from '@/lib/api/mySwitches';
+import { useMySwitches } from '@/lib/api/shared/mySwitches';
 import { useJobReviewQueue } from '@/lib/api/jobs';
 import {
   PLAN_LABELS, requiredPlanFor, useEntitlementsReady, useOrgFeatures,

@@ -2,9 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
-import { renderWithProviders } from '@/__tests__/helpers';
-import LeadFormPage from '@/pages/v2/leads/LeadFormPage';
 import { buildAbility } from '@/lib/ability';
+import { renderLeadForm, serveLeadForm } from '@/__tests__/harness/leadFormPage';
 
 /**
  * V7-03c: the inline "+ Add new type" on the lead form adds a row through `POST /api/job-types`
@@ -16,7 +15,7 @@ vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
   return { ...actual, useNavigate: () => vi.fn() };
 });
-vi.mock('@/lib/api/organization', () => ({
+vi.mock('@/lib/api/shared/organization', () => ({
   useOrganization: () => ({ data: { job_type_options: ['Install'], source_options: [] } }),
   useUpdateOrganization: () => ({ mutate: mockUpdateOrg }),
 }));
@@ -27,7 +26,7 @@ const adminAbility = buildAbility([{ action: 'manage', subject: 'all' }]);
 
 async function openAddRowAndCommit(name: string) {
   const user = userEvent.setup();
-  renderWithProviders(<LeadFormPage />, { ability: adminAbility, initialEntries: ['/leads/create'] });
+  renderLeadForm({ ability: adminAbility, entry: '/leads/create' });
   await user.click(await screen.findByRole('combobox', { name: 'Job Type' }));
   await user.click(await screen.findByRole('option', { name: /add new type/i }));
   const input = await screen.findByPlaceholderText(/new job type/i);
@@ -38,7 +37,7 @@ async function openAddRowAndCommit(name: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockApi.get.mockResolvedValue({ data: {} });
+  serveLeadForm();
   mockApi.post.mockResolvedValue({ data: { id: 'jt-1', name: 'Repair' } });
 });
 
@@ -61,7 +60,7 @@ describe('LeadFormPage (create) - inline add of a job type', () => {
 describe('LeadFormPage (create) - keyboard', () => {
   it('Escape closes the add row, keeps what was typed out of the list, and returns focus to the Job Type select', async () => {
     const user = userEvent.setup();
-    renderWithProviders(<LeadFormPage />, { ability: adminAbility, initialEntries: ['/leads/create'] });
+    renderLeadForm({ ability: adminAbility, entry: '/leads/create' });
     await user.click(await screen.findByRole('combobox', { name: 'Job Type' }));
     await user.click(await screen.findByRole('option', { name: /add new type/i }));
     const input = await screen.findByPlaceholderText(/new job type/i);

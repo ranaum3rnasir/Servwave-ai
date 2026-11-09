@@ -22,8 +22,8 @@ vi.mock('@/lib/api/invoices', async () => {
   return { ...actual, fetchStateTaxRates: vi.fn().mockResolvedValue([]) };
 });
 
-vi.mock('@/lib/api/organization', async () => {
-  const actual = await vi.importActual<typeof import('@/lib/api/organization')>('@/lib/api/organization');
+vi.mock('@/lib/api/shared/organization', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/api/shared/organization')>('@/lib/api/shared/organization');
   return {
     ...actual,
     useOrganization: () => ({

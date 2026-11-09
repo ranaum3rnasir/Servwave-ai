@@ -12,7 +12,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { ImageUploadError, MAX_SOURCE_BYTES } from '@/lib/image-upload';
+import { DECODE_TIMEOUT_MS, ImageUploadError, MAX_SOURCE_BYTES } from '@/lib/image-upload';
 import { prepareItemImage } from '@/lib/item-image-upload';
 
 const file = (bytes: number, type: string, name = 'photo.jpg') =>
@@ -34,7 +34,25 @@ function stubRasterizer(encoded = `data:image/jpeg;base64,${'A'.repeat(400)}`) {
   return { drawImage, toDataURL };
 }
 
+/**
+ * Runs `prepareItemImage` in a browser whose decoder never answers (jsdom loads no images), stepping a
+ * fake clock over the decode timeout instead of waiting it out for real.
+ */
+async function prepareWithSilentDecoder(input: File) {
+  vi.useFakeTimers();
+  const settled = prepareItemImage(input).then(
+    (value) => ({ value }),
+    (error: unknown) => ({ error }),
+  );
+  // The decode timer is armed after a few awaits, so step past it until the call has answered.
+  let answered = false;
+  void settled.then(() => { answered = true; });
+  for (let i = 0; i < 20 && !answered; i += 1) await vi.advanceTimersByTimeAsync(DECODE_TIMEOUT_MS);
+  return settled;
+}
+
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -83,9 +101,10 @@ describe('raster pictures', () => {
     // cannot decode. A picture that cannot be downscaled must still reach storage.
     const source = file(1024, 'image/jpeg');
 
-    const prepared = await prepareItemImage(source);
+    const outcome = await prepareWithSilentDecoder(source);
 
-    if (prepared.kind !== 'upload') throw new Error('expected an upload');
+    const prepared = 'value' in outcome ? outcome.value : undefined;
+    if (prepared?.kind !== 'upload') throw new Error('expected an upload');
     expect(prepared.file).toBe(source);
   });
 });
@@ -120,8 +139,9 @@ describe('errors a user can act on', () => {
   });
 
   it('refuses a codec it can neither rasterize nor upload as-is, instead of uploading bytes the endpoint will reject', async () => {
-    const err = await prepareItemImage(file(1024, 'image/heic', 'IMG_0001.heic')).catch((e) => e);
+    const outcome = await prepareWithSilentDecoder(file(1024, 'image/heic', 'IMG_0001.heic'));
+    const err = 'error' in outcome ? outcome.error : undefined;
     expect(err).toBeInstanceOf(ImageUploadError);
-    expect(err.message.length).toBeGreaterThan(0);
+    expect((err as Error).message.length).toBeGreaterThan(0);
   });
 });

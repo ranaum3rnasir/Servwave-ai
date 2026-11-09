@@ -1,3 +1,27 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { buildAbility } from '@/lib/ability';
+import { renderSchedule, serveSchedule } from '@/__tests__/harness/schedulePage';
+import { addDays, format, startOfWeek } from 'date-fns';
+import api from '@/lib/axios';
+import { renderWithProviders } from '@/__tests__/helpers';
+import { jobToEvents } from '@/components/schedule/eventAdapters';
+import { GRID_EVENT_ID, GRID_EVENT_TYPE, FROM_MEMBER } from '@/components/schedule/dragChannels';
+import { EventPeekCard } from '@/pages/v2/schedule/components/eventPeekCard';
+import { useAuthStore } from '@/stores/auth.store';
+
+// Each test starts from the setup file's signed-in user and bare client calls: reset them here, so a test states its own user
+// and answers in its own `beforeEach` (`clearAllMocks` keeps implementations).
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(useAuthStore).mockReset();
+  vi.mocked(api.get).mockReset();
+  vi.mocked(api.post).mockReset();
+  vi.mocked(api.patch).mockReset();
+  vi.mocked(api.put).mockReset();
+  vi.mocked(api.delete).mockReset();
+});
+
 /**
  * visits-and-task-categories slice 02 - a job visit card carries the VISIT's own crew, everywhere
  * the routed board renders it (PRD stories 6-8).
@@ -10,18 +34,6 @@
  * The fixture is the multi-visit shape the demo org's reproduction used: three trips of ONE job,
  * each crewed differently, with the job-level `assignees` key holding the union of all of them.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
-import { addDays, format, startOfWeek } from 'date-fns';
-
-import api from '@/lib/axios';
-import { buildAbility } from '@/lib/ability';
-import { renderWithProviders } from '@/__tests__/helpers';
-import { TooltipProvider } from '@/ui-kit/components/ui/tooltip';
-import { GRID_EVENT_ID, GRID_EVENT_TYPE, FROM_MEMBER } from '@/components/schedule/dragChannels';
-import { jobToEvents } from '@/components/schedule/eventAdapters';
-import SchedulePage from '@/pages/v2/schedule/SchedulePage';
-import { EventPeekCard } from '@/pages/v2/schedule/components/eventPeekCard';
 
 class ResizeObserverStub {
   observe() {}
@@ -68,30 +80,12 @@ const THREE_CREWS_JOB = {
 };
 
 function mockBoard(jobs: Array<Record<string, unknown>>) {
-  mockApi.get.mockImplementation((url: string, config?: { params?: unknown }) => {
-    if (url === '/api/jobs') {
-      const status = (config?.params as { status?: unknown } | undefined)?.status;
-      const wantsBucket = status === 'UNSCHEDULED' || (Array.isArray(status) && status.includes('UNSCHEDULED'));
-      return Promise.resolve({ data: { jobs: wantsBucket ? [] : jobs } });
-    }
-    if (url === '/api/departments') return Promise.resolve({ data: { departments: [] } });
-    if (url === '/api/leads') return Promise.resolve({ data: { leads: [] } });
-    if (url === '/api/users' || url === '/api/users/assignable') {
-      return Promise.resolve({ data: { users: STAFF.map((u) => ({ ...u, is_active: true, role: 'TECHNICIAN' })) } });
-    }
-    if (url === '/api/service-plans/scheduler-bucket') return Promise.resolve({ data: { plans: [] } });
-    return Promise.resolve({ data: {} });
-  });
+  serveSchedule({ jobs: jobs, bucketJobs: [], users: STAFF.map((u) => ({ ...u, is_active: true, role: 'TECHNICIAN' })) });
 }
 
 async function mountMemberBoard() {
   mockBoard([THREE_CREWS_JOB]);
-  const view = renderWithProviders(
-    <TooltipProvider>
-      <SchedulePage />
-    </TooltipProvider>,
-    { ability: ADMIN },
-  );
+  const view = renderSchedule({ ability: ADMIN });
   await screen.findAllByText(/J00044/);
   fireEvent.click(screen.getByRole('button', { name: 'Member' }));
   await screen.findByTestId(`week-cell-${ALICE.id}-${dayKey(1)}`);

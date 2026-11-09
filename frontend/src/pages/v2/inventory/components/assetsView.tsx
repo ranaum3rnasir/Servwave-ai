@@ -43,7 +43,7 @@ import {
 import { useAssets, useDeleteAsset, type Asset, type AssetFilters } from '@/lib/api/inventory';
 import { usePeople } from '@/lib/api/users';
 import { useAppAbility } from '@/contexts/AbilityContext';
-import { reachesBeyondOwn, useMySwitches } from '@/lib/api/mySwitches';
+import { reachesBeyondOwn, useMySwitches } from '@/lib/api/shared/mySwitches';
 import { useConfirm } from '@/hooks/useConfirm';
 import { AssetDialog } from '@/components/inventory/assets/AssetDialog';
 import { AssetActionDialog, type AssetActionMode } from '@/components/inventory/assets/AssetActionDialog';

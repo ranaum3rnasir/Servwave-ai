@@ -5,7 +5,7 @@ import api from '@/lib/axios';
 import { cn, formatCurrency } from '@/lib/utils';
 import { StagePickup } from '@/components/inventory/StagePickup';
 import { useStageLineDisclosure } from '@/components/inventory/stageLineDisclosure';
-import { switchOn, useMySwitches } from '@/lib/api/mySwitches';
+import { switchOn, useMySwitches } from '@/lib/api/shared/mySwitches';
 import { STATUS_REGISTRY, STATUS_INTENT_CLASSES } from '@/design-system/status-registry';
 import { Skeleton } from '@/components/ui/skeleton';
 import { EmptyState } from '@/components/ui/empty-state';

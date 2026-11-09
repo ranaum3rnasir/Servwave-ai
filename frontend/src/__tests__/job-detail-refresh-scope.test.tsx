@@ -14,13 +14,12 @@ import { Route, Routes } from 'react-router-dom';
 import userEvent from '@testing-library/user-event';
 
 import api from '@/lib/axios';
-import { buildAbility } from '@/lib/ability';
 import { jobVisitsQueryKey } from '@/lib/useJobVisits';
 import { refreshAfterVisitWrite } from '@/lib/refreshAfterVisitWrite';
 import { QueryClient } from '@tanstack/react-query';
-import { renderWithProviders, ALL_JOB_ACTIONS } from '@/__tests__/helpers';
+import { ALL_JOB_ACTIONS } from '@/__tests__/helpers';
 import { expectCustomerPageStale, seedCustomerPage } from '@/__tests__/support/customerPageCache';
-import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
+import { renderJobDetail, serveJobDetail, stubBrowser } from '@/__tests__/harness/jobDetailPage';
 
 const JOB_ID = 'j0000000-0000-0000-0000-000000000001';
 
@@ -32,12 +31,7 @@ vi.mock('@/components/invoices/RecordPaymentDialog', () => ({
   ),
 }));
 
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 const get = vi.mocked(api.get);
 
@@ -54,18 +48,20 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(api.post).mockResolvedValue({ data: {} });
   vi.mocked(api.delete).mockResolvedValue({ data: {} });
-  get.mockImplementation(async (url: string) => (url === `/api/jobs/${JOB_ID}` ? { data: { job: JOB } } : { data: {} }));
+  serveJobDetail({ job: JOB });
 });
 
 /** The page on a real route, so navigating away after a delete unmounts it as it does in the app. */
 function renderPage() {
-  return renderWithProviders(
-    <Routes>
-      <Route path="/jobs/:id" element={<JobDetailPage />} />
-      <Route path="*" element={<p>elsewhere</p>} />
-    </Routes>,
-    { initialEntries: [`/jobs/${JOB_ID}`], ability: buildAbility([{ action: 'manage', subject: 'all' }]) },
-  );
+  return renderJobDetail({
+    entry: `/jobs/${JOB_ID}`,
+    wrap: (page) => (
+      <Routes>
+        <Route path="/jobs/:id" element={page} />
+        <Route path="*" element={<p>elsewhere</p>} />
+      </Routes>
+    ),
+  });
 }
 
 describe('deleting the job', () => {

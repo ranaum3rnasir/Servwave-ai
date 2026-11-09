@@ -11,7 +11,7 @@ import { ServWaveMark } from '@/components/brand/ServWaveMark';
 import { useSettingsGuard } from '@/stores/settingsGuard.store';
 import { AiCenterModal } from '@/components/ai-center/AiCenterModal';
 import CopilotProvider from '@/components/copilot/CopilotProvider';
-import { useOrganization } from '@/lib/api/organization';
+import { useOrganization } from '@/lib/api/shared/organization';
 import { setOrgFormattingPrefs } from '@/lib/org-format';
 
 export default function AppLayout() {

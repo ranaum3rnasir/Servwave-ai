@@ -17,8 +17,8 @@ vi.mock('@/lib/axios', () => ({ default: { get: vi.fn() } }));
 // differs from every plausible CI runner zone (UTC, America/New_York), mirroring
 // job-detail-schedule-timezone.test.tsx, so the date assertion below fails on browser-local
 // rendering rather than passing by coincidence.
-vi.mock('@/lib/api/organization', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/organization')>();
+vi.mock('@/lib/api/shared/organization', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/api/shared/organization')>();
   return {
     ...actual,
     useOrganization: () => ({ data: { id: 'org-1', timezone: 'Asia/Manila' }, isLoading: false, isError: false }),

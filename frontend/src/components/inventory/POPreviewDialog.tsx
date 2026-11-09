@@ -6,7 +6,7 @@ import { Modal } from "@/components/ui/modal";
 import { extractApiError, formatCurrency, formatPhone } from "@/lib/utils";
 import { formatExactDay } from "@/lib/format-date";
 import { usePurchaseOrders, useUpdatePO, useVendors, type PurchaseOrder } from "@/lib/api/inventory";
-import { useOrganization } from "@/lib/api/organization";
+import { useOrganization } from "@/lib/api/shared/organization";
 import { lineHasCost, lineTotal, lineUnitCost } from "@/lib/inventory/po-money";
 import { useAuthStore } from "@/stores/auth.store";
 import { SignatureField } from "@/components/inventory/SignatureField";

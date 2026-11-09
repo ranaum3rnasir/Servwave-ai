@@ -2,12 +2,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-import api from '@/lib/axios';
-import { renderWithProviders, seesPrices } from '@/__tests__/helpers';
+import { seesPrices } from '@/__tests__/helpers';
 import { MEDIA } from '@/ui-kit/lib/breakpoints';
 import { catalogToggle } from '@/__tests__/support/backendSwitchCatalog';
 
-import InvoiceDetailPage from '../InvoiceDetailPage';
+import { mountInvoiceDetail } from '@/__tests__/harness/invoiceDetailPage';
 
 /**
  * Mobile slice 55: the invoice header on the shared detail header.
@@ -28,12 +27,8 @@ global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
 const INVOICE_ID = 'i0000000-0000-0000-0000-000000000001';
 const mockNavigate = vi.fn();
 
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual('react-router-dom');
-  return { ...actual, useParams: () => ({ id: INVOICE_ID }), useNavigate: () => mockNavigate };
-});
+vi.mock('react-router-dom', async () => (await import('@/__tests__/harness/invoiceDetailRouter')).invoiceDetailRouter({ navigate: () => mockNavigate }));
 
-const mockApi = vi.mocked(api);
 const originalMatchMedia = window.matchMedia;
 
 function setPhone(isPhone: boolean) {
@@ -104,20 +99,17 @@ function invoice(status: string) {
 }
 
 function mount(status: string) {
-  mockApi.get.mockImplementation(async (url: string) => {
+  mountInvoiceDetail({
+    id: INVOICE_ID,
+    invoice: invoice(status),
     // The customer's name links to their page, and their email is a mail link, for a person holding these two switches.
-    if (url === '/api/permission-switches/me') {
-      return {
-        data: {
-          admin_box: false,
-          values: { [catalogToggle('View customers').key]: true, [catalogToggle('Copy customer email').key]: true },
-        },
-      };
-    }
-    if (url.startsWith('/api/invoices/')) return { data: { invoice: invoice(status) } };
-    return { data: {} };
+    routes: [{
+      match: (url) => url === '/api/permission-switches/me',
+      data: { admin_box: false, values: { [catalogToggle('View customers').key]: true, [catalogToggle('Copy customer email').key]: true } },
+    }],
+    entry: `/invoices/${INVOICE_ID}`,
+    ability: seesPrices,
   });
-  renderWithProviders(<InvoiceDetailPage />, { initialEntries: [`/invoices/${INVOICE_ID}`], ability: seesPrices });
 }
 
 beforeEach(() => {

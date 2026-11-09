@@ -11,6 +11,7 @@
 
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
+import { afterResponseDrained } from '../lib/after-response';
 import type { PrismaClient, Role } from '@prisma/client';
 
 const clientPromise = vi.hoisted(async () => {
@@ -81,23 +82,12 @@ suite('creating a user issues their mailbox (real database, one connection)', ()
     return db.mailbox.findFirst({ where: { user_id: userId, kind: 'user' }, include: { addresses: true } });
   }
 
-  /**
-   * The bells of one verb about one person, with who each went to; waits for the detached send to land. The bell row is written
-   * before its recipient rows, so a bell with nobody on it yet is not landed: it waits until every bell has recipients and the
-   * recipient count has stopped growing.
-   */
+  /** The bells of one verb about one person, with who each went to; read once ALL the work the route started after its answer is over (a drain that times out fails). */
   async function bells(org: string, verb: string, about: string) {
-    let lastCount = -1;
-    for (let i = 0; i < 60; i += 1) {
-      const rows = await db.notification.findMany({ where: { organization_id: org, verb, object_id: about }, include: { recipients: true } });
-      const count = rows.reduce((n, r) => n + r.recipients.length, 0);
-      if (rows.length && rows.every((r) => r.recipients.length > 0) && count === lastCount) return rows;
-      lastCount = count;
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    return [];
+    await afterResponseDrained();
+    return db.notification.findMany({ where: { organization_id: org, verb, object_id: about }, include: { recipients: true } });
   }
-  const quiet = () => new Promise((r) => setTimeout(r, 700));
+  const quiet = () => afterResponseDrained();
 
   it('an invited user gets a first.last.company mailbox, in the same transaction, and no bell', async () => {
     const w = await company();

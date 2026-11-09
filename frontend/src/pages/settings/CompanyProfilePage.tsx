@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { useAppAbility } from '@/contexts/AbilityContext';
-import { useOrganization, useUpdateOrganization, type OrgFormValues } from '@/lib/api/organization';
+import { useOrganization, useUpdateOrganization, type OrgFormValues } from '@/lib/api/shared/organization';
 import { formatPhone, formatPhoneInput } from '@/lib/utils';
 import { useSettingsBar } from './SettingsLayout';
 import { TabsContent } from '@/components/ui/tabs';

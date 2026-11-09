@@ -12,9 +12,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
-import { renderWithProviders, LEAD_FIXTURE } from '@/__tests__/helpers';
+import { LEAD_FIXTURE } from '@/__tests__/helpers';
 import { buildAbility } from '@/lib/ability';
-import LeadDetailPage from '../LeadDetailPage';
+import { renderLeadDetail, serveLeadDetail, stubBrowser } from '@/__tests__/harness/leadDetailPage';
 
 vi.mock('@/lib/entitlements', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/entitlements')>()),
@@ -33,12 +33,7 @@ vi.mock('@/components/crm/MultiAssigneeSelect', () => ({
   ),
 }));
 
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');
@@ -73,13 +68,7 @@ function scheduledLead(overrides: Record<string, unknown> = {}) {
 }
 
 function mockLead(lead: Record<string, unknown>) {
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.includes('/notes')) return { data: { notes: [] } };
-    if (url.includes('/api/users')) return { data: { users: [] } };
-    if (url.includes('/api/tags')) return { data: { tags: [] } };
-    if (url.includes('/api/leads/')) return { data: { lead } };
-    return { data: {} };
-  });
+  serveLeadDetail({ lead });
 }
 
 /**
@@ -95,7 +84,7 @@ function displayed(iso: string) {
 }
 
 async function openWalkthroughTab(user: ReturnType<typeof userEvent.setup>, ability = adminAbility) {
-  renderWithProviders(<LeadDetailPage />, { ability });
+  renderLeadDetail({ ability });
   await user.click(await screen.findByRole('tab', { name: /walkthrough/i }));
 }
 

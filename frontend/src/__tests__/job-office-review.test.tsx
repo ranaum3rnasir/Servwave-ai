@@ -16,21 +16,15 @@ import { screen, waitFor, within } from '@testing-library/react';
 import { useLocation } from 'react-router-dom';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
-import { renderWithProviders } from './helpers';
 import { notificationDeepLink } from '@/components/notifications/notificationDeepLink';
 import type { NotificationView } from '@/lib/api/notifications';
-import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
+import { renderJobDetail, serveJobDetail, stubBrowser } from '@/__tests__/harness/jobDetailPage';
 import { buildAbility } from '@/lib/ability';
 import { MEDIA } from '@/ui-kit/lib/breakpoints';
 import { FIRST_ROWS, MORE_ROWS } from '@/components/jobs/review/OfficeReviewPanel';
 import type { JobReview, ReviewChoice, ReviewContact, ReviewGroup, ReviewItem } from '@/lib/api/jobReview';
 
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 vi.mock('@/components/tasks/JobLeadTasksTab', () => ({ JobLeadTasksTab: () => null }));
 
@@ -159,18 +153,19 @@ function mount(over: { job?: Record<string, unknown>; reviewAnswer?: JobReview |
     source_plan_id: null, source_plan: null, locked: true, locked_actions: [], actions: ['office_review', 'finish_review'], new_visit_closed_reason: 'Move this job back out of review first',
     ...over.job,
   };
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url === `/api/jobs/${JOB_ID}/review`) {
-      if (over.reviewAnswer === null) throw new Error('boom');
-      return { data: { review: over.reviewAnswer ?? review() } } as never;
-    }
-    if (url === `/api/jobs/${JOB_ID}/visits`) return { data: { visits: [VISIT] } } as never;
-    if (url.endsWith('/scopes')) return { data: { scopes: [], billing: { total: 0, invoiced: 0, remaining: 0 } } } as never;
-    if (url.endsWith('/line-items')) return { data: { lines: [], billing: { total: 0, invoiced: 0, remaining: 0 } } } as never;
-    if (url.includes(`/api/jobs/${JOB_ID}`)) return { data: { job } } as never;
-    return { data: {} } as never;
+  serveJobDetail({
+    jobId: JOB_ID,
+    job,
+    visits: [VISIT],
+    routes: [{
+      match: (url) => url === `/api/jobs/${JOB_ID}/review`,
+      data: () => {
+        if (over.reviewAnswer === null) throw new Error('boom');
+        return { review: over.reviewAnswer ?? review() };
+      },
+    }],
   });
-  return renderWithProviders(<><JobDetailPage /><Address /></>, { ability, initialEntries: [over.entry ?? '/'] });
+  return renderJobDetail({ ability, beside: <Address />, entry: over.entry ?? '/' });
 }
 
 const reviewCalls = () => mockApi.get.mock.calls.filter(([url]) => String(url).endsWith('/review'));

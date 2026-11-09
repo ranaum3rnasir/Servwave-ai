@@ -9,7 +9,8 @@ import {
   type InvoiceScopeOfWorkCardInvoice,
 } from '@/components/invoices/InvoiceLineItemsEditor';
 import { buildAbility } from '@/lib/ability';
-import type { InvoiceLineItem, Scope } from '@/lib/api/jobs';
+import type { InvoiceLineItem } from '@/lib/api/jobs';
+import type { Scope } from '@/lib/api/shared/scope';
 import * as invoicesApi from '@/lib/api/invoices';
 
 // ── API surface mocks ───────────────────────────────────────
@@ -49,8 +50,8 @@ vi.mock('@/lib/api/inventory', async (importOriginal) => {
   };
 });
 
-vi.mock('@/lib/api/organization', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/organization')>();
+vi.mock('@/lib/api/shared/organization', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/api/shared/organization')>();
   const org = {
     id: 'org-1',
     default_inventory_location_id: stockHoisted.LOC_MAIN_ID,

@@ -13,15 +13,14 @@ import api from '@/lib/axios';
 import { useAuthStore } from '@/stores/auth.store';
 import { renderWithProviders } from './helpers';
 import { SendEstimateDialog } from '@/components/estimates/SendEstimateDialog';
-import { buildAbility } from '@/lib/ability';
-import EstimateWorkspacePage from '@/pages/v2/estimates/EstimateWorkspacePage';
+import { renderEstimateWorkspace, serveEstimateWorkspace } from '@/__tests__/harness/estimateWorkspacePage';
 
 vi.mock('@/lib/axios', () => ({
   default: { post: vi.fn(), patch: vi.fn(), get: vi.fn() },
 }));
 
 const mockOrg = vi.fn();
-vi.mock('@/lib/api/organization', () => ({
+vi.mock('@/lib/api/shared/organization', () => ({
   useOrganization: () => mockOrg(),
 }));
 
@@ -253,14 +252,9 @@ describe('the estimate page tells the send dialog when the estimate is locked', 
   // the dialog PATCH the locked estimate, the backend answered 400 and the resend never went out.
   it('a sent estimate in a lock-on-send org opens Resend with the policy read-only', async () => {
     mockOrg.mockReturnValue({ data: { ...ORG, lock_on_send: true } });
-    vi.mocked(api.get).mockImplementation(async (url: string) => {
-      if (url.includes('/api/estimates/')) return { data: { estimate: SENT_ESTIMATE } };
-      return { data: { data: [] } };
-    });
+    serveEstimateWorkspace({ estimate: SENT_ESTIMATE, otherwise: { data: [] } });
     const user = userEvent.setup();
-    renderWithProviders(<EstimateWorkspacePage />, {
-      ability: buildAbility([{ action: 'manage', subject: 'all' }]),
-    });
+    renderEstimateWorkspace();
 
     await user.click(await screen.findByRole('button', { name: /^Resend$/i }));
     expect(await screen.findByRole('radio', { name: /allow approval now, deposit paid later/i })).toBeDisabled();

@@ -35,7 +35,7 @@ vi.mock('@/components/timeclock/ClockInOutMenu', () => ({ ClockInOutMenu: () => 
 // itself correctly blocked the PAGE underneath it (which it always does, in both arrangements).
 const useUnreadCountsMock = vi.hoisted(() => vi.fn(() => ({ sms: 0, whatsapp: 0, email: 0 })));
 vi.mock('@/lib/api/communication', () => ({ useUnreadCounts: useUnreadCountsMock }));
-vi.mock('@/lib/api/organization', () => ({ useOrganization: () => ({ data: undefined }) }));
+vi.mock('@/lib/api/shared/organization', () => ({ useOrganization: () => ({ data: undefined }) }));
 
 const mockApi = vi.mocked(api);
 

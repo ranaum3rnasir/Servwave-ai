@@ -1,15 +1,13 @@
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-
 import { buildAbility, type AbilityRule, type AppAbility } from '@/lib/ability';
+import type { CatalogCopyEntry } from '../../../scripts/switch-catalog.mjs';
+import catalogCopy from './switchCatalog.generated.json';
 
 /**
- * The backend switch catalog, read from its own source file (the module is not importable into the browser
- * build; the schedule board's switch test reads it the same way). Tests that need a switch's key or a built-in
+ * The backend switch catalog, read from the frontend's own committed copy (the backend module is not importable into
+ * the browser build; regenerate the copy with `npm --prefix frontend run gen:switch-catalog`). Tests that need a switch's key or a built-in
  * role's preset value look it up here by the label a person sees, so no second list of switches exists.
  */
 export type PresetRole = 'ADMIN' | 'SALES' | 'DISPATCHER' | 'TECHNICIAN';
-const ROLE_ORDER: PresetRole[] = ['ADMIN', 'SALES', 'DISPATCHER', 'TECHNICIAN'];
 
 export interface CatalogToggle {
   key: string;
@@ -30,55 +28,25 @@ interface CatalogNeeds {
   grants: Array<{ action: string; subject: string }>;
 }
 
-const CATALOG_SOURCE = readFileSync(
-  join(__dirname, '../../../../backend/src/lib/permissions/switches/catalog.ts'),
-  'utf8',
-);
-const ENTRY_BLOCKS = CATALOG_SOURCE.split(/\n {2}entry\(\{/).slice(1);
+/** The frontend's own copy of the catalog (scripts/switch-catalog.mjs writes it; switch-catalog-copy.test.ts guards it). */
+const COPY = catalogCopy as CatalogCopyEntry[];
 
-const keyList = (text: string | undefined): string[] => [...(text ?? '').matchAll(/'([a-z_0-9]+)'/g)].map((m) => m[1]!);
-const grantsIn = (block: string) =>
-  [...(/grants: \[([\s\S]*?)\],\n\s+(?:serverChecks|pending|presets)/.exec(block)?.[1] ?? '').matchAll(
-    /action: '(\w+)', subject: '(\w+)'/g,
-  )].map((m) => ({ action: m[1]!, subject: m[2]! }));
-
-const NEEDS: CatalogNeeds[] = ENTRY_BLOCKS.flatMap((block) => {
-  const key = /key: '([a-z_0-9]+)'/.exec(block)?.[1];
-  const label = /label: '((?:[^'\\]|\\.)*)'/.exec(block)?.[1];
-  if (!key || !label) return [];
-  return [{
-    key,
-    label: label.replace(/\\'/g, "'"),
-    requires: keyList(/\brequires: \[([^\]]*)\]/.exec(block)?.[1]),
-    requiresAny: keyList(/\brequiresAny: \[([^\]]*)\]/.exec(block)?.[1]),
-    grants: grantsIn(block),
-  }];
-});
+const NEEDS: CatalogNeeds[] = COPY.map(({ key, label, requires, requiresAny, grants }) => ({
+  key,
+  label,
+  requires,
+  requiresAny,
+  grants,
+}));
 const NEEDS_BY_KEY = new Map(NEEDS.map((n) => [n.key, n]));
 const named = (key: string) => {
   const n = NEEDS_BY_KEY.get(key);
   return n ? `${n.label} (${key})` : key;
 };
 
-const TOGGLES: CatalogToggle[] = (() => {
-  const out: CatalogToggle[] = [];
-  for (const block of ENTRY_BLOCKS) {
-    const key = /key: '([a-z_0-9]+)'/.exec(block)?.[1];
-    const label = /label: '((?:[^'\\]|\\.)*)'/.exec(block)?.[1];
-    const args = /presets: presets\(([^)]*)\)/.exec(block)?.[1];
-    if (!key || !label || !args) continue;
-    const values = args.split(',').map((v) => v.trim());
-    if (values.some((v) => v !== 'true' && v !== 'false')) continue;
-    const grants = grantsIn(block);
-    out.push({
-      key,
-      label: label.replace(/\\'/g, "'"),
-      grants,
-      presets: Object.fromEntries(ROLE_ORDER.map((r, i) => [r, values[i] === 'true'])) as Record<PresetRole, boolean>,
-    });
-  }
-  return out;
-})();
+const TOGGLES: CatalogToggle[] = COPY.flatMap((e) =>
+  e.presets ? [{ key: e.key, label: e.label, grants: e.grants, presets: e.presets }] : [],
+);
 
 /** The toggle switch a person sees under this label. Throws when the catalog has none, so a rename fails the test. */
 export function catalogToggle(label: string): CatalogToggle {

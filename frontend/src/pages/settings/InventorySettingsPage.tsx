@@ -14,7 +14,7 @@ import {
   useOrganization,
   useUpdateOrganization,
   type OrgFormValues,
-} from '@/lib/api/organization';
+} from '@/lib/api/shared/organization';
 import { useSettingsBar } from './SettingsLayout';
 import { useLocations } from '@/lib/api/inventory';
 import { Card } from '@/components/ui/card';

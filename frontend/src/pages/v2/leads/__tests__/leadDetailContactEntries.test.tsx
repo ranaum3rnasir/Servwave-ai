@@ -12,12 +12,11 @@ import userEvent from '@testing-library/user-event';
 
 import api from '@/lib/axios';
 import { toast } from '@/components/ui/use-toast';
-import { buildAbility } from '@/lib/ability';
 import { requestCall } from '@/lib/communication/phoneTabHandoff';
-import { renderWithProviders, LEAD_FIXTURE } from '@/__tests__/helpers';
+import { LEAD_FIXTURE } from '@/__tests__/helpers';
 import { catalogToggle } from '@/__tests__/support/backendSwitchCatalog';
 
-import LeadDetailPage from '../LeadDetailPage';
+import { renderLeadDetail, serveLeadDetail, stubBrowser } from '@/__tests__/harness/leadDetailPage';
 
 vi.mock('@/components/tasks/JobLeadTasksTab', () => ({ JobLeadTasksTab: () => null }));
 vi.mock('@/lib/communication/phoneTabHandoff', () => ({ requestCall: vi.fn() }));
@@ -26,12 +25,7 @@ vi.mock('@/components/ui/use-toast', async (importOriginal) => ({
   toast: vi.fn(),
 }));
 
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 const LEAD_ID = 'e0000000-0000-0000-0000-000000000001';
 
@@ -52,7 +46,6 @@ vi.mock('@/lib/entitlements', async (importOriginal) => ({
 }));
 
 const mockApi = vi.mocked(api);
-const adminAbility = buildAbility([{ action: 'manage', subject: 'all' }]);
 
 const key = (name: string) => catalogToggle(name).key;
 type Holds = { contactDetails?: boolean; copyPhone?: boolean; contact?: boolean };
@@ -111,14 +104,8 @@ const EDITS_LEAD = ['edit', 'edit_address', 'edit_source', 'edit_schedule'];
 function renderLeadPage(holds: Holds, lead = leadWith(), opts: { service?: boolean } = {}) {
   phoneService.value = opts.service ?? true;
   localStorage.clear();
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url === '/api/permission-switches/me') return { data: meAnswer(holds) };
-    if (url.includes('/api/leads/')) return { data: { lead } };
-    if (url.includes('/api/users')) return { data: { users: [] } };
-    if (url.includes('/api/tags')) return { data: { tags: [] } };
-    return { data: {} };
-  });
-  return renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+  serveLeadDetail({ lead, me: meAnswer(holds) });
+  return renderLeadDetail();
 }
 
 /** The page once the lead and the person's switches have both arrived. */

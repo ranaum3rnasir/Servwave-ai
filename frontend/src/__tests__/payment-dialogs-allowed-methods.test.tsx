@@ -14,11 +14,13 @@ import api from '@/lib/axios';
 import { renderWithProviders } from './helpers';
 import { RecordPaymentDialog } from '@/components/invoices/RecordPaymentDialog';
 import { RecordEstimatePaymentDialog } from '@/components/estimates/RecordEstimatePaymentDialog';
-import { ALL_ACCEPTED, type AcceptedPaymentMethods, type SwitchValue } from '@/lib/api/permissionSwitches';
+import { ALL_ACCEPTED } from '@/lib/api/permissionSwitches';
+import { type AcceptedPaymentMethods } from '@/lib/api/recordablePaymentMethods';
+import { type SwitchValue } from '@/lib/api/shared/switchTypes';
 
 vi.mock('@/lib/axios', () => ({ default: { post: vi.fn(), get: vi.fn() } }));
-vi.mock('@/lib/api/organization', async (orig) => ({
-  ...(await orig<typeof import('@/lib/api/organization')>()),
+vi.mock('@/lib/api/shared/organization', async (orig) => ({
+  ...(await orig<typeof import('@/lib/api/shared/organization')>()),
   useOrganization: () => ({ data: { deposit_default_type: 'PERCENTAGE', deposit_default_percentage: 50 } }),
 }));
 

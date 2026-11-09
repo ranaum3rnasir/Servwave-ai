@@ -1,4 +1,5 @@
-import type { BuiltInRoleKey, CatalogLayout, CatalogSwitch, SwitchCatalog, SwitchSet, SwitchValue } from '@/lib/api/permissionSwitches';
+import type { BuiltInRoleKey, CatalogLayout, CatalogSwitch, SwitchCatalog } from '@/lib/api/permissionSwitches';
+import type { SwitchSet, SwitchValue } from '@/lib/api/shared/switchTypes';
 
 /**
  * A catalog in the shape the server's catalog read answers, small enough to read and wide enough to hold every kind

@@ -10,24 +10,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, within, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
-import { buildAbility } from '@/lib/ability';
 import { renderWithProviders } from './helpers';
-import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
+import { buildAbility } from '@/lib/ability';
+import { JOB_ID, mountJobDetail, stubBrowser } from './harness/jobDetailPage';
 import JobsPage from '@/pages/v2/jobs/JobsPage';
-
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
 
 vi.mock('@/components/tasks/JobLeadTasksTab', () => ({ JobLeadTasksTab: () => null }));
 
-const JOB_ID = 'j0000000-0000-0000-0000-000000000015';
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual('react-router-dom');
-  return { ...actual, useParams: () => ({ id: JOB_ID }), useNavigate: () => vi.fn() };
-});
+vi.mock('react-router-dom', async () => (await import('./harness/jobDetailRouter')).jobDetailRouter());
 
 const ability = buildAbility([{ action: 'manage', subject: 'all' }]);
 const mockApi = vi.mocked(api);
@@ -63,26 +53,23 @@ function jobAnswer(over: Record<string, unknown> = {}) {
   };
 }
 
-function mountJob(over: Record<string, unknown> = {}, reasons: unknown[] = SIX) {
-  const job = jobAnswer(over);
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url === '/api/job-cancel-reasons') return { data: { job_cancel_reasons: reasons } } as never;
-    if (url === `/api/jobs/${JOB_ID}/visits`) return { data: { visits: [VISIT] } } as never;
-    if (url.endsWith('/scopes')) return { data: { scopes: [], billing: { total: 0, invoiced: 0, remaining: 0 } } } as never;
-    if (url.endsWith('/line-items')) return { data: { lines: [], billing: { total: 0, invoiced: 0, remaining: 0 } } } as never;
-    if (url.includes(`/api/jobs/${JOB_ID}`)) return { data: { job } } as never;
-    return { data: {} } as never;
+/** `reasons: 'loading'` holds the list read in flight (a read that never settles). */
+function mountJob(over: Record<string, unknown> = {}, reasons: unknown[] | 'loading' = SIX) {
+  return mountJobDetail({
+    job: jobAnswer(over),
+    visits: [VISIT],
+    routes: [{
+      match: (url) => url === '/api/job-cancel-reasons',
+      data: reasons === 'loading' ? () => new Promise(() => {}) : { job_cancel_reasons: reasons },
+    }],
   });
-  return renderWithProviders(<JobDetailPage />, { ability });
 }
 
 const cancelCalls = () => mockApi.post.mock.calls.filter(([url]) => String(url).endsWith('/cancel'));
 
 beforeEach(() => {
   vi.clearAllMocks();
-  global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
-  if (!Element.prototype.hasPointerCapture) Element.prototype.hasPointerCapture = () => false;
-  if (!Element.prototype.scrollIntoView) Element.prototype.scrollIntoView = () => {};
+  stubBrowser();
   mockApi.post.mockResolvedValue({ data: { job: {}, voided_invoice_ids: [] } } as never);
 });
 
@@ -159,8 +146,7 @@ describe('the job page cancel dialog', () => {
   });
 
   it('does not offer a picker that looks empty while the list is still loading', async () => {
-    mountJob();
-    mockApi.get.mockImplementation(((url: string) => (url === '/api/job-cancel-reasons' ? new Promise(() => {}) : Promise.resolve({ data: {} }))) as never);
+    mountJob({}, 'loading');
     const user = userEvent.setup();
     const dialog = await openCancelDialog(user);
     expect(within(dialog).getByRole('combobox', { name: /Reason/ })).toBeDisabled();

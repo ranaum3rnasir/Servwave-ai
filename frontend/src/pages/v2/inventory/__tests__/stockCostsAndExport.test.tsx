@@ -1,3 +1,33 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import api from '@/lib/axios';
+import { abilityWithSwitches } from '@/__tests__/support/backendSwitchCatalog';
+import { useInventoryAlertStore } from '@/stores/inventory-alert.store';
+import { renderInventory, serveInventory } from '@/__tests__/harness/inventoryPage';
+import type { Item, Location } from '@/lib/api/inventory';
+import { useAuthStore } from '@/stores/auth.store';
+
+vi.mock('@/lib/inventory/csv', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/inventory/csv')>();
+  return { ...actual, downloadCSV: (csv: string, name: string) => void downloads.files.push({ csv, name }) };
+});
+vi.mock('@/lib/axios');
+
+const downloads = vi.hoisted(() => ({ files: [] as Array<{ csv: string; name: string }> }));
+
+// Each test starts from the setup file's signed-in user and bare client calls: reset them here, so a test states its own user
+// and answers in its own `beforeEach` (`clearAllMocks` keeps implementations).
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(useAuthStore).mockReset();
+  vi.mocked(api.get).mockReset();
+  vi.mocked(api.post).mockReset();
+  vi.mocked(api.patch).mockReset();
+  vi.mocked(api.put).mockReset();
+  vi.mocked(api.delete).mockReset();
+});
+
 /**
  * Roles & Permissions S07.15 - the Stock page hides cost without See costs (never as $0) and its two
  * downloads follow Export stock.
@@ -7,16 +37,6 @@
  * never from a role name. A person without See costs is served items with no `unitCost` key at all, which
  * is what the server does (S01.15); the screen must not turn that absence into a figure.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
-
-import api from '@/lib/axios';
-import { renderWithProviders } from '@/__tests__/helpers';
-import { abilityWithSwitches } from '@/__tests__/support/backendSwitchCatalog';
-import { useInventoryAlertStore } from '@/stores/inventory-alert.store';
-import InventoryPage from '@/pages/v2/inventory/InventoryPage';
-import type { Item, Location } from '@/lib/api/inventory';
 
 class ResizeObserverStub {
   observe() {}
@@ -24,15 +44,6 @@ class ResizeObserverStub {
   disconnect() {}
 }
 global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
-
-const downloads = vi.hoisted(() => ({ files: [] as Array<{ csv: string; name: string }> }));
-vi.mock('@/lib/inventory/csv', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/inventory/csv')>();
-  return { ...actual, downloadCSV: (csv: string, name: string) => void downloads.files.push({ csv, name }) };
-});
-
-const mockApi = vi.mocked(api);
-vi.mock('@/lib/axios');
 
 const WAREHOUSE = 'a0000000-0000-0000-0000-0000000000w1';
 
@@ -61,34 +72,29 @@ beforeEach(() => {
   downloads.files.length = 0;
   served = WITH_COST;
   useInventoryAlertStore.setState({ pending: null, nonce: 0 });
-  mockApi.get.mockImplementation((async (url: string) => {
-    if (url === '/api/permission-switches/me') return { data: { admin_box: false, values: { view_stock: true }, rules: [] } };
-    if (url.startsWith('/api/inventory/items')) return { data: { data: served } };
-    if (url.startsWith('/api/inventory/locations')) return { data: { locations: LOCATIONS } };
-    if (url.startsWith('/api/inventory/assets')) return { data: { data: [], meta: { total: 0 } } };
-    if (url.startsWith('/api/logistic-orders')) return { data: { data: [], page: 1, limit: 50, total: 0 } };
-    return {
-      data: {
-        data: [], meta: { page: 1, limit: 1, total: 0, totalPages: 1 }, vendors: [], categories: [], branches: [], brands: [],
-        jobStages: [], purchaseOrders: [], users: [], finishes: [], techs: [], itemGroups: [], total: 0,
-      },
-    };
-  }) as typeof mockApi.get);
+  serveStock();
 });
+
+function serveStock(more: Array<{ match: (url: string) => boolean; data: unknown }> = []) {
+  serveInventory({ items: () => served, locations: LOCATIONS, routes: [
+    ...more,
+    { match: (url) => url === '/api/permission-switches/me', data: { admin_box: false, values: { view_stock: true }, rules: [] } },
+  ] });
+}
 
 const READ = ['View stock', 'View price book', 'View purchase orders', 'View vendors', 'See prices'];
 
 function renderStock(...extra: string[]) {
-  return renderWithProviders(<InventoryPage />, {
+  return renderInventory({
     ability: abilityWithSwitches(...READ, ...extra),
-    initialEntries: ['/inventory'],
+    entry: '/inventory',
   });
 }
 
 function renderActivity(...extra: string[]) {
-  return renderWithProviders(<InventoryPage />, {
+  return renderInventory({
     ability: abilityWithSwitches(...READ, 'See inventory activity', ...extra),
-    initialEntries: ['/inventory/activity'],
+    entry: '/inventory/activity',
   });
 }
 
@@ -206,13 +212,7 @@ describe('The Activity tab download follows Export stock', () => {
   };
 
   beforeEach(() => {
-    const base = mockApi.get.getMockImplementation()!;
-    mockApi.get.mockImplementation((async (url: string, ...rest: unknown[]) => {
-      if (url.startsWith('/api/inventory/movements')) {
-        return { data: { data: [MOVEMENT], meta: { page: 1, limit: 25, total: 1, totalPages: 1 } } };
-      }
-      return (base as (u: string, ...r: unknown[]) => Promise<unknown>)(url, ...rest);
-    }) as typeof mockApi.get);
+    serveStock([{ match: (url) => url.startsWith('/api/inventory/movements'), data: { data: [MOVEMENT], meta: { page: 1, limit: 25, total: 1, totalPages: 1 } } }]);
   });
 
   it('shows no Export CSV button to a person who sees the ledger but lacks Export stock', async () => {

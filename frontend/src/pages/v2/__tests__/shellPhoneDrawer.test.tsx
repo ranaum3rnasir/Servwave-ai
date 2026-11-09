@@ -28,7 +28,7 @@ vi.mock('@/components/layout/GlobalSearch', () => ({
 vi.mock('@/lib/api/communication', () => ({
   useUnreadCounts: () => ({ sms: 0, whatsapp: 0, email: 0 }),
 }));
-vi.mock('@/lib/api/organization', () => ({ useOrganization: () => ({ data: { name: 'Test Org' } }) }));
+vi.mock('@/lib/api/shared/organization', () => ({ useOrganization: () => ({ data: { name: 'Test Org' } }) }));
 
 // The real ClockInOutMenu runs; only its server hooks are controlled.
 const clock = { isClockedIn: false, sinceTs: null as number | null, zoneLabel: null as string | null };

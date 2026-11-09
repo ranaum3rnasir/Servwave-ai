@@ -5,7 +5,7 @@ import { ChevronDown, Plus } from 'lucide-react';
 import { NewEstimateDialog } from '@/components/estimates/NewEstimateDialog';
 import { quickCreateItems, quickCreateItemShows, type QuickCreateItem } from '@/components/layout/nav-config';
 import { useAppAbility } from '@/contexts/AbilityContext';
-import { useMySwitches } from '@/lib/api/mySwitches';
+import { useMySwitches } from '@/lib/api/shared/mySwitches';
 import { Button } from '@/ui-kit/components/ui/button';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,

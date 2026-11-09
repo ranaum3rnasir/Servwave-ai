@@ -5,7 +5,7 @@ import { useAuthStore } from '@/stores/auth.store';
 import V2LoginPage from '@/pages/v2/auth-public/LoginPage';
 import V2AcceptInvitePage from '@/pages/v2/auth-public/AcceptInvitePage';
 import V2NotAuthorizedPage from '@/pages/v2/auth-public/NotAuthorizedPage';
-import V2PublicEstimatePage from '@/pages/v2/auth-public/PublicEstimatePage';
+import { renderPublicEstimate, servePublicEstimate } from '@/__tests__/harness/publicEstimatePage';
 import V2PublicInvoicePage from '@/pages/v2/auth-public/PublicInvoicePage';
 
 const login = vi.fn();
@@ -59,9 +59,8 @@ describe('v2 auth-public smoke', () => {
   });
 
   it('public estimate with no token renders the fatal card and fetches nothing', async () => {
-    const f = vi.fn();
-    vi.stubGlobal('fetch', f);
-    renderWithProviders(<V2PublicEstimatePage />, { initialEntries: ['/p/estimates/x'] });
+    const f = servePublicEstimate();
+    renderPublicEstimate({ entry: '/p/estimates/x' });
     expect(await screen.findByText('Unavailable')).toBeInTheDocument();
     expect(screen.getByText('Invalid link - token missing')).toBeInTheDocument();
     expect(f).not.toHaveBeenCalled();

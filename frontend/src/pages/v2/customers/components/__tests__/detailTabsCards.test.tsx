@@ -33,8 +33,8 @@ class ResizeObserverStub {
 global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
 
 const ORG = 'America/Los_Angeles';
-vi.mock('@/lib/api/organization', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/organization')>();
+vi.mock('@/lib/api/shared/organization', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/api/shared/organization')>();
   return { ...actual, useOrganization: () => ({ data: { id: 'org-1', timezone: ORG }, isLoading: false, isError: false }) };
 });
 

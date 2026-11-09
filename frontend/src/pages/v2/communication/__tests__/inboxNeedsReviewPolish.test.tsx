@@ -11,11 +11,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { renderWithProviders } from '@/__tests__/helpers';
+import { renderInbox, serveInbox, signInDispatcher } from '@/__tests__/harness/inboxPage';
 import { buildAbility } from '@/lib/ability';
-import { useAuthStore } from '@/stores/auth.store';
 import { MEDIA } from '@/ui-kit/lib/breakpoints';
-import api from '@/lib/axios';
 
 const FULL = buildAbility([
   { action: 'read', subject: 'Communication' },
@@ -23,19 +21,13 @@ const FULL = buildAbility([
   { action: 'access_inbox', subject: 'Communication' },
 ]);
 
-vi.mock('@/lib/entitlements', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/lib/entitlements')>()),
-  useFeature: () => true,
-  useEntitlementsReady: () => true,
-}));
-
-import InboxPage from '@/pages/v2/communication/InboxPage';
+vi.mock('@/lib/entitlements', async (importOriginal) =>
+  (await import('@/__tests__/harness/inboxApiStub')).inboxEntitlements(await importOriginal<typeof import('@/lib/entitlements')>()));
 
 /** Wednesday 14 Oct 2026, noon on the default company clock (US Eastern). */
 const NOW = new Date('2026-10-14T16:00:00.000Z');
 const at = (iso: string) => new Date(iso).getTime();
 
-const THREAD_A = '11111111-1111-4111-8111-111111111111';
 const REPLY_LOCAL_PART = 'reply-sample-local-part';
 const LONG_ADDRESS = 'system.admin.support@mail.servwave.example';
 
@@ -55,28 +47,19 @@ const CONVERSATIONS = Array.from({ length: 130 }, (_, n) => ({
 let all: ReturnType<typeof held>[];
 
 function answerNetwork() {
-  vi.mocked(api.get).mockImplementation(async (url: string, config?: { params?: unknown }) => {
-    const params = (config?.params ?? {}) as Record<string, unknown>;
-    if (url === '/api/communication/mailboxes') {
-      return {
-        data: {
-          scope: 'attached', selected: params.selected ?? 'mine', selected_label: null, selected_unread: 0, total_unread: 0,
-          mine: { id: 'box-mine', unread: 0 }, held: [], main: null, people: null,
-          needs_review: { selected: all.length, total: all.length },
-        },
-      };
-    }
-    if (url === '/api/communication/emails/unmatched') {
+  serveInbox({
+    mailboxes: (params) => ({
+      scope: 'attached', selected: params.selected ?? 'mine', selected_label: null, selected_unread: 0, total_unread: 0,
+      mine: { id: 'box-mine', unread: 0 }, held: [], main: null, people: null,
+      needs_review: { selected: all.length, total: all.length },
+    }),
+    unmatched: (params) => {
       const limit = Number(params.limit); const offset = Number(params.offset);
-      return { data: { emails: all.slice(offset, offset + limit), total: all.length, limit, offset, selected: params.mailbox } };
-    }
-    if (url === '/api/communication/emails') return { data: { emails: CONVERSATIONS } };
-    if (url === '/api/communication/email-groups') return { data: { groups: [] } };
-    if (url === '/api/communication/forward-rules') return { data: { rules: [] } };
-    if (url === '/api/communication/team-members') return { data: { members: [] } };
-    if (url === '/api/communication/sending-identity') return { data: { status: 'active', address: LONG_ADDRESS, name: 'Me at Acme', sendingEnabled: true } };
-    if (url === '/api/communication/my-mailbox') return { data: { mailbox: { status: 'active', address: LONG_ADDRESS } } };
-    return { data: {} };
+      return { emails: all.slice(offset, offset + limit), total: all.length, limit, offset, selected: params.mailbox };
+    },
+    emails: CONVERSATIONS,
+    sendingIdentity: { status: 'active', address: LONG_ADDRESS, name: 'Me at Acme', sendingEnabled: true },
+    myMailbox: { mailbox: { status: 'active', address: LONG_ADDRESS } },
   });
 }
 
@@ -95,12 +78,7 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(NOW);
   all = [held(1, 'automatic', at('2026-10-14T14:07:00.000Z'))];
-  vi.mocked(useAuthStore).mockImplementation(((selector: (s: Record<string, unknown>) => unknown) =>
-    selector({
-      user: { id: 'u1', email: 'jane@test.com', first_name: 'Jane', last_name: 'Smith', role: 'DISPATCHER', organization_id: 'org-1', org_features: ['email', 'phone'] },
-      isAuthenticated: true, isLoading: false, error: null,
-    })) as typeof useAuthStore,
-  );
+  signInDispatcher();
   answerNetwork();
 });
 afterEach(() => {
@@ -108,7 +86,7 @@ afterEach(() => {
   mockWidth('desktop');
 });
 
-const render = () => renderWithProviders(<InboxPage />, { ability: FULL, initialEntries: ['/communication/inbox'] });
+const render = () => renderInbox({ ability: FULL, entry: '/communication/inbox' });
 const openFolder = async (user: ReturnType<typeof userEvent.setup>) => {
   await user.click(await screen.findByRole('button', { name: /Needs review/ }));
   return screen.findByRole('region', { name: 'Held messages' });

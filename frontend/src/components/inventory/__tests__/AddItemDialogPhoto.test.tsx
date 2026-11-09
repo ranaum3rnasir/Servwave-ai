@@ -13,7 +13,7 @@
  *   • a vector still rides inline, unrasterized (no upload path in this product stores one);
  *   • a failed pick says so, in copy an operator can act on.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { renderWithProviders } from '@/__tests__/helpers';
 import { AddItemDialog, type NewItem } from '../AddItemDialog';
@@ -39,7 +39,7 @@ vi.mock('@/lib/api/inventory', async (importOriginal) => {
   };
 });
 
-vi.mock('@/lib/api/organization', () => ({
+vi.mock('@/lib/api/shared/organization', () => ({
   useOrganization: () => ({ data: { default_inventory_location_id: 'loc_1' }, isLoading: false }),
 }));
 
@@ -94,6 +94,24 @@ function pick(input: HTMLInputElement, file: File) {
 }
 
 const jpeg = () => new File([new Uint8Array([0xff, 0xd8, 0xff])], 'lock.jpg', { type: 'image/jpeg' });
+
+// jsdom loads no image, so a real `new Image()` would neither load nor error and the picture's decode
+// would sit out its whole timeout (8 s) before the "cannot rasterize" path. Stand in a decoder that fails
+// at once: the same branch a browser takes on an undecodable picture, without the wait.
+beforeEach(() => {
+  vi.stubGlobal(
+    'Image',
+    class {
+      onerror: (() => void) | null = null;
+      set src(_value: string) {
+        queueMicrotask(() => this.onerror?.());
+      }
+    },
+  );
+});
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 beforeEach(() => {
   vi.clearAllMocks();

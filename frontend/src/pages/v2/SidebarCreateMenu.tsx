@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom';
 
 import { quickCreateItems, quickCreateItemShows } from '@/components/layout/nav-config';
 import { useAppAbility } from '@/contexts/AbilityContext';
-import { useMySwitches } from '@/lib/api/mySwitches';
+import { useMySwitches } from '@/lib/api/shared/mySwitches';
 import { useSettingsGuard } from '@/stores/settingsGuard.store';
 import { useSidebar } from '@/ui-kit/components/layout/appShell';
 import { Button } from '@/ui-kit/components/ui/button';

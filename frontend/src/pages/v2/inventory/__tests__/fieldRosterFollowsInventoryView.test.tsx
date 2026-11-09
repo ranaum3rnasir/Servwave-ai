@@ -10,13 +10,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import api from '@/lib/axios';
 import { renderWithProviders, inventoryWriteAbility } from '@/__tests__/helpers';
-import InventoryPage from '@/pages/v2/inventory/InventoryPage';
+import { renderInventory, serveInventory } from '@/__tests__/harness/inventoryPage';
 import { StageDetailDialog } from '@/components/inventory/StageDetailDialog';
 import type { JobStage } from '@/lib/api/inventory';
 
-const mockApi = vi.mocked(api);
 
 const h = vi.hoisted(() => ({
   LOC_WH: 'aaaaaaa1-0000-4000-8000-000000000001',
@@ -26,33 +24,21 @@ const h = vi.hoisted(() => ({
 // Read-side seam hooks answer stable data (the page's seed loops re-run on a fresh array); the staff list
 // stays REAL so it reads the answer served below.
 vi.mock('@/lib/api/inventory', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/inventory')>();
-  const EMPTY: never[] = [];
-  const stable =
-    <T,>(data: T) =>
-    () => ({ data, isLoading: false, isError: false });
-  return {
-    ...actual,
-    useInventoryItems: stable(EMPTY),
-    useLocations: stable([{ id: h.LOC_WH, name: 'Main Warehouse', type: 'warehouse', branch: 'HQ' }]),
-    useVendors: stable(EMPTY),
-    useCategories: stable(EMPTY),
-    useBranches: stable([{ id: 'br-1', name: 'HQ' }]),
-    useBrands: stable(EMPTY),
-    useJobStages: stable(EMPTY),
-    useMovements: stable(EMPTY),
-    useInventoryJobs: stable(EMPTY),
-    usePurchaseOrders: stable(EMPTY),
-  };
+  return (await import('@/__tests__/harness/inventoryApiStub')).inventoryApi(
+    await importOriginal<typeof import('@/lib/api/inventory')>(),
+    {
+      reads: {
+        useLocations: [{ id: h.LOC_WH, name: 'Main Warehouse', type: 'warehouse', branch: 'HQ' }],
+        useBranches: [{ id: 'br-1', name: 'HQ' }],
+        useInventoryJobs: [],
+        usePurchaseOrders: [],
+      },
+    },
+  );
 });
 
-vi.mock('@/lib/api/organization', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/organization')>();
-  return {
-    ...actual,
-    useOrganization: () => ({ data: { id: 'org-1', default_inventory_location_id: h.LOC_WH }, isLoading: false, isError: false }),
-  };
-});
+vi.mock('@/lib/api/shared/organization', async (importOriginal) =>
+  (await import('@/__tests__/harness/inventoryApiStub')).organizationApi(await importOriginal<typeof import('@/lib/api/shared/organization')>(), { id: 'org-1', default_inventory_location_id: h.LOC_WH }));
 
 /** The server's answer, exactly its shape: a view per person and no role. */
 const STAFF = [
@@ -63,11 +49,7 @@ const STAFF = [
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockApi.get.mockImplementation(((url: string) => {
-    if (url === '/api/inventory/techs') return Promise.resolve({ data: { techs: STAFF } });
-    if (url === '/api/inventory/vendors') return Promise.resolve({ data: { vendors: [] } });
-    return Promise.resolve({ data: {} });
-  }) as typeof mockApi.get);
+  serveInventory({ techs: STAFF, vendors: [] });
 });
 
 async function optionNames(trigger: HTMLElement): Promise<string[]> {
@@ -79,12 +61,11 @@ async function optionNames(trigger: HTMLElement): Promise<string[]> {
 
 describe('the van\'s primary-tech picker on the Inventory page', () => {
   it('offers the people whose Inventory view is Field, and not the ones at the counter', async () => {
-    renderWithProviders(<InventoryPage />, { initialEntries: ['/inventory'], ability: inventoryWriteAbility() });
+    renderInventory({ entry: '/inventory', ability: inventoryWriteAbility() });
 
-    await userEvent.click(await screen.findByText('Add Location / Van').catch(async () => {
-      await userEvent.click(await screen.findByRole('button', { name: /all locations/i }));
-      return screen.findByText('Add Location / Van');
-    }));
+    // The Add button lives in the location picker's footer, which only exists once the picker is open.
+    await userEvent.click(await screen.findByRole('button', { name: /all locations/i }));
+    await userEvent.click(await screen.findByText('Add Location / Van'));
     const dialog = within(await screen.findByRole('dialog'));
     await userEvent.click(dialog.getByRole('button', { name: /Truck \/ Van/ }));
 

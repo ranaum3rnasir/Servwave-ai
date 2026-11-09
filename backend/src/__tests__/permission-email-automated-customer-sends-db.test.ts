@@ -589,7 +589,7 @@ suite('every email to a customer carries a reply address tied to its record (rea
       const token = `tok-${randomUUID()}`;
       await db.estimate.update({ where: { id: estimate.id }, data: { status: 'SENT', public_token: token, sent_at: new Date() } });
       const { default: request } = await import('supertest');
-      const app = (await import('../app.js')).default as never;
+      const app = await fx.listener();
 
       const res = await request(app).post(`/api/estimates/${estimate.id}/approve?token=${token}`).send({ signature_data: ONE_PIXEL_PNG });
 

@@ -4,7 +4,7 @@
  * Two slices once each added a hook named `useMySwitches` for `GET /api/permission-switches/me`, in two files with
  * different shapes and different cache policies; the menu and the job page's customer block would have sent the
  * request twice and followed a role edit at different times. Every screen reads the answer through
- * `lib/api/mySwitches.ts`. This fails when a second file calls the route or exports a second reader.
+ * `lib/api/shared/mySwitches.ts`. This fails when a second file calls the route or exports a second reader.
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
@@ -35,10 +35,10 @@ function filesMatching(pattern: RegExp): string[] {
 
 describe('the reader of the person\'s own switches', () => {
   it('is called from exactly one production file', () => {
-    expect(filesMatching(/['"`]\/api\/permission-switches\/me['"`]/)).toEqual(['lib/api/mySwitches.ts']);
+    expect(filesMatching(/['"`]\/api\/permission-switches\/me['"`]/)).toEqual(['lib/api/shared/mySwitches.ts']);
   });
 
   it('is exported under one hook name from one file', () => {
-    expect(filesMatching(/export (?:function|const) useMySwitches\b/)).toEqual(['lib/api/mySwitches.ts']);
+    expect(filesMatching(/export (?:function|const) useMySwitches\b/)).toEqual(['lib/api/shared/mySwitches.ts']);
   });
 });

@@ -13,7 +13,7 @@ import { useShellScroll } from '@/hooks/useShellScroll';
 
 import PaymentsPage from '../PaymentsPage';
 import { attentionCalls, makeItem, serveAttention } from './attentionFixtures';
-import { TabHarness, mockApi, serve } from './paymentsFixtures';
+import { TabHarness, listCalls, mockApi, serve } from './paymentsFixtures';
 import { PayoutsHarness, servePayouts } from './payoutsFixtures';
 
 vi.mock('@stripe/connect-js/pure', () => ({ loadConnectAndInitialize: vi.fn(() => ({ logout: vi.fn() })) }));
@@ -99,7 +99,9 @@ describe('nothing on the page moves the page', () => {
     await screen.findAllByText('Customer 1');
     await u.click(screen.getByRole('button', { name: 'Succeeded' }));
     await u.type(screen.getByRole('searchbox', { name: /Search/ }), 'ann');
-    await new Promise((r) => setTimeout(r, 500));
+    // The search is debounced: wait until the list has been asked for it (that is the page's whole
+    // reaction), and judge the scroll position after that.
+    await waitFor(() => expect(listCalls().some((c) => c.q === 'ann')).toBe(true));
     expect(state.top).toBe(400);
     expect(scrolled).toHaveLength(0);
   });

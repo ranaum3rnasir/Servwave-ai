@@ -1,0 +1,189 @@
+{
+  "knownAreas": [
+    "*",
+    ".github/**",
+    "backend/**",
+    "docs/**",
+    "md_files/**",
+    "scripts/**",
+    "frontend/*",
+    "frontend/e2e/**",
+    "frontend/public/**",
+    "frontend/scripts/**",
+    "frontend/src/**"
+  ],
+  "triggers": [
+    {
+      "code": "lockfile",
+      "patterns": [
+        "**/package-lock.json",
+        "**/npm-shrinkwrap.json",
+        "**/yarn.lock",
+        "**/pnpm-lock.yaml"
+      ]
+    },
+    {
+      "code": "package-manifest",
+      "patterns": [
+        "**/package.json",
+        "**/.npmrc",
+        ".nvmrc",
+        ".node-version",
+        ".tool-versions"
+      ]
+    },
+    {
+      "code": "tsconfig",
+      "patterns": [
+        "**/tsconfig*.json"
+      ]
+    },
+    {
+      "code": "test-config",
+      "patterns": [
+        "frontend/vitest.config.*",
+        "frontend/vitest.workspace.*",
+        "frontend/vite.config.*",
+        "frontend/pwa-manifest.ts",
+        "frontend/public-page-routing.ts",
+        "frontend/public-entry-build.ts",
+        "frontend/public-early-script.ts",
+        "frontend/public-early.template.js",
+        "frontend/vendor-chunks.ts"
+      ]
+    },
+    {
+      "code": "setup-file",
+      "patterns": [
+        "frontend/src/__tests__/setup.ts"
+      ]
+    },
+    {
+      "code": "workflows",
+      "patterns": [
+        ".github/workflows/**",
+        ".github/actions/**"
+      ]
+    },
+    {
+      "code": "env-file",
+      "patterns": [
+        "frontend/.env*"
+      ]
+    }
+  ],
+  "alwaysRun": [
+    "frontend/src/**/*guard*.test.{ts,tsx}",
+    "frontend/src/__tests__/mobile-gate-*.test.ts",
+    "frontend/src/__tests__/test-ci-*.test.ts",
+    "frontend/src/__tests__/test-brake-*.test.ts",
+    "frontend/src/__tests__/test-select-*.test.ts",
+    "frontend/src/__tests__/real-device-*.test.ts",
+    "frontend/src/design-system/__tests__/*.test.ts",
+    "frontend/src/__tests__/add-new-client-target.test.tsx",
+    "frontend/src/__tests__/legacy-modal-overlay.test.tsx",
+    "frontend/src/__tests__/remaining-dialogs-overlay.test.tsx",
+    "frontend/src/__tests__/staffLayoutLazyChunks.test.ts",
+    "frontend/src/__tests__/status-registry.test.ts",
+    "frontend/src/pages/v2/settings/__tests__/MyProfilePage.passwordLink.test.tsx",
+    "frontend/src/__tests__/breakpoint-source.test.ts",
+    "frontend/src/__tests__/catalog-import-template.test.tsx",
+    "frontend/src/__tests__/communication-no-mock.test.ts",
+    "frontend/src/__tests__/communication-provider-name-sweep.test.ts",
+    "frontend/src/__tests__/compose-from-identity.test.tsx",
+    "frontend/src/__tests__/csp-pdf-preview.test.ts",
+    "frontend/src/__tests__/dashboard-pill-contrast.test.ts",
+    "frontend/src/__tests__/destructive-select-contrast.test.ts",
+    "frontend/src/__tests__/estimate-cache-merge-preserves-tags.test.tsx",
+    "frontend/src/__tests__/estimate-document-view-twins.test.ts",
+    "frontend/src/__tests__/estimate-has-no-attachments.test.tsx",
+    "frontend/src/__tests__/estimate-history-deposit-method.test.tsx",
+    "frontend/src/__tests__/estimate-optional-row-one-tag.test.tsx",
+    "frontend/src/__tests__/estimate-selection-lock.test.tsx",
+    "frontend/src/__tests__/field-drafts-entry-weight.test.ts",
+    "frontend/src/__tests__/input-guards/input-primitives.test.tsx",
+    "frontend/src/__tests__/installed-app-head-and-manifest.test.ts",
+    "frontend/src/__tests__/instrument-defers-replay.test.ts",
+    "frontend/src/__tests__/intended-scrollers.test.ts",
+    "frontend/src/__tests__/inventory-no-role-as-rule.test.ts",
+    "frontend/src/__tests__/invoice-header-actions.test.tsx",
+    "frontend/src/__tests__/job-lifecycle-bar-dark-labels.test.tsx",
+    "frontend/src/__tests__/job-office-review.test.tsx",
+    "frontend/src/__tests__/keyboard-inset-consumers.test.tsx",
+    "frontend/src/__tests__/layout-guards/mobile-slice-31-dialog-layouts.test.ts",
+    "frontend/src/__tests__/lead-single-attachment-list.test.tsx",
+    "frontend/src/__tests__/lists-fixes.test.tsx",
+    "frontend/src/__tests__/lists-page.test.tsx",
+    "frontend/src/__tests__/mobile-sweep.test.ts",
+    "frontend/src/__tests__/no-en-route-copy.test.ts",
+    "frontend/src/__tests__/no-native-time-inputs.test.ts",
+    "frontend/src/__tests__/no-real-timer-sleeps.test.ts",
+    "frontend/src/__tests__/no-unbacked-ai-claims.test.ts",
+    "frontend/src/__tests__/one-toaster.test.tsx",
+    "frontend/src/__tests__/phone-visual-baselines.test.ts",
+    "frontend/src/__tests__/public-entry-build.test.ts",
+    "frontend/src/__tests__/public-page-routing.test.ts",
+    "frontend/src/__tests__/public-routes-are-v2.test.ts",
+    "frontend/src/__tests__/publicEntryGraph.test.tsx",
+    "frontend/src/__tests__/safe-areas.test.tsx",
+    "frontend/src/__tests__/schedule-no-crew-address-parity.test.ts",
+    "frontend/src/__tests__/scope-preset-needs-see-prices.test.tsx",
+    "frontend/src/__tests__/selfOnlyRefusalCopy.test.ts",
+    "frontend/src/__tests__/serviceWorkerSource.test.ts",
+    "frontend/src/__tests__/servwave-payments-no-strict-coop.test.ts",
+    "frontend/src/__tests__/stripe-status-badge-contrast.test.ts",
+    "frontend/src/__tests__/switch-catalog-copy.test.ts",
+    "frontend/src/__tests__/switch-off-contrast.test.ts",
+    "frontend/src/__tests__/task-category-palette-parity.test.ts",
+    "frontend/src/__tests__/unused-data-clients.test.ts",
+    "frontend/src/__tests__/upload-limits-match-backend.test.ts",
+    "frontend/src/__tests__/upload-resumable-transport.test.ts",
+    "frontend/src/__tests__/upload-resume-record-logout.test.ts",
+    "frontend/src/__tests__/v7-sweep-passes.test.tsx",
+    "frontend/src/__tests__/vitest-config.test.ts",
+    "frontend/src/__tests__/walkthrough-lead-statuses.test.tsx",
+    "frontend/src/components/communication/phone/__tests__/phone-tokens.reskin.test.ts",
+    "frontend/src/components/form/__tests__/select-field.test.tsx",
+    "frontend/src/components/spider/__tests__/spiderAlerts.test.tsx",
+    "frontend/src/components/ui/__tests__/card.test.tsx",
+    "frontend/src/components/ui/__tests__/dialog.test.tsx",
+    "frontend/src/components/ui/__tests__/sheet.test.tsx",
+    "frontend/src/design-system/scheduleEventPalette.test.ts",
+    "frontend/src/features/estimate-workspace/components/HistoryPanel.actionLabels.test.ts",
+    "frontend/src/lib/__tests__/missingCrew.test.ts",
+    "frontend/src/lib/ai-center/media.test.ts",
+    "frontend/src/lib/communication/__tests__/phone-vendor-footprint.test.ts",
+    "frontend/src/lib/communication/__tests__/vendorConsoleFilter.test.ts",
+    "frontend/src/lib/filters/registries/__tests__/paymentsParity.test.ts",
+    "frontend/src/lib/jobs/__tests__/closeOut.test.ts",
+    "frontend/src/lib/observability/scrubUrl.test.ts",
+    "frontend/src/lib/platform/earlyPublicFetch.test.ts",
+    "frontend/src/lib/platform/fontLoading.test.ts",
+    "frontend/src/lib/platform/staffEntryGraph.test.ts",
+    "frontend/src/lib/schedule/eventColors.test.ts",
+    "frontend/src/pages/v2/__tests__/boundedCanvas.test.tsx",
+    "frontend/src/pages/v2/__tests__/moduleIsolation.test.ts",
+    "frontend/src/pages/v2/__tests__/reportColumnsSortable.test.ts",
+    "frontend/src/pages/v2/__tests__/routeUniqueness.test.ts",
+    "frontend/src/pages/v2/__tests__/settingsTabs.test.ts",
+    "frontend/src/pages/v2/__tests__/sidebarGroupSwitches.test.tsx",
+    "frontend/src/pages/v2/__tests__/sidebarSwitches.test.tsx",
+    "frontend/src/pages/v2/__tests__/uiV2.test.ts",
+    "frontend/src/pages/v2/_shared/__tests__/statusMenuTooltipContrast.test.ts",
+    "frontend/src/pages/v2/auth-public/__tests__/approveOwner.test.tsx",
+    "frontend/src/pages/v2/auth-public/__tests__/publicBundleBudget.test.ts",
+    "frontend/src/pages/v2/auth-public/__tests__/resetPasswordReferrer.test.ts",
+    "frontend/src/pages/v2/auth-public/__tests__/staffBundleBudget.test.ts",
+    "frontend/src/pages/v2/communication/__tests__/inboxMailboxes.test.tsx",
+    "frontend/src/pages/v2/dashboard/__tests__/dashboardRoute.test.ts",
+    "frontend/src/pages/v2/dashboard/__tests__/dashboardTileContent.test.tsx",
+    "frontend/src/pages/v2/dashboard/__tests__/dashboardTileLinks.test.tsx",
+    "frontend/src/pages/v2/schedule/__tests__/SchedulePage.dragWiringGuard.test.ts",
+    "frontend/src/pages/v2/schedule/__tests__/boardSwitches.test.tsx",
+    "frontend/src/pages/v2/schedule/__tests__/dialogsAreLazy.test.ts",
+    "frontend/src/pages/v2/schedule/__tests__/dropModalSelfCrew.test.tsx",
+    "frontend/src/pages/v2/schedule/__tests__/eventEditor.test.tsx",
+    "frontend/src/ui-kit/__tests__/import-purity.test.ts",
+    "frontend/src/ui-kit/__tests__/shell-frame-css.test.ts"
+  ]
+}

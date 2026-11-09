@@ -103,8 +103,9 @@ describe('Refund an unapplied payment', () => {
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Refund payment' })).not.toBeInTheDocument());
     const drawer = screen.getByRole('dialog', { name: 'Unapplied payment' });
     expect(await within(drawer).findByText('$80.00', { selector: 'div' })).toBeInTheDocument();
-    // Give a wrongly-closing drawer time to reach the address before asserting it is still there.
-    await new Promise((r) => setTimeout(r, 150));
+    // A wrongly-closing drawer drops its address one short tick after the amount is re-read (50 ms,
+    // under the 100 ms rule); only then is "still open" a fact and not just "not yet".
+    await new Promise((r) => setTimeout(r, 50));
     expect(dparam()).toBe(`item:${PAYMENT_KEY}`);
     expect(screen.getByRole('dialog', { name: 'Unapplied payment' })).toBeInTheDocument();
     // Focus goes back to the Refund button that opened the dialog.

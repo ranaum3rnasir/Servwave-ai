@@ -22,6 +22,7 @@ import { writeSettingsAudit, logAudit } from '../lib/audit';
 import { assignRoleToPerson, clearSwitchCacheForUser, resolveSwitches, summarizePeopleRoles } from '../lib/permissions/switches/store';
 import { isSuperUser, roleMakesAdmin } from '../lib/permissions/effectiveRole';
 import { emit } from '../services/notifications/notificationService';
+import { trackAfterResponse } from '../lib/after-response';
 import { alertAddressNeeded } from '../services/notifications/addressNeededAlert';
 import { issueUserMailbox, userAddressSuffix, userMailboxesFor } from '../lib/mailbox/register';
 import { emailPageClosedFor } from '../lib/mailbox/email-page-access';
@@ -660,14 +661,14 @@ async function createUserWithMailbox(data: Prisma.UserUncheckedCreateInput, acto
       return { user: created, mailbox: issued, access: recorded };
     }),
   );
-  void alertOwnerOfAdminChange({ organizationId: data.organization_id, action: access, targetId: user.id, actorId: actor.id });
+  void trackAfterResponse(alertOwnerOfAdminChange({ organizationId: data.organization_id, action: access, targetId: user.id, actorId: actor.id }));
   if (mailbox.status === 'address_needed') {
-    void alertAddressNeeded({
+    void trackAfterResponse(alertAddressNeeded({
       organizationId: data.organization_id,
       userId: user.id,
       userName: `${data.first_name} ${data.last_name}`.trim(),
       mailboxId: mailbox.mailboxId,
-    });
+    }));
   }
   return user;
 }
@@ -1167,12 +1168,12 @@ export async function update(req: Request, res: Response) {
       void logAudit({ req, action: 'user.mailbox_returned', resourceType: 'User', resourceId: param(req, 'id'), metadata: { ...returned } });
     }
     if (returned?.returned === 'issued' && returned.addressNeeded) {
-      void alertAddressNeeded({
+      void trackAfterResponse(alertAddressNeeded({
         organizationId: existing.organization_id, userId: existing.id, userName: `${user.first_name} ${user.last_name}`.trim(), mailboxId: returned.mailboxId,
-      });
+      }));
     }
     if (handover && handover.handed !== 'none') void logAudit({ req, action: 'user.mailbox_handed_over', resourceType: 'User', resourceId: param(req, 'id'), metadata: handoverAudit(handover) });
-    void alertOwnerOfAdminChange({ organizationId: existing.organization_id, action: access, targetId: existing.id, actorId: actor.id });
+    void trackAfterResponse(alertOwnerOfAdminChange({ organizationId: existing.organization_id, action: access, targetId: existing.id, actorId: actor.id }));
     res.json({ user: await withAvatarUrl(user) });
   } catch (err) {
     logger.error('Update user error:', err);
@@ -1960,14 +1961,14 @@ export async function changeMyPassword(req: Request, res: Response) {
       other_sessions_signed_out: othersSignedOut,
       this_device_signed_out: thisDeviceSignedOut,
     });
-    emit({
+    void trackAfterResponse(emit({
       verb: 'security.password_changed',
       organizationId: req.user!.organization_id,
       actorId: null,
       object: { type: 'USER', id: req.user!.id },
       entity: { user_id: req.user!.id },
       data: { object_label: req.user!.first_name || req.user!.email },
-    }).catch((err) => logger.warn('notification emit failed', err));
+    }).catch((err) => logger.warn('notification emit failed', err)));
   } catch (err) {
     logger.error('Change my password error:', err);
     res.status(500).json({ error: 'Failed to update password' });

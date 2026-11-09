@@ -11,7 +11,7 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { TooltipProvider } from '@/ui-kit/components/ui/tooltip';
 import SwitchSetEditor from '@/components/permissions/SwitchSetEditor';
-import type { SwitchSet } from '@/lib/api/permissionSwitches';
+import type { SwitchSet } from '@/lib/api/shared/switchTypes';
 import { FIXTURE_CATALOG, FIXTURE_DRAWN_SWITCHES, FIXTURE_LAYOUT, FIXTURE_SWITCHES, catalogSwitch } from './support/permissionCatalogFixture';
 
 function Harness({ initial, onChange }: { initial: SwitchSet; onChange?: (next: SwitchSet) => void }) {

@@ -4,8 +4,8 @@ import { screen } from '@testing-library/react';
 import { renderWithProviders, seesPrices } from '@/__tests__/helpers';
 import { InvoicesTab, type CustomerInvoice } from '../detailTabs';
 
-vi.mock('@/lib/api/organization', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/organization')>();
+vi.mock('@/lib/api/shared/organization', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/api/shared/organization')>();
   return {
     ...actual,
     useOrganization: () => ({ data: { id: 'org-1', timezone: 'America/Los_Angeles' }, isLoading: false, isError: false }),

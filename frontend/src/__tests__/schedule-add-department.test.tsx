@@ -2,9 +2,21 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
-import { renderWithProviders } from './helpers';
 import { buildAbility } from '@/lib/ability';
-import SchedulePage from '@/pages/v2/schedule/SchedulePage';
+import { renderSchedule, serveSchedule } from '@/__tests__/harness/schedulePage';
+import { useAuthStore } from '@/stores/auth.store';
+
+// Each test starts from the setup file's signed-in user and bare client calls: reset them here, so a test states its own user
+// and answers in its own `beforeEach` (`clearAllMocks` keeps implementations).
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(useAuthStore).mockReset();
+  vi.mocked(api.get).mockReset();
+  vi.mocked(api.post).mockReset();
+  vi.mocked(api.patch).mockReset();
+  vi.mocked(api.put).mockReset();
+  vi.mocked(api.delete).mockReset();
+});
 
 // Issue #369 — the Schedule tab's department filter dropdown gains a
 // "+ Add department" option (ADMIN-gated, mirrors POST /api/departments) that
@@ -29,19 +41,7 @@ let departmentRows: Array<typeof DEPT_A>;
 beforeEach(() => {
   vi.clearAllMocks();
   departmentRows = [DEPT_A];
-  mockApi.get.mockImplementation((url: string) => {
-    if (url === '/api/departments') {
-      return Promise.resolve({ data: { departments: departmentRows } });
-    }
-    if (url === '/api/jobs') return Promise.resolve({ data: { jobs: [] } });
-    if (url === '/api/leads') return Promise.resolve({ data: { leads: [] } });
-    if (url === '/api/users') return Promise.resolve({ data: { users: [] } });
-    if (url === '/api/organization') return Promise.resolve({ data: {} });
-    if (url === '/api/service-plans/scheduler-bucket') {
-      return Promise.resolve({ data: { plans: [] } });
-    }
-    return Promise.resolve({ data: {} });
-  });
+  serveSchedule({ jobs: [], bucketJobs: [], departments: () => departmentRows });
   mockApi.post.mockImplementation((url: string) => {
     if (url === '/api/departments') {
       departmentRows = [...departmentRows, NEW_DEPT];
@@ -66,7 +66,7 @@ const getDeptTrigger = async () =>
 describe('SchedulePage — "+ Add department" in the department filter (issue #369)', () => {
   it('renders the "+ Add department" option for a user who can create departments', async () => {
     const user = userEvent.setup();
-    renderWithProviders(<SchedulePage />, { ability: ADMIN });
+    renderSchedule({ ability: ADMIN, tooltip: false });
     const trigger = await getDeptTrigger();
     expect(trigger).toHaveTextContent('All departments');
     await user.click(trigger);
@@ -76,7 +76,7 @@ describe('SchedulePage — "+ Add department" in the department filter (issue #3
 
   it('hides the option from a user without the create-Department ability', async () => {
     const user = userEvent.setup();
-    renderWithProviders(<SchedulePage />, { ability: NO_CREATE_DEPT });
+    renderSchedule({ ability: NO_CREATE_DEPT, tooltip: false });
     const trigger = await getDeptTrigger();
     await user.click(trigger);
     await screen.findByRole('option', { name: 'HVAC' });
@@ -85,7 +85,7 @@ describe('SchedulePage — "+ Add department" in the department filter (issue #3
 
   it('selecting the sentinel opens the dialog WITHOUT changing the active filter', async () => {
     const user = userEvent.setup();
-    renderWithProviders(<SchedulePage />, { ability: ADMIN });
+    renderSchedule({ ability: ADMIN, tooltip: false });
     const trigger = await getDeptTrigger();
     await user.click(trigger);
     await screen.findByRole('option', { name: 'HVAC' });
@@ -99,7 +99,7 @@ describe('SchedulePage — "+ Add department" in the department filter (issue #3
 
   it('creating a department POSTs, closes the dialog, and selects the new department', async () => {
     const user = userEvent.setup();
-    renderWithProviders(<SchedulePage />, { ability: ADMIN });
+    renderSchedule({ ability: ADMIN, tooltip: false });
     const trigger = await getDeptTrigger();
     await user.click(trigger);
     await screen.findByRole('option', { name: 'HVAC' });
@@ -126,7 +126,7 @@ describe('SchedulePage — "+ Add department" in the department filter (issue #3
 
   it('selecting an existing department still just filters (no dialog)', async () => {
     const user = userEvent.setup();
-    renderWithProviders(<SchedulePage />, { ability: ADMIN });
+    renderSchedule({ ability: ADMIN, tooltip: false });
     const trigger = await getDeptTrigger();
     await user.click(trigger);
     await screen.findByRole('option', { name: 'HVAC' });

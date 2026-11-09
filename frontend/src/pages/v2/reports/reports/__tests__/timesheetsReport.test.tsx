@@ -16,7 +16,7 @@ vi.mock('@/lib/api/timeclock', () => ({
   useOtReviews: vi.fn(),
   useUpsertOtReview: vi.fn(),
 }));
-vi.mock('@/lib/api/organization', () => ({ useOrganization: () => ({ data: { timezone: 'America/New_York' } }) }));
+vi.mock('@/lib/api/shared/organization', () => ({ useOrganization: () => ({ data: { timezone: 'America/New_York' } }) }));
 // Charts measure their container; jsdom has none.
 vi.mock('recharts', async (orig) => {
   const actual = await orig<typeof import('recharts')>();

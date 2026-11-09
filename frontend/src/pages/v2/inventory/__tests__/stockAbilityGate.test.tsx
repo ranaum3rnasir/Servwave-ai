@@ -1,3 +1,27 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { screen, within, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import api from '@/lib/axios';
+import { renderInventory, serveInventory } from '@/__tests__/harness/inventoryPage';
+import type { Item, Location } from '@/lib/api/inventory';
+import { abilityWithSwitches } from '@/__tests__/support/backendSwitchCatalog';
+import { useInventoryAlertStore } from '@/stores/inventory-alert.store';
+import { useAuthStore } from '@/stores/auth.store';
+
+vi.mock('@/lib/axios');
+
+// Each test starts from the setup file's signed-in user and bare client calls: reset them here, so a test states its own user
+// and answers in its own `beforeEach` (`clearAllMocks` keeps implementations).
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(useAuthStore).mockReset();
+  vi.mocked(api.get).mockReset();
+  vi.mocked(api.post).mockReset();
+  vi.mocked(api.patch).mockReset();
+  vi.mocked(api.put).mockReset();
+  vi.mocked(api.delete).mockReset();
+});
+
 // #2043 slice 1 - new RED/GREEN pairs for gates the frozen
 // `repro-2043.test.tsx` does not pin (R14: every new gate needs its own
 // pair). The frozen test is read-only; these cases live here, mirroring
@@ -11,18 +35,6 @@
 //      (update+delete Inventory, no manage Inventory) - AC10.
 //   5. LowStockActionDialog's "Restock now" (R5).
 //   6. AddLocationDialog surfaces a rejected save (R6/AC11).
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, within, waitFor } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
-
-import api from '@/lib/axios';
-import { renderWithProviders } from '@/__tests__/helpers';
-import { abilityWithSwitches } from '@/__tests__/support/backendSwitchCatalog';
-import { useInventoryAlertStore } from '@/stores/inventory-alert.store';
-
-import InventoryPage from '@/pages/v2/inventory/InventoryPage';
-
-import type { Item, Location } from '@/lib/api/inventory';
 
 class ResizeObserverStub {
   observe() {}
@@ -32,7 +44,6 @@ class ResizeObserverStub {
 global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
 
 const mockApi = vi.mocked(api);
-vi.mock('@/lib/axios');
 
 const WAREHOUSE = 'a0000000-0000-0000-0000-0000000000w1';
 const COUNTER = 'a0000000-0000-0000-0000-0000000000w2';
@@ -64,25 +75,7 @@ const ITEMS: Item[] = [
 ];
 
 function installGetMock() {
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.startsWith('/api/inventory/items')) return { data: { data: ITEMS } };
-    if (url.startsWith('/api/inventory/locations')) return { data: { locations: LOCATIONS } };
-    if (url.startsWith('/api/inventory/assets')) return { data: { data: [], meta: { total: 0 } } };
-    if (url.startsWith('/api/inventory/vendors')) return { data: { vendors: [] } };
-    if (url.startsWith('/api/inventory/purchase-orders')) return { data: { purchaseOrders: [] } };
-    if (url.startsWith('/api/inventory/job-stages')) return { data: { jobStages: [] } };
-    if (url.startsWith('/api/inventory/techs')) return { data: { techs: [] } };
-    if (url.startsWith('/api/logistic-orders')) return { data: { data: [], page: 1, limit: 50, total: 0 } };
-    if (url.startsWith('/api/users')) return { data: { users: [] } };
-    return {
-      data: {
-        data: [], meta: { page: 1, limit: 1, total: 0, totalPages: 1 },
-        locations: [], vendors: [], categories: [], branches: [], brands: [],
-        stages: [], assets: [], total: 0, jobStages: [], purchaseOrders: [],
-        users: [], finishes: [], techs: [], itemGroups: [],
-      },
-    };
-  });
+  serveInventory({ items: ITEMS, locations: LOCATIONS, vendors: [], purchaseOrders: [], jobStages: [], techs: [] });
 }
 
 beforeEach(() => {
@@ -112,7 +105,7 @@ const dispatcherShapedAbility = () =>
   abilityWithSwitches(...READ_SWITCHES, 'Create stock', 'Edit stock', 'Delete stock');
 
 function renderStock(ability: ReturnType<typeof readOnlyAbility>) {
-  return renderWithProviders(<InventoryPage />, { ability, initialEntries: ['/inventory'] });
+  return renderInventory({ ability, entry: '/inventory' });
 }
 
 // ─── 1. Row kebab (R1) ──────────────────────────────────────────────────

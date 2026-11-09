@@ -71,14 +71,21 @@ describe('POST /api/roles - create', () => {
   });
   /** Run the transaction the switch store opens with a stub that records what it writes. */
   const stubTransaction = () => {
+    // `upsert` records one row per stored switch. Since #3245 the store writes a role's switches as ONE raw
+    // INSERT..ON CONFLICT (tag args: strings, org, role, now, now, keys[], json[]), so the stub decodes that statement.
     const upsert = vi.fn().mockResolvedValue({});
+    const executeRaw = vi.fn(async (_sql: unknown, organizationId: string, roleKey: string, _c: unknown, _u: unknown, keys: string[], json: string[]) => {
+      keys.forEach((switch_key, i) => upsert({ create: { organization_id: organizationId, role_key: roleKey, switch_key, value: JSON.parse(json[i]!) } }));
+      return keys.length;
+    });
     const logRows = vi.fn().mockResolvedValue({ count: 0 });
     // Since ticket 37 the save holds the role (one raw lock statement) and reads its current values inside the transaction,
     // so the stub answers those reads the way the mocked client outside it does.
     (prisma.$transaction as any).mockImplementation((fn: any) =>
       fn({
         $queryRaw: vi.fn().mockResolvedValue([]),
-        permissionRoleSwitch: { upsert, findMany: prisma.permissionRoleSwitch.findMany },
+        $executeRaw: executeRaw,
+        permissionRoleSwitch: { findMany: prisma.permissionRoleSwitch.findMany },
         customRole: { findFirst: prisma.customRole.findFirst, create: prisma.customRole.create, delete: prisma.customRole.delete },
         permissionChangeLog: { createMany: logRows },
         auditLog: { create: prisma.auditLog.create },

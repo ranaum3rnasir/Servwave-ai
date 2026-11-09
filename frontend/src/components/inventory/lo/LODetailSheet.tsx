@@ -55,7 +55,7 @@ import { formatLoDate } from './loStatus';
 import { newOrderActions, primaryLifecycle, type LoLifecycleVerb } from './loActions';
 import { LoPickupButtons, LoTakenLine } from './LoPickup';
 import { useConfirm } from '@/hooks/useConfirm';
-import { switchOn, useMySwitches } from '@/lib/api/mySwitches';
+import { switchOn, useMySwitches } from '@/lib/api/shared/mySwitches';
 
 export interface LODetailSheetProps {
   open: boolean;

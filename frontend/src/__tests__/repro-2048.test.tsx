@@ -20,10 +20,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, within, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
-import { renderWithProviders, LEAD_FIXTURE, NOTES_FIXTURE } from './helpers';
+import { LEAD_FIXTURE, NOTES_FIXTURE } from './helpers';
 import { buildAbility } from '@/lib/ability';
-import LeadDetailPage from '@/pages/v2/leads/LeadDetailPage';
-import EstimateWorkspacePage from '@/pages/v2/estimates/EstimateWorkspacePage';
+import { renderLeadDetail, serveLeadDetail } from '@/__tests__/harness/leadDetailPage';
+import { renderEstimateWorkspace, serveEstimateWorkspace } from '@/__tests__/harness/estimateWorkspacePage';
 
 // Shared route param for whichever page a given test mounts — LeadDetailPage and
 // EstimateWorkspacePage both read `useParams().id`, so one mock covers both; each
@@ -68,7 +68,6 @@ class ResizeObserverStub {
 global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
 
 const mockApi = vi.mocked(api);
-const adminAbility = buildAbility([{ action: 'manage', subject: 'all' }]);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -87,21 +86,14 @@ const ONE_WON_ESTIMATE = {
 };
 
 function serveLeadWithOneWonEstimate() {
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.includes('/notes')) return { data: { notes: NOTES_FIXTURE } };
-    if (url.includes('/api/leads/')) {
-      return { data: { lead: { ...LEAD_FIXTURE, status: 'WON', estimates: [ONE_WON_ESTIMATE] } } };
-    }
-    if (url.includes('/api/tags')) return { data: { tags: [] } };
-    return { data: {} };
-  });
+  serveLeadDetail({ lead: { ...LEAD_FIXTURE, status: 'WON', estimates: [ONE_WON_ESTIMATE] }, notes: NOTES_FIXTURE });
 }
 
 describe('#2048 (a) - lead header primary "Convert to job" button', () => {
   it('shows a primary header Convert-to-job button when create Job is granted and the lead has a WON estimate without a job, and never shows it without the grant', async () => {
     serveLeadWithOneWonEstimate();
 
-    const granted = renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    const granted = renderLeadDetail();
     // Desired behaviour 1: a PRIMARY button in the header (not buried in the kebab).
     // Today the header renders only the "Lead actions" kebab trigger; this control does
     // not exist anywhere in the DOM, so this assertion times out.
@@ -124,7 +116,7 @@ describe('#2048 (a) - lead header primary "Convert to job" button', () => {
       { action: 'revise', subject: 'Estimate' },
       { action: 'read', subject: 'Prices' },
     ]);
-    renderWithProviders(<LeadDetailPage />, { ability: noConvertAbility });
+    renderLeadDetail({ ability: noConvertAbility });
     await screen.findByRole('heading', { name: /L00001\b/ });
     expect(screen.queryByRole('button', { name: /convert to job/i })).toBeNull();
   });
@@ -197,14 +189,10 @@ const WON_ESTIMATE = {
 describe('#2048 (b) - estimate Actions "Convert to job" item', () => {
   it('offers "Convert to job" in the Actions dropdown for a WON, non-job-anchored estimate, mirroring the header button', async () => {
     routeParams.id = ESTIMATE_ID;
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url.includes('/state-tax-rates')) return { data: { data: [] } };
-      if (url.includes('/api/estimates/')) return { data: { estimate: WON_ESTIMATE } };
-      return { data: {} };
-    });
+    serveEstimateWorkspace({ estimate: WON_ESTIMATE });
     const user = userEvent.setup({ pointerEventsCheck: 0 });
 
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     // Confirms the fixture is in the gate-satisfying state (the pre-existing header
     // button, unaffected by #2048) before asserting on the Actions item.
@@ -240,14 +228,7 @@ const WON_B = {
 };
 
 function serveLeadWithTwoWonEstimates() {
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.includes('/notes')) return { data: { notes: NOTES_FIXTURE } };
-    if (url.includes('/api/leads/')) {
-      return { data: { lead: { ...LEAD_FIXTURE, status: 'WON', estimates: [WON_A, WON_B] } } };
-    }
-    if (url.includes('/api/tags')) return { data: { tags: [] } };
-    return { data: {} };
-  });
+  serveLeadDetail({ lead: { ...LEAD_FIXTURE, status: 'WON', estimates: [WON_A, WON_B] }, notes: NOTES_FIXTURE });
 }
 
 describe('#2048 (c) - lead convert dialog folds several WON estimates into one job', () => {
@@ -256,7 +237,7 @@ describe('#2048 (c) - lead convert dialog folds several WON estimates into one j
     serveLeadWithTwoWonEstimates();
     mockApi.post.mockResolvedValue({ data: { job: { id: 'job-2048' } } });
 
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     await user.click(await screen.findByRole('button', { name: /Lead actions/i }));
     await user.click(await screen.findByRole('menuitem', { name: /Convert to job/i }));

@@ -14,9 +14,9 @@ import api from '@/lib/axios';
 import { buildAbility } from '@/lib/ability';
 import { useAuthStore } from '@/stores/auth.store';
 import { toast } from '@/ui-kit/components/ui/sonner';
-import { renderWithProviders, ALL_JOB_ACTIONS } from '@/__tests__/helpers';
+import { ALL_JOB_ACTIONS } from '@/__tests__/helpers';
 
-import JobDetailPage from '../JobDetailPage';
+import { renderJobDetail, serveJobDetail, stubBrowser } from '@/__tests__/harness/jobDetailPage';
 
 vi.mock('@/ui-kit/components/ui/sonner', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/ui-kit/components/ui/sonner')>()),
@@ -25,12 +25,7 @@ vi.mock('@/ui-kit/components/ui/sonner', async (importOriginal) => ({
 
 const JOB_ID = 'j0000000-0000-0000-0000-000000000001';
 
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 vi.mock('@/components/tasks/JobLeadTasksTab', () => ({ JobLeadTasksTab: () => null }));
 vi.mock('react-router-dom', async () => {
@@ -90,17 +85,18 @@ function mountJob(overrides: Partial<typeof JOB>) {
     } as never),
   );
   const job = { ...JOB, ...overrides };
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.includes('/visits')) return { data: { visits: [] } };
-    if (url.includes('/financials')) return { data: { final_invoice: null, invoices: [], payments: [] } };
-    if (url.includes('/line-items')) return { data: { lines: [], billing: { subtotal: 0, discount_amount: 0, tax_rate: 0, tax_amount: 0, total: 0 } } };
-    if (url.includes('/notes')) return { data: { notes: [] } };
-    if (url.includes('/api/attachments/')) return { data: { attachments: [] } };
-    if (url.includes('/communications')) return { data: { items: [] } };
-    if (url.includes(`/api/jobs/${JOB_ID}`)) return { data: { job } };
-    return { data: {} };
+  serveJobDetail({
+    job,
+    visits: [],
+    routes: [
+      { match: (url) => url.includes('/financials'), data: { final_invoice: null, invoices: [], payments: [] } },
+      { match: (url) => url.includes('/line-items'), data: { lines: [], billing: { subtotal: 0, discount_amount: 0, tax_rate: 0, tax_amount: 0, total: 0 } } },
+      { match: (url) => url.includes('/notes'), data: { notes: [] } },
+      { match: (url) => url.includes('/api/attachments/'), data: { attachments: [] } },
+      { match: (url) => url.includes('/communications'), data: { items: [] } },
+    ],
   });
-  return renderWithProviders(<JobDetailPage />, { ability: nothing, initialEntries: [`/jobs/${JOB_ID}`] });
+  return renderJobDetail({ ability: nothing, entry: `/jobs/${JOB_ID}` });
 }
 
 beforeEach(() => {

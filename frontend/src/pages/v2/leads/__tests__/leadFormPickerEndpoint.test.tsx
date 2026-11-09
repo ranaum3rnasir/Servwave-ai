@@ -2,9 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
-import { renderWithProviders } from '@/__tests__/helpers';
-import LeadFormPage from '@/pages/v2/leads/LeadFormPage';
 import { buildAbility } from '@/lib/ability';
+import { renderLeadForm, serveLeadForm } from '@/__tests__/harness/leadFormPage';
 
 /**
  * #2041 slice 1 — the v2 lead-create form's inline contact typeahead (pickCustomer.tsx) and its
@@ -20,7 +19,7 @@ vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
   return { ...actual, useNavigate: () => mockNavigate };
 });
-vi.mock('@/lib/api/organization', () => ({
+vi.mock('@/lib/api/shared/organization', () => ({
   useOrganization: () => ({ data: { job_type_options: [], source_options: [] } }),
   useUpdateOrganization: () => ({ mutate: vi.fn() }),
 }));
@@ -43,17 +42,13 @@ const RESTRICTED_ROW = {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url === '/api/customers/picker') return { data: { customers: [RESTRICTED_ROW] } };
-    if (url === `/api/customers/picker/${RESTRICTED_ROW.id}`) return { data: { customer: RESTRICTED_ROW } };
-    return { data: {} };
-  });
+  serveLeadForm({ picker: [RESTRICTED_ROW], pickerOne: RESTRICTED_ROW });
 });
 
 describe('LeadFormPage (create) — org-wide picker (#2041 slice 1)', () => {
   it('searches /api/customers/picker, never the scoped /api/customers list', async () => {
     const user = userEvent.setup();
-    renderWithProviders(<LeadFormPage />, { ability: adminAbility, initialEntries: ['/leads/create'] });
+    renderLeadForm({ ability: adminAbility, entry: '/leads/create' });
 
     await user.type(screen.getByLabelText(/first name/i), 'Re');
 
@@ -65,7 +60,7 @@ describe('LeadFormPage (create) — org-wide picker (#2041 slice 1)', () => {
 
   it('a restricted search result selects cleanly — no throw, email left blank, address left open', async () => {
     const user = userEvent.setup();
-    renderWithProviders(<LeadFormPage />, { ability: adminAbility, initialEntries: ['/leads/create'] });
+    renderLeadForm({ ability: adminAbility, entry: '/leads/create' });
 
     await user.type(screen.getByLabelText(/first name/i), 'Re');
     const resultButton = await screen.findByText(/Res Tricted/);
@@ -76,9 +71,9 @@ describe('LeadFormPage (create) — org-wide picker (#2041 slice 1)', () => {
   });
 
   it('?customer_id= preselect expands through /api/customers/picker/:id, not /api/customers/:id', async () => {
-    renderWithProviders(<LeadFormPage />, {
+    renderLeadForm({
       ability: adminAbility,
-      initialEntries: [`/leads/create?customer_id=${RESTRICTED_ROW.id}`],
+      entry: `/leads/create?customer_id=${RESTRICTED_ROW.id}`,
     });
 
     await waitFor(() =>

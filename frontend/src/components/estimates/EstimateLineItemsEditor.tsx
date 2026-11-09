@@ -74,7 +74,8 @@ import {
 } from '@/components/jobs/items/PriceBookPicker';
 import { catalogItemCostPayload, catalogItemSellPrice } from '@/lib/catalog/itemPresentation';
 import type { AddLineItemPayload, UpdateLineItemPayload } from '@/lib/api/invoices';
-import type { InvoiceLineItem, Scope } from '@/lib/api/jobs';
+import type { InvoiceLineItem } from '@/lib/api/jobs';
+import type { Scope } from '@/lib/api/shared/scope';
 import {
   addEstimateLine,
   updateEstimateLine,

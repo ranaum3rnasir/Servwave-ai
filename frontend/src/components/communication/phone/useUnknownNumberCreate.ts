@@ -1,6 +1,6 @@
 import { quickCreateItemShows, quickCreateItems } from '@/components/layout/nav-config';
 import { useAppAbility } from '@/contexts/AbilityContext';
-import { useMySwitches } from '@/lib/api/mySwitches';
+import { useMySwitches } from '@/lib/api/shared/mySwitches';
 
 /**
  * What the Texts inbox ("Unknown number") and the dialer ("No match for <number>") offer for a number that belongs to

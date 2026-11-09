@@ -18,10 +18,9 @@ import userEvent from '@testing-library/user-event';
 
 import api from '@/lib/axios';
 import { buildAbility } from '@/lib/ability';
-import { renderWithProviders } from '@/__tests__/helpers';
 import type { Item, Location } from '@/lib/api/inventory';
 
-import InventoryPage from '../InventoryPage';
+import { renderInventory, serveInventory } from '@/__tests__/harness/inventoryPage';
 
 const hoisted = vi.hoisted(() => ({
   toCSV: vi.fn((_rows: Record<string, unknown>[]) => 'csv-content'),
@@ -73,18 +72,7 @@ const mockApi = vi.mocked(api);
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.startsWith('/api/inventory/items')) return { data: { data: ITEMS } };
-    if (url.startsWith('/api/inventory/locations')) return { data: { locations: LOCATIONS } };
-    if (url.startsWith('/api/organization')) return { data: { default_inventory_location_id: WAREHOUSE } };
-    return {
-      data: {
-        data: [], meta: { page: 1, limit: 1, total: 0, totalPages: 1 },
-        locations: [], vendors: [], categories: [], branches: [], brands: [],
-        stages: [], assets: [], total: 0,
-      },
-    };
-  });
+  serveInventory({ items: ITEMS, locations: LOCATIONS, organization: { default_inventory_location_id: WAREHOUSE } });
   mockApi.post.mockResolvedValue({ data: { success: true, count: 1 } });
 });
 
@@ -98,7 +86,7 @@ function admin() {
 }
 
 async function renderStock(ability = admin()) {
-  renderWithProviders(<InventoryPage />, { ability, initialEntries: ['/inventory'] });
+  renderInventory({ ability, entry: '/inventory' });
   expect(await screen.findByText('Run Capacitor')).toBeInTheDocument();
 }
 

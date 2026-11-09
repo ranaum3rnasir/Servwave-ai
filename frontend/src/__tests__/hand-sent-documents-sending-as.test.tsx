@@ -74,8 +74,8 @@ vi.mock('@/components/invoices/CreditInvoiceDialog', () => ({ CreditInvoiceDialo
 vi.mock('@/components/invoices/VoidPaymentDialog', () => ({ VoidPaymentDialog: () => null }));
 vi.mock('@/components/crm/RecordNumberEditor', () => ({ RecordNumberEditor: ({ number }: { number: string }) => <span>{number}</span> }));
 
-import EstimateWorkspacePage from '@/pages/v2/estimates/EstimateWorkspacePage';
-import InvoiceDetailPage from '@/pages/v2/invoices/InvoiceDetailPage';
+import { DEPOSIT_DEFAULTS, renderEstimateWorkspace, serveEstimateWorkspace } from '@/__tests__/harness/estimateWorkspacePage';
+import { renderInvoiceDetail, serveInvoiceDetail } from '@/__tests__/harness/invoiceDetailPage';
 import InvoicesPage from '@/pages/v2/invoices/InvoicesPage';
 import EstimatesPage from '@/pages/v2/estimates/EstimatesPage';
 
@@ -130,6 +130,10 @@ function answerNetwork(page: (url: string) => unknown | undefined) {
     if (own !== undefined) return { data: own };
     return { data: {} };
   });
+  answerPosts();
+}
+
+function answerPosts() {
   mockApi.post.mockImplementation(async (url: string, body?: unknown) => {
     posts.push({ url, body });
     return { data: { sent: [], failed: [] } };
@@ -159,13 +163,13 @@ const sendingAsLine = async () => (await screen.findByText('Sending as')).parent
 
 describe('the estimate workspace: the send dialog', () => {
   function setup() {
-    answerNetwork((url) => {
-      if (url.includes('/state-tax-rates')) return { data: [] };
-      if (url.includes('/api/estimates/')) return { estimate: DRAFT_ESTIMATE };
-      if (url === '/api/organization') return { accepted_payment_methods: ['CARD'], deposit_default_type: 'PERCENTAGE', deposit_default_percentage: 50 };
-      return undefined;
+    serveEstimateWorkspace({
+      estimate: DRAFT_ESTIMATE,
+      organization: DEPOSIT_DEFAULTS,
+      routes: [{ match: (url) => url === '/api/communication/sending-identity', data: () => identity }],
     });
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    answerPosts();
+    renderEstimateWorkspace();
   }
   async function openDialog() {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
@@ -223,14 +227,12 @@ describe('the estimate workspace: the send dialog', () => {
 
 describe('the invoice detail page: the send and resend dialogs', () => {
   function setup(invoice: Record<string, unknown>) {
-    answerNetwork((url) => {
-      if (url.includes('/api/invoices/')) return { invoice };
-      if (url.includes('/api/organization')) return {};
-      if (url.includes('/api/state-tax-rates')) return [];
-      return undefined;
+    serveInvoiceDetail({
+      invoice,
+      routes: [{ match: (url) => url === '/api/communication/sending-identity', data: () => identity }],
     });
-    vi.mocked(api.get);
-    renderWithProviders(<InvoiceDetailPage />, { ability: adminAbility });
+    answerPosts();
+    renderInvoiceDetail({ id: ESTIMATE_ID, ability: adminAbility });
   }
   async function openDialog(button: RegExp) {
     const user = userEvent.setup({ pointerEventsCheck: 0 });

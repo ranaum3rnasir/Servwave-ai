@@ -9,6 +9,8 @@
     "preview": "vite preview",
     "lint": "eslint .",
     "test": "vitest run",
+    "test:ci": "node scripts/test-ci.mjs",
+    "gen:switch-catalog": "node scripts/switch-catalog.mjs",
     "test:e2e": "playwright test --config=e2e/playwright.config.ts",
     "test:visual": "playwright test --config=e2e/visual-regression.config.ts",
     "test:visual:update": "playwright test --config=e2e/visual-regression.config.ts --update-snapshots",

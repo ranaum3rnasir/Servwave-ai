@@ -15,7 +15,7 @@ import { estimatesRegistry, estimatesRegistryWithoutCreator, MONTHLY_ESTIMATE_ST
 import type { FacetConfig, FacetOption, FilterState } from '@/lib/filters/types';
 import { useFilterState } from '@/lib/filters/useFilterState';
 import { downloadCSV, toCSV } from '@/lib/inventory/csv';
-import { useMySwitches } from '@/lib/api/mySwitches';
+import { useMySwitches } from '@/lib/api/shared/mySwitches';
 import { useTagFacetOptions } from '@/lib/api/tags';
 import { useScopedRowSelection } from '@/lib/useScopedRowSelection';
 import { formatCurrency } from '@/lib/utils';

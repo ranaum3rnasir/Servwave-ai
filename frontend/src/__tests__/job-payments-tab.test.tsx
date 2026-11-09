@@ -1,9 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import api from '@/lib/axios';
-import { renderWithProviders, ALL_JOB_ACTIONS } from './helpers';
-import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
+import { ALL_JOB_ACTIONS } from './helpers';
+import { renderJobDetail, serveJobDetail, stubBrowser } from '@/__tests__/harness/jobDetailPage';
 import { buildAbility } from '@/lib/ability';
 
 // Task 10 (Spec A) gated the Payments tab on ability.can('read', 'Invoice'); S04.26 gates it on the invoices the server lists
@@ -18,13 +17,7 @@ import { buildAbility } from '@/lib/ability';
 const invoiceReadAbility = buildAbility([{ action: 'read', subject: 'Invoice' }, { action: 'read', subject: 'Prices' }]);
 const recordPaymentAbility = buildAbility([{ action: 'read', subject: 'Invoice' }, { action: 'read', subject: 'Prices' }, { action: 'record_payment', subject: 'Invoice' }]);
 
-// floating-ui (under Radix dropdown) does `new ResizeObserver(...)`
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');
@@ -34,7 +27,6 @@ vi.mock('react-router-dom', async () => {
   };
 });
 
-const mockApi = vi.mocked(api);
 
 const BASE_JOB = {
   id: 'j0000000-0000-0000-0000-000000000001',
@@ -129,13 +121,14 @@ const FINANCIALS_OPEN = {
 function mockJobWith(
   financials: typeof FINANCIALS_PAID | typeof FINANCIALS_OPEN | { final_invoice: null; invoices: never[]; payments: never[] }
 ) {
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.includes('/financials')) return { data: financials };
-    if (url.includes('/notes')) return { data: { notes: [] } };
-    if (url.includes('/attachments')) return { data: { attachments: [] } };
-    if (url.includes('/api/tags')) return { data: { tags: [] } };
-    if (url.includes('/api/jobs/')) return { data: { job: BASE_JOB } };
-    return { data: {} };
+  serveJobDetail({
+    job: BASE_JOB,
+    routes: [
+      { match: (url) => url.includes('/financials'), data: financials },
+      { match: (url) => url.includes('/notes'), data: { notes: [] } },
+      { match: (url) => url.includes('/attachments'), data: { attachments: [] } },
+      { match: (url) => url.includes('/api/tags'), data: { tags: [] } },
+    ],
   });
 }
 
@@ -146,7 +139,7 @@ beforeEach(() => {
 describe('JobDetailPage — Payments tab', () => {
   it('lists deposit and final-invoice payments in the Payments tab', async () => {
     mockJobWith(FINANCIALS_PAID);
-    renderWithProviders(<JobDetailPage />, { ability: invoiceReadAbility });
+    renderJobDetail({ ability: invoiceReadAbility });
 
     await screen.findByRole('heading', { name: /J00001/ });
 
@@ -174,7 +167,7 @@ describe('JobDetailPage — Payments tab', () => {
         { ...FINANCIALS_PAID.payments[1], method: 'ACH', state: 'PROCESSING' },
       ],
     });
-    renderWithProviders(<JobDetailPage />, { ability: invoiceReadAbility });
+    renderJobDetail({ ability: invoiceReadAbility });
 
     await screen.findByRole('heading', { name: /J00001/ });
     // Masthead money block: $500 of $1,850 landed.
@@ -200,7 +193,7 @@ describe('JobDetailPage — Payments tab', () => {
         { ...FINANCIALS_PAID.payments[1], id: 'c', method: 'ACH', state: 'FAILED' },
       ],
     });
-    renderWithProviders(<JobDetailPage />, { ability: invoiceReadAbility });
+    renderJobDetail({ ability: invoiceReadAbility });
 
     await screen.findByRole('heading', { name: /J00001/ });
     await userEvent.click(await screen.findByRole('tab', { name: 'Payments' }));
@@ -214,7 +207,7 @@ describe('JobDetailPage — Payments tab', () => {
 
   it('shows Record Payment link when invoice has amount_due > 0 and is not PAID', async () => {
     mockJobWith(FINANCIALS_OPEN);
-    renderWithProviders(<JobDetailPage />, { ability: recordPaymentAbility });
+    renderJobDetail({ ability: recordPaymentAbility });
 
     await screen.findByRole('heading', { name: /J00001/ });
 
@@ -226,7 +219,7 @@ describe('JobDetailPage — Payments tab', () => {
 
   it('shows no Record Payment link without Record payments (S04.26)', async () => {
     mockJobWith(FINANCIALS_OPEN);
-    renderWithProviders(<JobDetailPage />, { ability: invoiceReadAbility });
+    renderJobDetail({ ability: invoiceReadAbility });
 
     await screen.findByRole('heading', { name: /J00001/ });
     await userEvent.click(await screen.findByRole('tab', { name: 'Payments' }));
@@ -237,7 +230,7 @@ describe('JobDetailPage — Payments tab', () => {
 
   it('does NOT show Record Payment link when final invoice is PAID', async () => {
     mockJobWith(FINANCIALS_PAID);
-    renderWithProviders(<JobDetailPage />, { ability: invoiceReadAbility });
+    renderJobDetail({ ability: invoiceReadAbility });
 
     await screen.findByRole('heading', { name: /J00001/ });
 
@@ -250,7 +243,7 @@ describe('JobDetailPage — Payments tab', () => {
 
   it('shows "No invoice yet" state when final_invoice is null', async () => {
     mockJobWith({ final_invoice: null, invoices: [], payments: [] });
-    renderWithProviders(<JobDetailPage />, { ability: invoiceReadAbility });
+    renderJobDetail({ ability: invoiceReadAbility });
 
     await screen.findByRole('heading', { name: /J00001/ });
     await userEvent.click(await screen.findByRole('tab', { name: 'Payments' }));
@@ -269,7 +262,7 @@ describe('JobDetailPage — Payments tab', () => {
           : p,
       ),
     });
-    renderWithProviders(<JobDetailPage />, { ability: invoiceReadAbility });
+    renderJobDetail({ ability: invoiceReadAbility });
 
     await screen.findByRole('heading', { name: /J00001/ });
     await userEvent.click(await screen.findByRole('tab', { name: 'Payments' }));
@@ -286,7 +279,7 @@ describe('JobDetailPage — Payments tab', () => {
 
   it('renders no fee figure for payments with no reconciled fee data (the pay1/pay2 default fixtures)', async () => {
     mockJobWith(FINANCIALS_PAID);
-    renderWithProviders(<JobDetailPage />, { ability: invoiceReadAbility });
+    renderJobDetail({ ability: invoiceReadAbility });
 
     await screen.findByRole('heading', { name: /J00001/ });
     await userEvent.click(await screen.findByRole('tab', { name: 'Payments' }));
@@ -342,7 +335,7 @@ describe('JobDetailPage — Payments tab', () => {
         },
       ],
     });
-    renderWithProviders(<JobDetailPage />, { ability: invoiceReadAbility });
+    renderJobDetail({ ability: invoiceReadAbility });
 
     await screen.findByRole('heading', { name: /J00001/ });
 
@@ -399,21 +392,20 @@ describe('JobDetailPage - job linked to its estimate via EstimateJobLink', () =>
   };
 
   function mockLinkedJob(financials: unknown, job: Record<string, unknown> = {}) {
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url.includes('/financials')) return { data: financials };
-      if (url.includes('/notes')) return { data: { notes: [] } };
-      if (url.includes('/attachments')) return { data: { attachments: [] } };
-      if (url.includes('/api/tags')) return { data: { tags: [] } };
-      if (url.includes('/api/jobs/')) {
-        return { data: { job: { ...BASE_JOB, linked_estimates: [LINKED_ESTIMATE], ...job } } };
-      }
-      return { data: {} };
+    serveJobDetail({
+      job: { ...BASE_JOB, linked_estimates: [LINKED_ESTIMATE], ...job },
+      routes: [
+        { match: (url) => url.includes('/financials'), data: financials },
+        { match: (url) => url.includes('/notes'), data: { notes: [] } },
+        { match: (url) => url.includes('/attachments'), data: { attachments: [] } },
+        { match: (url) => url.includes('/api/tags'), data: { tags: [] } },
+      ],
     });
   }
 
   it('lists the paid deposit invoice, with a link, instead of "No invoice yet"', async () => {
     mockLinkedJob(DEPOSIT_ONLY_FINANCIALS);
-    renderWithProviders(<JobDetailPage />, { ability: invoiceReadAbility });
+    renderJobDetail({ ability: invoiceReadAbility });
 
     await screen.findByRole('heading', { name: /J00001/ });
     await userEvent.click(await screen.findByRole('tab', { name: 'Payments' }));
@@ -425,7 +417,7 @@ describe('JobDetailPage - job linked to its estimate via EstimateJobLink', () =>
 
   it('derives the masthead contract and balance from the linked estimate', async () => {
     mockLinkedJob(DEPOSIT_ONLY_FINANCIALS);
-    renderWithProviders(<JobDetailPage />, { ability: invoiceReadAbility });
+    renderJobDetail({ ability: invoiceReadAbility });
 
     await screen.findByRole('heading', { name: /J00001/ });
 
@@ -438,7 +430,7 @@ describe('JobDetailPage - job linked to its estimate via EstimateJobLink', () =>
 
   it('renders the payment method label, not the raw enum', async () => {
     mockLinkedJob(DEPOSIT_ONLY_FINANCIALS);
-    renderWithProviders(<JobDetailPage />, { ability: invoiceReadAbility });
+    renderJobDetail({ ability: invoiceReadAbility });
 
     await screen.findByRole('heading', { name: /J00001/ });
     await userEvent.click(await screen.findByRole('tab', { name: 'Payments' }));
@@ -463,7 +455,7 @@ describe('JobDetailPage - job linked to its estimate via EstimateJobLink', () =>
         },
       ],
     });
-    renderWithProviders(<JobDetailPage />, { ability: invoiceReadAbility });
+    renderJobDetail({ ability: invoiceReadAbility });
 
     await screen.findByRole('heading', { name: /J00001/ });
     await userEvent.click(await screen.findByRole('tab', { name: 'Payments' }));
@@ -478,7 +470,7 @@ describe('JobDetailPage - job linked to its estimate via EstimateJobLink', () =>
       { final_invoice: null, invoices: [], payments: [] },
       { linked_estimates: [{ ...LINKED_ESTIMATE, status: 'SUPERSEDED' }] },
     );
-    renderWithProviders(<JobDetailPage />, { ability: invoiceReadAbility });
+    renderJobDetail({ ability: invoiceReadAbility });
 
     await screen.findByRole('heading', { name: /J00001/ });
 

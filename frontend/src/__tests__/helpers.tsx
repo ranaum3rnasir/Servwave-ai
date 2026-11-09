@@ -1,9 +1,7 @@
 import { ReactElement } from 'react';
-import { vi } from 'vitest';
-import api from '@/lib/axios';
 import { render, RenderOptions } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, type MemoryRouterProps } from 'react-router-dom';
 import { AbilityProvider } from '@/contexts/AbilityContext';
 import { TooltipProvider as KitTooltipProvider } from '@/ui-kit/components/ui/tooltip';
 import { buildAbility, type AppAbility } from '@/lib/ability';
@@ -29,7 +27,7 @@ export const seesPrices: AppAbility = buildAbility([{ action: 'read', subject: '
 
 // ─── Render with Providers ────────────────────────────────
 interface WrapperOptions {
-  initialEntries?: string[];
+  initialEntries?: MemoryRouterProps['initialEntries'];
   /**
    * Optional CASL ability. When provided, children are wrapped in AbilityProvider
    * so ability-gated UI (e.g. force-purge, lead delete) can be exercised. When
@@ -329,70 +327,3 @@ export const TAGS_FIXTURE = [
   { id: 'a0000000-0000-0000-0000-000000000001', name: 'Urgent', color: '#EF4444' },
   { id: 'a0000000-0000-0000-0000-000000000002', name: 'VIP', color: '#8B5CF6' },
 ];
-
-// ─── The home page's server layout (Roles & Permissions S09.4) ────────────────
-// The dashboard page reads its layout from `GET /api/dashboard/layout` and saves it with `PUT` there, besides the
-// dashboard answer itself. A suite that renders the page serves both through this: the layout starts as the factory
-// layout unless a test gives one, and a save is remembered, so a second render reads back what the first one saved.
-export interface ServedLayoutEntry {
-  id: string;
-  visible: boolean;
-  size?: string;
-  range?: string;
-  /** `false` marks a stored tile the person cannot have right now (S09.7): kept in place, never drawn. */
-  available?: false;
-}
-
-export const FACTORY_LAYOUT: ServedLayoutEntry[] = [
-  'kpi.revenue_mtd', 'kpi.collected_today', 'kpi.recurring', 'kpi.ar', 'kpi.close_rate', 'kpi.jobs_today', 'kpi.open_leads',
-  'kpi.avg_ticket', 'kpi.jobs_week', 'kpi.deposits', 'smart_insights', 'needs_attention', 'schedule_today', 'revenue_chart',
-  'pipeline', 'tech_scoreboard', 'dispatch_scoreboard', 'lead_sources', 'revenue_by_job_type',
-].map((id) => ({ id, visible: true }));
-
-export function serveDashboard(
-  answer: unknown,
-  layout: ServedLayoutEntry[] = FACTORY_LAYOUT,
-  roleDefault: ServedLayoutEntry[] = layout,
-  /** `saved: false` is a person with no layout on the server yet (S09.5): the layout is then their role's default. */
-  options: { saved?: boolean } = {},
-) {
-  const server = {
-    layout: layout.map((e) => ({ ...e })),
-    saved: options.saved ?? true,
-    saves: [] as ServedLayoutEntry[][],
-    carryOvers: [] as ServedLayoutEntry[][],
-    /** How many times the person asked for their role's default back (S09.6). */
-    resets: 0,
-    layoutReads: 0,
-  };
-  const layoutAnswer = () => ({ layout: server.layout, saved: server.saved });
-  vi.mocked(api.get).mockImplementation(((url: string) => {
-    if (url === '/api/dashboard/layout') server.layoutReads += 1;
-    return Promise.resolve({ data: url === '/api/dashboard/layout' ? layoutAnswer() : answer });
-  }) as never);
-  vi.mocked(api.put).mockImplementation(((url: string, payload: { layout: ServedLayoutEntry[] }) => {
-    if (url !== '/api/dashboard/layout') return Promise.reject(new Error(`unexpected PUT ${url}`));
-    server.layout = payload.layout;
-    server.saved = true;
-    server.saves.push(payload.layout);
-    return Promise.resolve({ data: layoutAnswer() });
-  }) as never);
-  // The one-time carry-over of a browser layout stores it only when nothing is saved, as the real route does.
-  vi.mocked(api.post).mockImplementation(((url: string, payload: { layout: ServedLayoutEntry[] }) => {
-    // A reset replaces the saved layout with the role's default and keeps the row (`saved` stays true), as the real route does.
-    if (url === '/api/dashboard/layout/reset') {
-      server.resets += 1;
-      server.layout = roleDefault.map((e) => ({ ...e }));
-      server.saved = true;
-      return Promise.resolve({ data: layoutAnswer() });
-    }
-    if (url !== '/api/dashboard/layout/carry-over') return Promise.reject(new Error(`unexpected POST ${url}`));
-    server.carryOvers.push(payload.layout);
-    if (!server.saved) {
-      server.layout = payload.layout;
-      server.saved = true;
-    }
-    return Promise.resolve({ data: layoutAnswer() });
-  }) as never);
-  return server;
-}

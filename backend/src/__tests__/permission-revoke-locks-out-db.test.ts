@@ -67,7 +67,7 @@ function expectRefused(res: request.Response, door: string) {
 suite('H2 (ticket 22): a revoked or deactivated person gets in through no door (real database)', () => {
   const db = realClient as PrismaClient;
   const fx = switchFixture(db, async () => (await import('../app.js')).default as never);
-  const app = async () => (await import('../app.js')).default as never;
+  const app = () => fx.listener();
   beforeAll(async () => {
     await import('../app.js');
   }, 120_000);

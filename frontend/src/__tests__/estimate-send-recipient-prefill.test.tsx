@@ -16,10 +16,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import api from '@/lib/axios';
-import { renderWithProviders } from './helpers';
-import { buildAbility } from '@/lib/ability';
-import EstimateWorkspacePage from '@/pages/v2/estimates/EstimateWorkspacePage';
+import { renderEstimateWorkspace, serveEstimateWorkspace } from '@/__tests__/harness/estimateWorkspacePage';
 
 const ESTIMATE_ID = 'est-send-prefill-id';
 const CUSTOMER_EMAIL = 'ran@customer.test';
@@ -51,7 +48,6 @@ vi.mock('@/components/estimates/DuplicateEstimateDialog', () => ({ DuplicateEsti
 vi.mock('@/components/estimates/WaiveDepositDialog', () => ({ WaiveDepositDialog: () => null }));
 vi.mock('@/components/estimates/RefundDepositDialog', () => ({ RefundDepositDialog: () => null }));
 
-const adminAbility = buildAbility([{ action: 'manage', subject: 'all' }]);
 
 const CUSTOMER = {
   id: 'cust-1',
@@ -133,14 +129,7 @@ const LEAD_ANCHORED = {
 };
 
 function setupMocks(fixture: Record<string, unknown>) {
-  vi.mocked(api.get).mockImplementation(async (url: string) => {
-    if (url.includes('/state-tax-rates')) return { data: { data: [] } };
-    if (url.includes('/api/estimates/')) return { data: { estimate: fixture } };
-    if (url === '/api/organization') {
-      return { data: { accepted_payment_methods: ['CARD'], deposit_default_type: 'PERCENTAGE', deposit_default_percentage: 50 } };
-    }
-    return { data: {} };
-  });
+  serveEstimateWorkspace({ estimate: fixture });
 }
 
 /** Open the send dialog from the hero and hand back its "To" input. */
@@ -157,7 +146,7 @@ beforeEach(() => {
 describe('EstimateWorkspacePage - Send Estimate recipient pre-fill', () => {
   it('pre-fills "To" from the direct customer on a lead-less (customer-anchored) estimate', async () => {
     setupMocks(CUSTOMER_ANCHORED);
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     expect(await openSendDialog()).toHaveValue(CUSTOMER_EMAIL);
     // The empty field tripped the dialog's own validator on open; a pre-filled one must not.
@@ -166,7 +155,7 @@ describe('EstimateWorkspacePage - Send Estimate recipient pre-fill', () => {
 
   it('still pre-fills "To" through the lead on a lead-anchored estimate', async () => {
     setupMocks(LEAD_ANCHORED);
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     expect(await openSendDialog()).toHaveValue(CUSTOMER_EMAIL);
     expect(screen.queryByText('Enter a valid email address')).toBeNull();
@@ -174,7 +163,7 @@ describe('EstimateWorkspacePage - Send Estimate recipient pre-fill', () => {
 
   it('leaves "To" empty and flags it when the customer genuinely has no email on file', async () => {
     setupMocks({ ...CUSTOMER_ANCHORED, customer: { ...CUSTOMER, email: null } });
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     expect(await openSendDialog()).toHaveValue('');
     expect(screen.getByText('Enter a valid email address')).toBeInTheDocument();
@@ -186,7 +175,7 @@ describe('EstimateWorkspacePage - Send Estimate recipient pre-fill', () => {
   it('renders a read-only placeholder and keeps Send enabled when the customer email key is entirely absent (#1997)', async () => {
     const { email: _email, ...customerWithoutEmail } = CUSTOMER;
     setupMocks({ ...CUSTOMER_ANCHORED, customer: customerWithoutEmail });
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     const to = await openSendDialog();
     expect(to).toHaveValue('');

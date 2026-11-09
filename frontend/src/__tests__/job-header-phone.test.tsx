@@ -3,9 +3,8 @@ import { screen, within, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { render } from '@testing-library/react';
-import api from '@/lib/axios';
-import { renderWithProviders, ALL_JOB_ACTIONS } from './helpers';
-import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
+import { ALL_JOB_ACTIONS } from './helpers';
+import { renderJobDetail, serveJobDetail, stubBrowser } from '@/__tests__/harness/jobDetailPage';
 import { DetailHeader, DetailDock } from '@/components/detail/DetailHeader';
 import { MEDIA } from '@/ui-kit/lib/breakpoints';
 import { buildAbility } from '@/lib/ability';
@@ -14,12 +13,7 @@ import { buildAbility } from '@/lib/ability';
 
 vi.mock('@/components/tasks/JobLeadTasksTab', () => ({ JobLeadTasksTab: () => null }));
 
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 const mockNavigate = vi.fn();
 vi.mock('react-router-dom', async () => {
@@ -52,7 +46,6 @@ function setPhone(isPhone: boolean) {
 }
 
 const adminAbility = buildAbility([{ action: 'manage', subject: 'all' }]);
-const mockApi = vi.mocked(api);
 
 const JOB = {
   id: 'j0000000-0000-0000-0000-000000000001',
@@ -90,9 +83,8 @@ const JOB = {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.includes('/api/jobs/')) return { data: { job: JOB } };
-    return { data: {} };
+  serveJobDetail({
+    job: JOB,
   });
 });
 
@@ -104,7 +96,7 @@ describe('job page header at phone width', () => {
   it('has a back control, Complete job in the bottom dock only, and the rest inside Actions', async () => {
     setPhone(true);
     const user = userEvent.setup();
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+    renderJobDetail({ ability: adminAbility });
 
     const dock = await screen.findByTestId('detail-dock');
     // Complete job is reachable in the dock, and is the page's only Complete job.
@@ -123,7 +115,7 @@ describe('job page header at phone width', () => {
 
   it('keeps the desktop layout from sm up: Complete job and New Task inline, no back control, no dock', async () => {
     setPhone(false);
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+    renderJobDetail({ ability: adminAbility });
 
     expect(await screen.findByRole('button', { name: /Complete job/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /New Task/ })).toBeInTheDocument();

@@ -6,7 +6,7 @@ import { getInitials } from '@/lib/utils';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { EmptyState } from '@/components/ui/empty-state';
 import { Button } from '@/components/ui/button';
-import { useOrganization } from '@/lib/api/organization';
+import { useOrganization } from '@/lib/api/shared/organization';
 import { DEFAULT_SCHEDULE_TIMEZONE } from '@/lib/schedule-tz';
 import { WidgetCard } from './_shared';
 

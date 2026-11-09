@@ -28,7 +28,7 @@ import { VisitsCard } from './components/visitsCard';
 import { useAuthStore } from '@/stores/auth.store';
 import { useAppAbility } from '@/contexts/AbilityContext';
 import { useRecordPanel } from '@/lib/recordPanel';
-import { switchOn, useMySwitches } from '@/lib/api/mySwitches';
+import { switchOn, useMySwitches } from '@/lib/api/shared/mySwitches';
 import { RecordNumberEditor } from '@/components/crm/RecordNumberEditor';
 import { useFeature, useModuleAccess } from '@/lib/entitlements';
 import { canOnJob, canSeePricing as canSeePricingAbility, canSeePrices as canSeePricesAbility, type AppAbility, type AppAction } from '@/lib/ability';
@@ -36,7 +36,7 @@ import { PriceFreeLines } from '@/components/money/PriceFreeLines';
 import { useTasksStore } from '@/stores/tasksStore';
 import { customerDisplayName } from '@/lib/customer-name';
 import { extractApiError, formatCurrency } from '@/lib/utils';
-import { useOrganization } from '@/lib/api/organization';
+import { useOrganization } from '@/lib/api/shared/organization';
 import {
   createEstimateFromJobItems, getJobFinancials, getJobTaskSummary, listJobLines,
   listJobScopes, reopenJob, type InvoiceLineItem,

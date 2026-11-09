@@ -23,7 +23,7 @@ vi.mock("@/components/contact/useContactPolicyInput", () => ({
 // data hook is stubbed individually. Times now resolve against the ORG's zone, so
 // the org query joins that list; pinned here so the rendered clock is fixed rather
 // than the runner's.
-vi.mock("@/lib/api/organization", () => ({
+vi.mock("@/lib/api/shared/organization", () => ({
   useOrganization: () => ({ data: { timezone: "America/New_York" } }),
 }));
 

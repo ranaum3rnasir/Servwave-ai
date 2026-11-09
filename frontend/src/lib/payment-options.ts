@@ -1,5 +1,5 @@
 import type { PaymentMethod } from '@/types/entities';
-import type { DepositPolicy } from '@/lib/api/organization';
+import type { DepositPolicy } from '@/lib/api/shared/organization';
 import { PAYMENT_METHOD_ORDER } from '@/lib/payment-methods';
 
 /**

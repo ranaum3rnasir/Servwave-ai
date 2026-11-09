@@ -21,10 +21,8 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import api from '@/lib/axios';
 import { buildAbility } from '@/lib/ability';
 import { useAuthStore } from '@/stores/auth.store';
-import { renderWithProviders } from '@/__tests__/helpers';
-import { TooltipProvider } from '@/ui-kit/components/ui/tooltip';
 
-import SchedulePage from '../SchedulePage';
+import { renderSchedule, serveSchedule } from '@/__tests__/harness/schedulePage';
 
 class ResizeObserverStub {
   observe() {}
@@ -79,31 +77,12 @@ const BUCKET_JOB = {
 };
 
 function mockBoard() {
-  mockApi.get.mockImplementation((url: string, config?: { params?: unknown }) => {
-    if (url === '/api/jobs') {
-      const status = (config?.params as { status?: unknown } | undefined)?.status;
-      const wantsBucket = status === 'UNSCHEDULED'
-        || (Array.isArray(status) && status.includes('UNSCHEDULED'));
-      return Promise.resolve({ data: { jobs: wantsBucket ? [BUCKET_JOB] : [] } });
-    }
-    if (url === '/api/departments') return Promise.resolve({ data: { departments: [] } });
-    if (url === '/api/leads') return Promise.resolve({ data: { leads: [] } });
-    if (url === '/api/users' || url === '/api/users/assignable') return Promise.resolve({ data: { users: [] } });
-    if (url === '/api/organization') return Promise.resolve({ data: {} });
-    if (url === '/api/service-plans/scheduler-bucket') return Promise.resolve({ data: { plans: [] } });
-    if (url === '/api/calendar-entries') return Promise.resolve({ data: { calendar_entries: [] } });
-    return Promise.resolve({ data: {} });
-  });
+  serveSchedule({ jobs: [], bucketJobs: [BUCKET_JOB] });
   mockApi.post.mockResolvedValue({ data: {} });
 }
 
 async function renderBoard() {
-  const utils = renderWithProviders(
-    <TooltipProvider>
-      <SchedulePage />
-    </TooltipProvider>,
-    { ability: ADMIN, initialEntries: ['/schedule'] },
-  );
+  const utils = renderSchedule({ ability: ADMIN, entry: '/schedule' });
   await waitFor(() => expect(utils.container.querySelector('.schedule-cal .animate-spin')).toBeNull());
   return utils;
 }
@@ -269,12 +248,7 @@ describe('scheduling a job from the sheet by tap', () => {
         error: null,
       } as never),
     );
-    const utils = renderWithProviders(
-      <TooltipProvider>
-        <SchedulePage />
-      </TooltipProvider>,
-      { ability: READ_ONLY, initialEntries: ['/schedule'] },
-    );
+    const utils = renderSchedule({ ability: READ_ONLY, entry: '/schedule' });
     await waitFor(() => expect(utils.container.querySelector('.schedule-cal .animate-spin')).toBeNull());
     const sheet = await openSheet(true);
 

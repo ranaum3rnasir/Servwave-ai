@@ -10,10 +10,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
-import { renderWithProviders, LEAD_FIXTURE, NOTES_FIXTURE } from '@/__tests__/helpers';
+import { LEAD_FIXTURE, NOTES_FIXTURE } from '@/__tests__/helpers';
 import { buildAbility } from '@/lib/ability';
-import LeadDetailPage from '../LeadDetailPage';
-import LeadFormPage from '../LeadFormPage';
+import { renderLeadDetail, serveLeadDetail, stubBrowser } from '@/__tests__/harness/leadDetailPage';
+import { renderLeadForm } from '@/__tests__/harness/leadFormPage';
 
 vi.mock('@/components/tasks/JobLeadTasksTab', () => ({ JobLeadTasksTab: () => null }));
 vi.mock('@/components/communication/LeadCommunicationsTab', () => ({ LeadCommunicationsTab: () => null }));
@@ -22,18 +22,13 @@ vi.mock('@/lib/entitlements', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/entitlements')>()),
   useFeature: () => false,
 }));
-vi.mock('@/lib/api/organization', () => ({
+vi.mock('@/lib/api/shared/organization', () => ({
   useOrganization: () => ({ data: { job_type_options: ['Repair'], source_options: ['Referral'] } }),
   useUpdateOrganization: () => ({ mutate: vi.fn() }),
 }));
 vi.mock('@/lib/api/users', () => ({ useAssignableUsers: () => ({ data: [] }) }));
 
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 const mockNavigate = vi.fn();
 vi.mock('react-router-dom', async () => {
@@ -77,13 +72,7 @@ const formLead = (extra: object = {}) => ({
 });
 
 function serve(lead: unknown) {
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.includes('/notes')) return { data: { notes: NOTES_FIXTURE } };
-    if (url.includes('/api/leads/')) return { data: { lead } };
-    if (url.includes('/api/tags')) return { data: { tags: [] } };
-    if (url.includes('/api/users')) return { data: { users: [] } };
-    return { data: {} };
-  });
+  serveLeadDetail({ lead, notes: NOTES_FIXTURE });
 }
 
 beforeEach(() => {
@@ -101,19 +90,19 @@ describe('the lead page, from the lead\'s action list', () => {
 
   it('offers Edit to a creator without Edit leads when the server lists it', async () => {
     serve(detailLead({ actions: ['edit'] }));
-    renderWithProviders(<LeadDetailPage />, { ability: creatorAbility });
+    renderLeadDetail({ ability: creatorAbility });
     expect(names(await openKebab())).toContain('Edit');
   });
 
   it('offers no Edit when the server lists none, even to a person whose grants hold Edit leads', async () => {
     serve(detailLead({ actions: [] }));
-    renderWithProviders(<LeadDetailPage />, { ability: holderAbility });
+    renderLeadDetail({ ability: holderAbility });
     expect(names(await openKebab())).not.toContain('Edit');
   });
 
   it('keeps the status menu closed to a creator, who is offered the edit but not the status', async () => {
     serve(detailLead({ actions: ['edit'] }));
-    renderWithProviders(<LeadDetailPage />, { ability: holderAbility });
+    renderLeadDetail({ ability: holderAbility });
     // A status the person may not set is shown, not offered as a menu.
     await screen.findByText('Contacted');
     expect(screen.queryByRole('button', { name: /lead status: contacted/i })).toBeNull();
@@ -121,13 +110,13 @@ describe('the lead page, from the lead\'s action list', () => {
 
   it('opens the status menu when the server lists the status', async () => {
     serve(detailLead({ actions: ['edit', 'edit_address', 'edit_source', 'edit_schedule', 'change_status'] }));
-    renderWithProviders(<LeadDetailPage />, { ability: holderAbility });
+    renderLeadDetail({ ability: holderAbility });
     expect(await screen.findByRole('button', { name: /lead status: contacted/i })).toBeInTheDocument();
   });
 
   it('shows the tags without the add or remove controls when the server lists no edit', async () => {
     serve(detailLead({ actions: [], tags: [{ id: 'a0000000-0000-0000-0000-000000000001', name: 'Urgent', color: '#EF4444' }] }));
-    renderWithProviders(<LeadDetailPage />, { ability: holderAbility });
+    renderLeadDetail({ ability: holderAbility });
     expect(await screen.findByText('Urgent')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /remove tag urgent/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /^tag$/i })).toBeNull();
@@ -135,14 +124,14 @@ describe('the lead page, from the lead\'s action list', () => {
 
   it('offers the tag controls when the server lists the edit', async () => {
     serve(detailLead({ actions: ['edit'], tags: [{ id: 'a0000000-0000-0000-0000-000000000001', name: 'Urgent', color: '#EF4444' }] }));
-    renderWithProviders(<LeadDetailPage />, { ability: creatorAbility });
+    renderLeadDetail({ ability: creatorAbility });
     expect(await screen.findByRole('button', { name: /remove tag urgent/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^tag$/i })).toBeInTheDocument();
   });
 
   it('falls back to the grants when the response carries no list', async () => {
     serve(detailLead());
-    renderWithProviders(<LeadDetailPage />, { ability: holderAbility });
+    renderLeadDetail({ ability: holderAbility });
     expect(await screen.findByRole('button', { name: /lead status: contacted/i })).toBeEnabled();
     expect(names(await openKebab())).toContain('Edit');
   });
@@ -150,7 +139,7 @@ describe('the lead page, from the lead\'s action list', () => {
 
 describe('the edit form, from the lead\'s action list', () => {
   const FULL = ['edit', 'edit_address', 'edit_source', 'edit_schedule', 'change_status'];
-  const render = () => renderWithProviders(<LeadFormPage />, { ability: creatorAbility, initialEntries: [`/leads/${LEAD_FIXTURE.id}/edit`] });
+  const render = () => renderLeadForm({ ability: creatorAbility, entry: `/leads/${LEAD_FIXTURE.id}/edit` });
   const save = async () => {
     const user = userEvent.setup();
     await user.click(await screen.findByRole('button', { name: /save changes/i }));

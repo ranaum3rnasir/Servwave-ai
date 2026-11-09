@@ -30,7 +30,7 @@ import { cpSync, mkdtempSync, readdirSync, rmSync, copyFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { PrismaClient } from '@prisma/client';
-import { deployFrom } from './migration-deploy-support';
+import { deployFrom, deployMigrations, createMigrationDatabase } from './migration-deploy-support';
 
 const url = process.env.TEST_DATABASE_URL;
 const suite = url ? describe : describe.skip;
@@ -74,9 +74,9 @@ suite('payment ledger states migration (real database)', () => {
     return u.toString();
   }
 
-  async function createDatabase(): Promise<{ dbUrl: string; client: LedgerClient }> {
+  async function createDatabase(start: 'empty' | 'before' = 'before'): Promise<{ dbUrl: string; client: LedgerClient }> {
     const name = `pay04_mig_${randomUUID().slice(0, 8)}`;
-    await admin.$executeRawUnsafe(`CREATE DATABASE "${name}"`);
+    await createMigrationDatabase(admin, name, start === 'before' ? MIGRATION : null, tempDirs);
     databases.push(name);
     const dbUrl = urlFor(name);
     const client = clientAt(dbUrl);
@@ -86,12 +86,15 @@ suite('payment ledger states migration (real database)', () => {
 
   /** `prisma migrate deploy` with either every migration or only those before MIGRATION. */
   function deploy(dbUrl: string, which: 'all' | 'before'): void {
+    if (which === 'before') {
+      deployMigrations(dbUrl, MIGRATION, 'before', tempDirs);
+      return;
+    }
     const dir = mkdtempSync(join(tmpdir(), 'pay04-mig-'));
     tempDirs.push(dir);
     copyFileSync(join(PRISMA_DIR, 'schema.prisma'), join(dir, 'schema.prisma'));
     const source = join(PRISMA_DIR, 'migrations');
     for (const entry of readdirSync(source)) {
-      if (which === 'before' && entry !== 'migration_lock.toml' && entry >= MIGRATION) continue;
       cpSync(join(source, entry), join(dir, 'migrations', entry), { recursive: true });
     }
     // The shared deploy gives the database the stub auth helpers first (see migration-deploy-support).
@@ -133,7 +136,7 @@ suite('payment ledger states migration (real database)', () => {
   });
 
   it('applies on a fresh database, and a payment written without a state reads SUCCEEDED', async () => {
-    const { dbUrl, client } = await createDatabase();
+    const { dbUrl, client } = await createDatabase('empty');
     deploy(dbUrl, 'all');
 
     const { invoice } = await oldShapeInvoice(client);
@@ -205,7 +208,7 @@ suite('payment ledger states migration (real database)', () => {
   }, 180_000);
 
   it('a fresh database stores an online bank debit (ACH) and a wallet card payment with their display details, found by processor ids', async () => {
-    const { dbUrl, client } = await createDatabase();
+    const { dbUrl, client } = await createDatabase('empty');
     deploy(dbUrl, 'all');
     const { invoice } = await oldShapeInvoice(client);
 
@@ -251,7 +254,7 @@ suite('payment ledger states migration (real database)', () => {
     // A bank debit sends several DIFFERENT events for the same money, possibly out of order and at
     // the same time. Each has its own event id, so the webhook's event claim cannot stop two
     // handlers from each booking a payment; the database has to.
-    const { dbUrl, client } = await createDatabase();
+    const { dbUrl, client } = await createDatabase('empty');
     deploy(dbUrl, 'all');
     const { invoice } = await oldShapeInvoice(client);
     const paidAt = new Date('2026-10-06T12:00:00Z');

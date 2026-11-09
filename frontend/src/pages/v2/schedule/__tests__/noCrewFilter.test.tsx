@@ -14,10 +14,9 @@ import { useLocation } from 'react-router-dom';
 
 import api from '@/lib/axios';
 import { buildAbility } from '@/lib/ability';
-import { renderWithProviders } from '@/__tests__/helpers';
 import { nowWallClock, toInstant } from '@/lib/schedule-tz';
 
-import SchedulePage from '../SchedulePage';
+import { renderSchedule, serveSchedule } from '@/__tests__/harness/schedulePage';
 
 const ADMIN = buildAbility([{ action: 'manage', subject: 'all' }]);
 const mockApi = vi.mocked(api);
@@ -89,20 +88,7 @@ const feedCalls = (url: string) =>
   });
 
 function mockBoard(jobs: Array<Record<string, unknown>> = [], leads: Array<Record<string, unknown>> = []) {
-  mockApi.get.mockImplementation((url: string, config?: { params?: unknown }) => {
-    if (url === '/api/jobs') {
-      const status = (config?.params as { status?: unknown } | undefined)?.status;
-      const wantsBucket = status === 'UNSCHEDULED';
-      return Promise.resolve({ data: { jobs: wantsBucket ? [] : jobs } });
-    }
-    if (url === '/api/leads') return Promise.resolve({ data: { leads } });
-    if (url === '/api/departments') return Promise.resolve({ data: { departments: [] } });
-    if (url === '/api/users' || url === '/api/users/assignable') return Promise.resolve({ data: { users: [] } });
-    if (url === '/api/organization') return Promise.resolve({ data: { timezone: TZ } });
-    if (url === '/api/service-plans/scheduler-bucket') return Promise.resolve({ data: { plans: [] } });
-    if (url === '/api/calendar-entries') return Promise.resolve({ data: { calendar_entries: [] } });
-    return Promise.resolve({ data: {} });
-  });
+  serveSchedule({ jobs, bucketJobs: [], leads, organization: { timezone: TZ } });
 }
 
 /** Shows the address the board is at, so a test reads what a click did to it. */
@@ -112,7 +98,7 @@ function Address() {
 }
 
 async function renderBoard(url: string) {
-  const utils = renderWithProviders(<><SchedulePage /><Address /></>, { ability: ADMIN, initialEntries: [url] });
+  const utils = renderSchedule({ ability: ADMIN, entry: url, beside: <Address />, tooltip: false });
   await waitFor(() => expect(utils.container.querySelector('.schedule-cal .animate-spin')).toBeNull());
   return utils;
 }

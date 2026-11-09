@@ -17,7 +17,7 @@ import { Switch } from '@/components/ui/switch';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Loader2, FileCheck } from 'lucide-react';
 import { formatCurrency, extractApiError } from '@/lib/utils';
-import { useOrganization, type PaymentMethod } from '@/lib/api/organization';
+import { useOrganization, type PaymentMethod } from '@/lib/api/shared/organization';
 import { PAYMENT_METHOD_LABELS, PAYMENT_METHOD_ORDER } from '@/lib/payment-methods';
 import type { DepositType } from '@/lib/deposit';
 import { DepositControls } from '@/components/estimates/DepositControls';

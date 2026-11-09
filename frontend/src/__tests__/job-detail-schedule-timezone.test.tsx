@@ -17,8 +17,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
-import { renderWithProviders, ALL_JOB_ACTIONS } from './helpers';
-import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
+import { ALL_JOB_ACTIONS } from './helpers';
+import { renderJobDetail, serveJobDetail, stubBrowser } from '@/__tests__/harness/jobDetailPage';
 import { buildAbility } from '@/lib/ability';
 
 const ORG_TZ = 'Asia/Manila'; // UTC+8, no DST
@@ -28,12 +28,7 @@ const END_ISO = '2026-08-20T15:00:00.000Z'; // 11:00 PM Manila
 
 vi.mock('@/components/tasks/JobLeadTasksTab', () => ({ JobLeadTasksTab: () => null }));
 
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');
@@ -45,8 +40,8 @@ vi.mock('react-router-dom', async () => {
 });
 
 // useScheduleTimezone reads org.timezone through this module.
-vi.mock('@/lib/api/organization', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/organization')>();
+vi.mock('@/lib/api/shared/organization', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/api/shared/organization')>();
   return {
     ...actual,
     useOrganization: () => ({ data: { id: 'org-1', timezone: ORG_TZ }, isLoading: false, isError: false }),
@@ -98,9 +93,8 @@ const JOB = {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.includes('/api/jobs/')) return { data: { job: JOB } };
-    return { data: {} };
+  serveJobDetail({
+    job: JOB,
   });
   mockApi.post.mockResolvedValue({ data: { job: JOB } });
 });
@@ -111,7 +105,7 @@ beforeEach(() => {
 const SLOW_UI_TIMEOUT = 90_000;
 
 async function openRescheduleDialog() {
-  renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+  renderJobDetail({ ability: adminAbility });
   await userEvent.click(await screen.findByRole('button', { name: /actions/i }));
   await userEvent.click(await screen.findByRole('menuitem', { name: /Reschedule/ }));
   return screen.findAllByPlaceholderText('MM/DD/YYYY');
@@ -119,7 +113,7 @@ async function openRescheduleDialog() {
 
 describe('JobDetailPage schedule rendering honours the org timezone', () => {
   it('shows the Schedule tile in the org zone, not the browser zone', async () => {
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+    renderJobDetail({ ability: adminAbility });
     // 9:00 PM is the Manila wall clock; a browser-local read would print the
     // runner's own zone (1:00 PM in UTC, 9:00 AM in New York).
     expect(await screen.findByText('Aug 20, 9:00 PM')).toBeInTheDocument();
@@ -128,7 +122,7 @@ describe('JobDetailPage schedule rendering honours the org timezone', () => {
   // JobLifecycleBar defaults `tz` when the prop is absent, so this asserts the page
   // actually threads the org zone in - a default would otherwise hide a missing wire-up.
   it('dates lifecycle milestones on the org calendar day', async () => {
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+    renderJobDetail({ ability: adminAbility });
     // created_at is Aug 2 in Manila; Aug 1 in UTC and in New York.
     expect(await screen.findByText('Aug 2')).toBeInTheDocument();
     expect(screen.queryByText('Aug 1')).not.toBeInTheDocument();

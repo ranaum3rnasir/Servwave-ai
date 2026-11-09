@@ -26,8 +26,8 @@ const scheduledFacet: FacetConfig = {
 // org-zone test fixture: it differs from every plausible CI runner zone, so a
 // bug that silently used the runner's zone instead of this mock would still
 // be caught even without the explicit `process.env.TZ` override further down.
-vi.mock('@/lib/api/organization', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/organization')>();
+vi.mock('@/lib/api/shared/organization', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/api/shared/organization')>();
   return {
     ...actual,
     useOrganization: () => ({

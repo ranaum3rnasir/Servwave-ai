@@ -20,10 +20,10 @@ import { screen, within, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
 import { toast } from '@/ui-kit/components/ui/sonner';
-import { renderWithProviders, LEAD_FIXTURE, NOTES_FIXTURE } from '@/__tests__/helpers';
+import { LEAD_FIXTURE, NOTES_FIXTURE } from '@/__tests__/helpers';
 import { buildAbility } from '@/lib/ability';
 import { MEDIA } from '@/ui-kit/lib/breakpoints';
-import LeadDetailPage from '../LeadDetailPage';
+import { renderLeadDetail, serveLeadDetail, stubBrowser } from '@/__tests__/harness/leadDetailPage';
 
 // R7 - the stale-payload 400 must surface through the EXISTING error toast, not a new UI path.
 vi.mock('@/ui-kit/components/ui/sonner', async (importOriginal) => ({
@@ -40,12 +40,7 @@ vi.mock('@/lib/entitlements', async (importOriginal) => ({
   useFeature: () => false,
 }));
 
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 const navigate = vi.fn();
 vi.mock('react-router-dom', async () => {
@@ -129,14 +124,7 @@ const DRAFT_ONLY = {
 };
 
 function serveLead(estimates: unknown[], status = 'NEW') {
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.includes('/notes')) return { data: { notes: NOTES_FIXTURE } };
-    if (url.includes('/api/leads/')) {
-      return { data: { lead: { ...LEAD_FIXTURE, status, estimates } } };
-    }
-    if (url.includes('/api/tags')) return { data: { tags: [] } };
-    return { data: {} };
-  });
+  serveLeadDetail({ lead: { ...LEAD_FIXTURE, status, estimates }, notes: NOTES_FIXTURE });
 }
 
 beforeEach(() => {
@@ -149,7 +137,7 @@ describe('#2048 - LeadDetailPage header convert gate', () => {
     mockApi.post.mockResolvedValue({ data: { job: { id: 'job-gate-1' } } });
     const user = userEvent.setup({ pointerEventsCheck: 0 });
 
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail({ ability: adminAbility });
 
     const btn = await screen.findByRole('button', { name: /convert to job/i });
     await user.click(btn);
@@ -164,7 +152,7 @@ describe('#2048 - LeadDetailPage header convert gate', () => {
   it('create Job + only a DRAFT estimate -> primary "Create Estimate", no primary Convert button (R2: the kebab item stays, base-gated)', async () => {
     serveLead([DRAFT_ONLY]);
 
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail({ ability: adminAbility });
 
     expect(await screen.findByRole('button', { name: /create estimate/i })).toBeInTheDocument();
     // No PRIMARY convert button - nothing convertible.
@@ -181,7 +169,7 @@ describe('#2048 - LeadDetailPage header convert gate', () => {
     serveLead([WON_UNATTACHED]);
 
     const user = userEvent.setup({ pointerEventsCheck: 0 });
-    renderWithProviders(<LeadDetailPage />, { ability: noJobAbility });
+    renderLeadDetail({ ability: noJobAbility });
 
     // create Estimate is held and the lead is non-terminal, so the primary slot is
     // "Create Estimate" instead - proves the absence below isn't just an empty header.
@@ -197,7 +185,7 @@ describe('#2048 - LeadDetailPage header convert gate', () => {
     mockApi.post.mockResolvedValue({ data: { job: { id: 'job-gate-2' } } });
     const user = userEvent.setup({ pointerEventsCheck: 0 });
 
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail({ ability: adminAbility });
 
     // More than one convertible -> the primary button opens the dialog (does not convert
     // directly), reached here via the kebab item (same dialog, per AC8).
@@ -229,7 +217,7 @@ describe('#2048 - LeadDetailPage header convert gate', () => {
     };
     serveLead([foldedIntoAnotherJob]);
 
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail({ ability: adminAbility });
 
     // Nothing convertible -> the lead is non-terminal (status 'NEW'), so the primary slot falls
     // through to "Create Estimate", never "Convert to job".
@@ -255,7 +243,7 @@ describe('#2048 - LeadDetailPage header convert gate', () => {
     });
     const user = userEvent.setup({ pointerEventsCheck: 0 });
 
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail({ ability: adminAbility });
 
     await user.click(await screen.findByRole('button', { name: /Lead actions/i }));
     await user.click(await screen.findByRole('menuitem', { name: /Convert to job/i }));
@@ -283,7 +271,7 @@ describe('#2048 - LeadDetailPage header convert gate', () => {
   it('the header row wraps at narrow widths (primary button case): the row wraps, the text column is min-w-0/flex-1, the action column is ml-auto/flex-wrap', async () => {
     serveLead([WON_UNATTACHED]);
 
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail({ ability: adminAbility });
 
     const button = await screen.findByRole('button', { name: /convert to job/i });
     const heading = await screen.findByRole('heading', { name: /L00001\b/ });
@@ -304,7 +292,7 @@ describe('#2048 - LeadDetailPage header convert gate', () => {
   it('the header row wraps at narrow widths (Create Estimate case, no convertible estimate)', async () => {
     serveLead([DRAFT_ONLY]);
 
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail({ ability: adminAbility });
 
     const button = await screen.findByRole('button', { name: /create estimate/i });
     const heading = await screen.findByRole('heading', { name: /L00001\b/ });
@@ -323,7 +311,7 @@ describe('#2048 - LeadDetailPage header convert gate', () => {
     serveLead([]);
     const kebabOnlyAbility = buildAbility([{ action: 'read', subject: 'Lead' }]);
 
-    renderWithProviders(<LeadDetailPage />, { ability: kebabOnlyAbility });
+    renderLeadDetail({ ability: kebabOnlyAbility });
 
     const heading = await screen.findByRole('heading', { name: /L00001\b/ });
     expect(screen.queryByRole('button', { name: /convert to job/i })).toBeNull();
@@ -339,7 +327,7 @@ describe('#2048 - LeadDetailPage header convert gate', () => {
   // width) when it does not fit beside the number; it still shrinks and breaks only past that.
   it('the heading wraps so a long name takes its own line instead of a 90 px column', async () => {
     serveLead([DRAFT_ONLY]);
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail({ ability: adminAbility });
     const heading = await screen.findByRole('heading', { name: /L00001\b/ });
     expect(heading.className).toContain('flex-wrap');
     const name = heading.querySelector('span[title]') as HTMLElement;
@@ -355,7 +343,7 @@ describe('#2048 - LeadDetailPage header convert gate', () => {
     serveLead([WON_UNATTACHED]);
     const user = userEvent.setup();
 
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail({ ability: adminAbility });
 
     const primary = await screen.findByRole('button', { name: /^convert to job$/i });
     expect(primary.parentElement!.className).toContain('flex-col');
@@ -375,7 +363,7 @@ describe('#2048 - LeadDetailPage header convert gate', () => {
   // flex row, so the last one ran off a 320 px screen. Two to a row below sm, one row from sm up.
   it('lays the KPI strip out two to a row below sm and in one row from sm up', async () => {
     serveLead([WON_UNATTACHED]);
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail({ ability: adminAbility });
 
     const strip = (await screen.findByText('Estimated Value')).parentElement!.parentElement!;
     expect(strip.className).toContain('grid-cols-2');

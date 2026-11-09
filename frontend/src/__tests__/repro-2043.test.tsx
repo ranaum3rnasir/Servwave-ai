@@ -35,7 +35,7 @@ import { buildAbility } from '@/lib/ability';
 import { renderWithProviders } from './helpers';
 import { impossibleOnPurpose } from '@/__tests__/support/backendSwitchCatalog';
 
-import InventoryPage from '@/pages/v2/inventory/InventoryPage';
+import { renderInventory, serveInventory } from '@/__tests__/harness/inventoryPage';
 import PurchaseOrdersPage from '@/pages/v2/inventory/PurchaseOrdersPage';
 import { VendorsPage } from '@/pages/v2/inventory/VendorsPage';
 import { buildNavSections } from '@/pages/v2/buildNavSections';
@@ -178,25 +178,7 @@ const JOB_STAGES: JobStage[] = [
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.startsWith('/api/inventory/items')) return { data: { data: ITEMS } };
-    if (url.startsWith('/api/inventory/locations')) return { data: { locations: LOCATIONS } };
-    if (url.startsWith('/api/inventory/assets')) return { data: { data: ASSETS, meta: { total: ASSETS.length } } };
-    if (url.startsWith('/api/inventory/vendors')) return { data: { vendors: VENDORS } };
-    if (url.startsWith('/api/inventory/purchase-orders')) return { data: { purchaseOrders: PURCHASE_ORDERS } };
-    if (url.startsWith('/api/inventory/job-stages')) return { data: { jobStages: JOB_STAGES } };
-    if (url.startsWith('/api/inventory/techs')) return { data: { techs: [] } };
-    if (url.startsWith('/api/logistic-orders')) return { data: { data: [], page: 1, limit: 50, total: 0 } };
-    if (url.startsWith('/api/users')) return { data: { users: [] } };
-    return {
-      data: {
-        data: [], meta: { page: 1, limit: 1, total: 0, totalPages: 1 },
-        locations: [], vendors: [], categories: [], branches: [], brands: [],
-        stages: [], assets: [], total: 0, jobStages: [], purchaseOrders: [],
-        users: [], finishes: [], techs: [], itemGroups: [],
-      },
-    };
-  });
+  serveInventory({ items: ITEMS, locations: LOCATIONS, assets: ASSETS, vendors: VENDORS, purchaseOrders: PURCHASE_ORDERS, jobStages: JOB_STAGES, techs: [] });
   mockApi.post.mockResolvedValue({ data: { success: true } });
 });
 
@@ -233,7 +215,7 @@ const writeAbility = () =>
   ]);
 
 function renderStock(ability = readOnlyAbility(), path = '/inventory') {
-  return renderWithProviders(<InventoryPage />, { ability, initialEntries: [path] });
+  return renderInventory({ ability, entry: path });
 }
 
 // ─── Stock toolbar ─────────────────────────────────────────────────────────
@@ -401,7 +383,7 @@ describe('#2043 — PurchaseOrdersPage', () => {
   function renderPOs(ability: ReturnType<typeof readOnlyAbility>) {
     return renderWithProviders(<PurchaseOrdersPage />, {
       ability,
-      initialEntries: ['/inventory/purchase-orders'],
+      entry: '/inventory/purchase-orders',
     });
   }
 
@@ -425,7 +407,7 @@ describe('#2043 — PODetailDialog', () => {
   async function openDetail(ability: ReturnType<typeof readOnlyAbility>) {
     renderWithProviders(<PurchaseOrdersPage />, {
       ability,
-      initialEntries: ['/inventory/purchase-orders'],
+      entry: '/inventory/purchase-orders',
     });
     const row = (await screen.findByText('PO-2043')).closest('tr')!;
     fireEvent.click(row);
@@ -452,7 +434,7 @@ describe('#2043 — VendorsPage (wrong subject)', () => {
   function renderVendors(ability: ReturnType<typeof readOnlyAbility>) {
     return renderWithProviders(<VendorsPage />, {
       ability,
-      initialEntries: ['/inventory/vendors'],
+      entry: '/inventory/vendors',
     });
   }
 
@@ -491,7 +473,7 @@ describe('#2043 — VendorsPage (wrong subject)', () => {
 // ─── Vendor detail dialog (same wrong subject) ─────────────────────────────
 describe('#2043 — VendorDetailDialog (wrong subject)', () => {
   async function openVendorDetail(ability: ReturnType<typeof readOnlyAbility>) {
-    renderWithProviders(<VendorsPage />, { ability, initialEntries: ['/inventory/vendors'] });
+    renderWithProviders(<VendorsPage />, { ability, entry: '/inventory/vendors' });
     fireEvent.click((await screen.findByText('qa-2043-vendor')).closest('button')!);
     await screen.findByText(/Vendor ·/);
   }

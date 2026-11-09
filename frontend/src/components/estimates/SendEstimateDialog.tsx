@@ -20,7 +20,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Check, Loader2, Send, AlertTriangle, X, Lock } from 'lucide-react';
 import { extractApiError } from '@/lib/utils';
-import { useOrganization, type PaymentMethod } from '@/lib/api/organization';
+import { useOrganization, type PaymentMethod } from '@/lib/api/shared/organization';
 import { PAYMENT_METHOD_LABELS } from '@/lib/payment-methods';
 import { useFeature } from '@/lib/entitlements';
 import {

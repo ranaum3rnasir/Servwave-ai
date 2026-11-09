@@ -2,6 +2,7 @@
  * Spider lead watcher (#2619) API. The server is the only source of truth: nothing here is kept
  * in the browser beyond react-query's cache, which sign-out and an identity change clear.
  */
+import { SPIDER_UNREAD_KEY } from '@/lib/api/shared/queryKeys';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/axios';
 import { useSpiderAvailable } from '@/lib/spider/gate';
@@ -220,7 +221,6 @@ export interface SpiderOnOff {
 export const SPIDER_STATUS_KEY = ['spider', 'status'] as const;
 export const SPIDER_SETTINGS_KEY = ['spider', 'settings'] as const;
 export const SPIDER_HISTORY_KEY = ['spider', 'history'] as const;
-export const SPIDER_UNREAD_KEY = ['spider', 'unread-alerts'] as const;
 
 /** The bell's own cadence (NOTIFICATIONS_POLL_MS), kept equal on purpose. */
 export const SPIDER_POLL_MS = 30_000;

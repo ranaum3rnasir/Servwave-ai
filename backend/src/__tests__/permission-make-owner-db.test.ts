@@ -55,7 +55,7 @@ const auth = supabaseAdmin.auth as unknown as { signInWithPassword: Mock };
 suite('Make Owner with email approval (ticket 27, real database, real routes)', () => {
   const db = realClient as PrismaClient;
   const fx = switchFixture(db, async () => (await import('../app.js')).default as never);
-  const app = async () => (await import('../app.js')).default as never;
+  const app = () => fx.listener();
   beforeAll(async () => {
     await import('../app.js');
   }, 600_000);

@@ -19,7 +19,7 @@ import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from './helpers';
 import { ScopeOfWorkCard } from '@/components/jobs/items/ScopeOfWorkCard';
 import { AddLineDialog } from '@/components/jobs/items/AddLineDialog';
-import type { Scope } from '@/lib/api/jobs';
+import type { Scope } from '@/lib/api/shared/scope';
 import type { InvoiceLineItem } from '@/lib/api/jobs';
 import { combineDescription } from '@/lib/lineItems';
 

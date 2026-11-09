@@ -10,7 +10,7 @@ import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
 import { buildAbility } from '@/lib/ability';
 import { renderWithProviders } from './helpers';
-import type { StripeStatus } from '@/lib/api/organization';
+import type { StripeStatus } from '@/lib/api/shared/organization';
 
 const saver = vi.hoisted(() => ({
   current: null as null | { save: () => Promise<void> | void; discard: () => void; isDirty: boolean },

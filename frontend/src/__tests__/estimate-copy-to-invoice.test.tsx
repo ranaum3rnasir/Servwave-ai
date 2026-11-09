@@ -16,9 +16,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
-import { renderWithProviders } from './helpers';
 import { buildAbility } from '@/lib/ability';
-import EstimateWorkspacePage from '@/pages/v2/estimates/EstimateWorkspacePage';
+import { renderEstimateWorkspace, serveEstimateWorkspace } from '@/__tests__/harness/estimateWorkspacePage';
 
 const mockNavigate = vi.fn();
 vi.mock('react-router-dom', async () => {
@@ -62,7 +61,6 @@ vi.mock('@/components/estimates/RefundDepositDialog', () => ({ RefundDepositDial
 
 const mockApi = vi.mocked(api);
 
-const adminAbility = buildAbility([{ action: 'manage', subject: 'all' }]);
 // Can view/manage the estimate but NOT create Invoice, so the gate under test is the Invoice grant. It holds See
 // prices because the Preview item the test anchors on is the estimate's document, which is its prices (P11).
 const noInvoiceCreateAbility = buildAbility([
@@ -129,11 +127,7 @@ const BASE_ESTIMATE = {
 };
 
 function setupMocks(fixture: Record<string, unknown>) {
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.includes('/state-tax-rates')) return { data: { data: [] } };
-    if (url.includes('/api/estimates/')) return { data: { estimate: fixture } };
-    return { data: {} };
-  });
+  serveEstimateWorkspace({ estimate: fixture });
 }
 
 async function openActionsMenu(user: ReturnType<typeof userEvent.setup>) {
@@ -148,7 +142,7 @@ describe('EstimateWorkspacePage — Copy to Invoice gating', () => {
   it('shows the "Copy to Invoice" menu item when ability grants create Invoice, even on a DRAFT (non-approved) estimate', async () => {
     setupMocks(BASE_ESTIMATE);
     const user = userEvent.setup();
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     await openActionsMenu(user);
     expect(await screen.findByRole('menuitem', { name: /Copy to Invoice/i })).toBeInTheDocument();
@@ -157,7 +151,7 @@ describe('EstimateWorkspacePage — Copy to Invoice gating', () => {
   it('hides the "Copy to Invoice" menu item when ability lacks create Invoice', async () => {
     setupMocks(BASE_ESTIMATE);
     const user = userEvent.setup();
-    renderWithProviders(<EstimateWorkspacePage />, { ability: noInvoiceCreateAbility });
+    renderEstimateWorkspace({ ability: noInvoiceCreateAbility });
 
     await openActionsMenu(user);
     // Anchor on a menu item that IS present to confirm the menu actually opened.
@@ -168,7 +162,7 @@ describe('EstimateWorkspacePage — Copy to Invoice gating', () => {
   it('disables "Copy to Invoice" with an informative tooltip when the estimate already has a Job', async () => {
     setupMocks({ ...BASE_ESTIMATE, job: { id: 'job-1', job_number: 'J00010' } });
     const user = userEvent.setup();
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     await openActionsMenu(user);
     const item = await screen.findByRole('menuitem', { name: /Copy to Invoice/i });
@@ -186,7 +180,7 @@ describe('EstimateWorkspacePage — Copy to Invoice gating', () => {
   it('disables "Copy to Invoice" with an informative tooltip when the estimate is attached to a job via job_id (no provenance job)', async () => {
     setupMocks({ ...BASE_ESTIMATE, job: null, job_id: 'job-multi-1' });
     const user = userEvent.setup();
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     await openActionsMenu(user);
     const item = await screen.findByRole('menuitem', { name: /Copy to Invoice/i });
@@ -200,7 +194,7 @@ describe('EstimateWorkspacePage — Copy to Invoice gating', () => {
       invoices: [{ id: 'inv-std-1', invoice_number: 'I00050', kind: 'STANDARD', status: 'SENT' }],
     });
     const user = userEvent.setup();
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     await openActionsMenu(user);
     const item = await screen.findByRole('menuitem', { name: /Copy to Invoice/i });
@@ -214,7 +208,7 @@ describe('EstimateWorkspacePage — Copy to Invoice gating', () => {
       invoices: [{ id: 'inv-std-voided', invoice_number: 'I00051', kind: 'STANDARD', status: 'VOIDED' }],
     });
     const user = userEvent.setup();
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     await openActionsMenu(user);
     const item = await screen.findByRole('menuitem', { name: /Copy to Invoice/i });
@@ -232,7 +226,7 @@ describe('EstimateWorkspacePage — reciprocal "View invoice" menu item', () => 
       invoices: [{ id: 'inv-std-1', invoice_number: 'I00050', kind: 'STANDARD', status: 'SENT' }],
     });
     const user = userEvent.setup();
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     await openActionsMenu(user);
     await user.click(await screen.findByRole('menuitem', { name: 'View invoice' }));
@@ -250,7 +244,7 @@ describe('EstimateWorkspacePage — reciprocal "View invoice" menu item', () => 
   // scalar job_id (the provenance relation is null for every attached estimate).
   it('reaches the attached job from the hero when the estimate has job_id but no provenance job', async () => {
     setupMocks({ ...BASE_ESTIMATE, job: null, job_id: 'job-multi-1' });
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     expect(await screen.findByRole('link', { name: /Job/ })).toHaveAttribute(
       'href',
@@ -265,7 +259,7 @@ describe('EstimateWorkspacePage — reciprocal "View invoice" menu item', () => 
       job_id: 'job-multi-1',
       job_link: { id: 'job-multi-1', job_number: 'J00010', status: 'SCHEDULED' },
     });
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     expect(await screen.findByRole('link', { name: /Job J00010/ })).toHaveAttribute(
       'href',
@@ -281,7 +275,7 @@ describe('EstimateWorkspacePage — Copy to Invoice mutation', () => {
       data: { invoice: { id: 'inv-new-1', invoice_number: 'I00099' } },
     });
     const user = userEvent.setup();
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     await openActionsMenu(user);
     await user.click(await screen.findByRole('menuitem', { name: /Copy to Invoice/i }));
@@ -299,7 +293,7 @@ describe('EstimateWorkspacePage — Copy to Invoice mutation', () => {
       response: { data: { error: 'This estimate already has a Job' } },
     });
     const user = userEvent.setup();
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     await openActionsMenu(user);
     await user.click(await screen.findByRole('menuitem', { name: /Copy to Invoice/i }));

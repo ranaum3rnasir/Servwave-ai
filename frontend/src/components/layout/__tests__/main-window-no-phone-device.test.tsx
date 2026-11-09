@@ -48,7 +48,7 @@ vi.mock('@/components/ai-center/AiCenterModal', () => ({ AiCenterModal: () => nu
 vi.mock('@/components/notifications/NotificationBell', () => ({ NotificationBell: () => null }));
 vi.mock('@/components/layout/GlobalSearch', () => ({ default: () => null }));
 vi.mock('@/components/timeclock/ClockInOutMenu', () => ({ ClockInOutMenu: () => null }));
-vi.mock('@/lib/api/organization', () => ({ useOrganization: () => ({ data: undefined }) }));
+vi.mock('@/lib/api/shared/organization', () => ({ useOrganization: () => ({ data: undefined }) }));
 
 import { teardownOfficeSoftphone } from '@/lib/communication/officeSoftphone';
 import AppLayout from '../AppLayout';

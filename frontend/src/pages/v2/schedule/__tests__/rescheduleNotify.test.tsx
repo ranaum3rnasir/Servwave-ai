@@ -1,3 +1,24 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { buildAbility } from '@/lib/ability';
+import { renderSchedule, serveSchedule } from '@/__tests__/harness/schedulePage';
+import { addDays, format, startOfWeek } from 'date-fns';
+import api from '@/lib/axios';
+import { GRID_EVENT_ID, GRID_EVENT_TYPE, FROM_MEMBER } from '@/components/schedule/dragChannels';
+import { useAuthStore } from '@/stores/auth.store';
+
+// Each test starts from the setup file's signed-in user and bare client calls: reset them here, so a test states its own user
+// and answers in its own `beforeEach` (`clearAllMocks` keeps implementations).
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(useAuthStore).mockReset();
+  vi.mocked(api.get).mockReset();
+  vi.mocked(api.post).mockReset();
+  vi.mocked(api.patch).mockReset();
+  vi.mocked(api.put).mockReset();
+  vi.mocked(api.delete).mockReset();
+});
+
 /**
  * The board's reschedule confirm sends NO customer notification of its own.
  *
@@ -16,17 +37,6 @@
  *
  * These drive the ROUTED board through the same drag-and-confirm gesture boardReadsVisits uses.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, fireEvent, waitFor } from '@testing-library/react';
-import { addDays, format, startOfWeek } from 'date-fns';
-
-import api from '@/lib/axios';
-import { buildAbility } from '@/lib/ability';
-import { renderWithProviders } from '@/__tests__/helpers';
-import { TooltipProvider } from '@/ui-kit/components/ui/tooltip';
-import { GRID_EVENT_ID, GRID_EVENT_TYPE, FROM_MEMBER } from '@/components/schedule/dragChannels';
-
-import SchedulePage from '../SchedulePage';
 
 const ADMIN = buildAbility([{ action: 'manage', subject: 'all' }]);
 const mockApi = vi.mocked(api);
@@ -87,28 +97,7 @@ const WALKTHROUGH_LEAD = {
 };
 
 function mockBoard(jobs: Array<Record<string, unknown>>, leads: Array<Record<string, unknown>> = []) {
-  mockApi.get.mockImplementation((url: string, config?: { params?: unknown }) => {
-    if (url === '/api/jobs') {
-      const status = (config?.params as { status?: unknown } | undefined)?.status;
-      const wantsBucket = status === 'UNSCHEDULED'
-        || (Array.isArray(status) && status.includes('UNSCHEDULED'));
-      return Promise.resolve({ data: { jobs: wantsBucket ? [] : jobs } });
-    }
-    if (url === '/api/departments') return Promise.resolve({ data: { departments: [] } });
-    if (url === '/api/leads') {
-      const params = (config?.params ?? {}) as { walkthrough_after?: string };
-      return Promise.resolve({ data: { leads: params.walkthrough_after ? leads : [] } });
-    }
-    // The board's roster moved to the scoped endpoint; serve it the same fixture.
-    if (url === '/api/users' || url === '/api/users/assignable') {
-      return Promise.resolve({
-        data: { users: [{ id: 'm-alice', first_name: 'Alice', last_name: 'Ng', is_active: true, role: 'TECHNICIAN' }] },
-      });
-    }
-    if (url === '/api/organization') return Promise.resolve({ data: {} });
-    if (url === '/api/service-plans/scheduler-bucket') return Promise.resolve({ data: { plans: [] } });
-    return Promise.resolve({ data: {} });
-  });
+  serveSchedule({ jobs: jobs, bucketJobs: [], leads: (p) => (p.walkthrough_after ? leads : []), users: [{ id: 'm-alice', first_name: 'Alice', last_name: 'Ng', is_active: true, role: 'TECHNICIAN' }] });
 }
 
 const cellFor = (offset: number) => `week-cell-m-alice-${format(addDays(WEEK_START, offset), 'yyyy-MM-dd')}`;
@@ -120,12 +109,7 @@ async function mountBoard(
   waitFor: RegExp = /J00041/,
 ) {
   mockBoard(jobs, leads);
-  renderWithProviders(
-    <TooltipProvider>
-      <SchedulePage />
-    </TooltipProvider>,
-    { ability: ADMIN },
-  );
+  renderSchedule({ ability: ADMIN });
   await screen.findAllByText(waitFor);
   fireEvent.click(screen.getByRole('button', { name: 'Member' }));
 }

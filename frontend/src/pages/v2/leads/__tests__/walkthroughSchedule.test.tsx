@@ -15,9 +15,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
-import { renderWithProviders, LEAD_FIXTURE } from '@/__tests__/helpers';
-import { buildAbility } from '@/lib/ability';
-import LeadDetailPage from '../LeadDetailPage';
+import { LEAD_FIXTURE } from '@/__tests__/helpers';
+import { renderLeadDetail, serveLeadDetail, stubBrowser } from '@/__tests__/harness/leadDetailPage';
 
 vi.mock('@/lib/entitlements', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/entitlements')>()),
@@ -35,48 +34,23 @@ vi.mock('@/components/crm/MultiAssigneeSelect', () => ({
   ),
 }));
 
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual('react-router-dom');
-  return { ...actual, useParams: () => ({ id: 'e0000000-0000-0000-0000-000000000001' }) };
-});
+vi.mock('react-router-dom', async () => (await import('@/__tests__/harness/leadDetailRouter')).leadDetailRouter());
 
 const mockApi = vi.mocked(api);
-const adminAbility = buildAbility([{ action: 'manage', subject: 'all' }]);
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.includes('/notes')) return { data: { notes: [] } };
-    if (url.includes('/api/users')) return { data: { users: [] } };
-    if (url.includes('/api/tags')) return { data: { tags: [] } };
-    if (url.includes('/api/leads/')) {
-      return {
-        data: {
-          lead: {
-            ...LEAD_FIXTURE,
-            status: 'CONTACTED',
-            walkthrough_scheduled_at: null,
-            walkthrough_completed_at: null,
-            walkthrough_cancelled_at: null,
-          },
-        },
-      };
-    }
-    return { data: {} };
+  serveLeadDetail({
+    lead: { ...LEAD_FIXTURE, status: 'CONTACTED', walkthrough_scheduled_at: null, walkthrough_completed_at: null, walkthrough_cancelled_at: null },
   });
   mockApi.post.mockResolvedValue({ data: {} });
 });
 
 /** Opens the walkthrough tab and returns its [start date, start time, end date, end time]. */
 async function openWalkthroughFields(user: ReturnType<typeof userEvent.setup>) {
-  renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+  renderLeadDetail();
   await user.click(await screen.findByRole('tab', { name: /walkthrough/i }));
   return () => screen.getAllByRole('textbox').filter(
     (el) => (el as HTMLInputElement).placeholder === 'MM/DD/YYYY' || (el as HTMLInputElement).placeholder === 'Time',

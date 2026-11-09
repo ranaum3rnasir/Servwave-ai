@@ -8,7 +8,7 @@
  * Where it runs:
  *  - the Backend job of ci.yml runs it as its own named step, on every pull request and on every push to main; the suites that
  *    need no database run there;
- *  - the Database job of ci.yml runs the `*-db.test.ts` files of it (every real-database suite is dealt to a shard by name),
+ *  - the Database job of ci.yml runs the `*-db.test.ts` files of it (every real-database suite is in the list `npm run test:db` runs),
  *    on the same triggers, so on every push to main too.
  * `authorization-suite.test.ts` fails when a listed file is missing, when a ticket lists nothing, or when ci.yml stops
  * running the suite.

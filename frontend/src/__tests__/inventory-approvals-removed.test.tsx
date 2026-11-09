@@ -14,44 +14,21 @@ import { describe, it, expect, vi } from 'vitest';
 import { screen } from '@testing-library/react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { renderWithProviders, inventoryWriteAbility, seedMySwitches } from './helpers';
-import InventoryPage from '@/pages/v2/inventory/InventoryPage';
+import { inventoryElement } from '@/__tests__/harness/inventoryPage';
 
 vi.mock('@/lib/api/inventory', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/inventory')>();
-  const EMPTY: never[] = [];
-  const stable =
-    <T,>(data: T) =>
-    () => ({ data, isLoading: false, isError: false });
-  const mutation = () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false });
-  return {
-    ...actual,
-    useInventoryItems: stable(EMPTY),
-    useLocations: stable(EMPTY),
-    useVendors: stable(EMPTY),
-    useCategories: stable(EMPTY),
-    useBranches: stable(EMPTY),
-    useBrands: stable(EMPTY),
-    useJobStages: stable(EMPTY),
-    useMovements: stable(EMPTY),
-    usePurchaseOrders: stable(EMPTY),
-    useInventoryJobs: stable(EMPTY),
-    useTechs: stable(EMPTY),
-    useStockApprovals: stable(EMPTY),
-    useUpsertLocation: mutation,
-    useUpsertBranch: mutation,
-    useRestock: mutation,
-    useTransferStock: mutation,
-    useImportItemsCSV: mutation,
-    useCreatePO: mutation,
-    useReceivePO: mutation,
-    useCreateStage: mutation,
-    useReceiveStageLine: mutation,
-    useNotifyTechReady: mutation,
-    useCreateApproval: mutation,
-    useDecideApproval: mutation,
-    useUpsertVendor: mutation,
-    useDeleteVendor: mutation,
-  };
+  return (await import('@/__tests__/harness/inventoryApiStub')).inventoryApi(
+    await importOriginal<typeof import('@/lib/api/inventory')>(),
+    {
+      reads: {
+        usePurchaseOrders: [],
+        useInventoryJobs: [],
+        useTechs: [],
+        useStockApprovals: [],
+      },
+      mutations: ['useUpsertLocation', 'useUpsertBranch', 'useRestock', 'useTransferStock', 'useImportItemsCSV', 'useCreatePO', 'useReceivePO', 'useCreateStage', 'useReceiveStageLine', 'useNotifyTechReady', 'useCreateApproval', 'useDecideApproval', 'useUpsertVendor', 'useDeleteVendor'],
+    },
+  );
 });
 
 // Mirrors the routed inventory route block (`pages/v2/routes/inventory.routes.tsx`)
@@ -61,8 +38,8 @@ vi.mock('@/lib/api/inventory', async (importOriginal) => {
 function InventoryRoutes() {
   return (
     <Routes>
-      <Route path="/inventory" element={<InventoryPage />} />
-      <Route path="/inventory/staging" element={<InventoryPage />} />
+      <Route path="/inventory" element={inventoryElement()} />
+      <Route path="/inventory/staging" element={inventoryElement()} />
       <Route
         path="/inventory/approvals"
         element={<Navigate to="/inventory" replace />}

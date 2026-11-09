@@ -8,18 +8,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import api from '@/lib/axios';
-import { renderWithProviders } from './helpers';
 import { buildAbility } from '@/lib/ability';
-import InvoiceDetailPage from '@/pages/v2/invoices/InvoiceDetailPage';
+import { renderInvoiceDetail, serveInvoiceDetail } from '@/__tests__/harness/invoiceDetailPage';
 
 const adminAbility = buildAbility([{ action: 'manage', subject: 'all' }]);
 const INVOICE_ID = 'inv-pay05-paid-card';
 
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual('react-router-dom');
-  return { ...actual, useParams: () => ({ id: INVOICE_ID }), useNavigate: () => vi.fn() };
-});
+vi.mock('react-router-dom', async () => (await import('@/__tests__/harness/invoiceDetailRouter')).invoiceDetailRouter({ navigate: true }));
 
 // Heavy sub-surfaces with no bearing on the PAYMENTS stat cards or the header actions.
 vi.mock('@/components/crm/IconRail', () => ({ IconRail: ({ children }: { children: React.ReactNode }) => children }));
@@ -39,7 +34,6 @@ vi.mock('@/components/invoices/CreditInvoiceDialog', () => ({ CreditInvoiceDialo
 vi.mock('@/components/invoices/VoidPaymentDialog', () => ({ VoidPaymentDialog: () => null }));
 vi.mock('@/components/crm/RecordNumberEditor', () => ({ RecordNumberEditor: ({ number }: { number: string }) => <span>{number}</span> }));
 
-const mockApi = vi.mocked(api);
 
 function refund(id: string, amount: string, state: string) {
   return {
@@ -111,12 +105,7 @@ function invoiceWith(overrides: Record<string, unknown>) {
 }
 
 function serve(invoice: Record<string, unknown>) {
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.includes('/api/invoices/')) return { data: { invoice } };
-    if (url.includes('/api/organization')) return { data: {} };
-    if (url.includes('/api/state-tax-rates')) return { data: [] };
-    return { data: {} };
-  });
+  serveInvoiceDetail({ invoice });
 }
 
 /** The PAYMENTS group's stat card carrying `label`, read as one string ("Paid$100.00"). */
@@ -138,7 +127,7 @@ describe('InvoiceDetailPage PAYMENTS card: only payments that landed count as Pa
         payments: [payment('p-cash', '100.00', 'CASH', 'SUCCEEDED'), payment('p-ach', '50.00', 'ACH', 'PROCESSING')],
       }),
     );
-    renderWithProviders(<InvoiceDetailPage />, { ability: adminAbility });
+    renderInvoiceDetail({ id: INVOICE_ID, ability: adminAbility });
 
     expect(await statCard('Paid')).toBe('Paid$100.00');
     expect(await statCard('Balance')).toBe('Balance$50.00');
@@ -150,7 +139,7 @@ describe('InvoiceDetailPage PAYMENTS card: only payments that landed count as Pa
         payments: [payment('p-cash', '100.00', 'CASH', 'SUCCEEDED'), payment('p-ach', '50.00', 'ACH', 'FAILED')],
       }),
     );
-    renderWithProviders(<InvoiceDetailPage />, { ability: adminAbility });
+    renderInvoiceDetail({ id: INVOICE_ID, ability: adminAbility });
 
     expect(await statCard('Paid')).toBe('Paid$100.00');
   });
@@ -165,7 +154,7 @@ describe('InvoiceDetailPage PAYMENTS card: only payments that landed count as Pa
       }),
     );
     const user = userEvent.setup();
-    renderWithProviders(<InvoiceDetailPage />, { ability: adminAbility });
+    renderInvoiceDetail({ id: INVOICE_ID, ability: adminAbility });
 
     expect(await statCard('Paid')).toBe('Paid$0.00');
     expect(screen.queryByRole('button', { name: /^Refund$/ })).not.toBeInTheDocument();
@@ -181,7 +170,7 @@ describe('InvoiceDetailPage PAYMENTS card: only payments that landed count as Pa
         payments: [payment('p-cash', '100.00', 'CASH', 'SUCCEEDED'), payment('p-ach', '50.00', 'ACH', 'FAILED')],
       }),
     );
-    renderWithProviders(<InvoiceDetailPage />, { ability: adminAbility });
+    renderInvoiceDetail({ id: INVOICE_ID, ability: adminAbility });
 
     expect(await statCard('Paid')).toBe('Paid$100.00');
     expect(await screen.findAllByRole('button', { name: /^Refund$/ })).not.toHaveLength(0);
@@ -205,7 +194,7 @@ describe('InvoiceDetailPage payment history: a row that does not count says why'
         payments: [payment('p-cash', '100.00', 'CASH', 'SUCCEEDED'), payment('p-ach', '50.00', 'ACH', 'PROCESSING')],
       }),
     );
-    renderWithProviders(<InvoiceDetailPage />, { ability: adminAbility });
+    renderInvoiceDetail({ id: INVOICE_ID, ability: adminAbility });
 
     const row = await historyRow(/ACH/);
     expect(row.textContent).toMatch(/processing/i);
@@ -218,7 +207,7 @@ describe('InvoiceDetailPage payment history: a row that does not count says why'
         payments: [payment('p-cash', '100.00', 'CASH', 'SUCCEEDED'), payment('p-ach', '50.00', 'ACH', 'FAILED')],
       }),
     );
-    renderWithProviders(<InvoiceDetailPage />, { ability: adminAbility });
+    renderInvoiceDetail({ id: INVOICE_ID, ability: adminAbility });
 
     const row = await historyRow(/ACH/);
     expect(row.textContent).toMatch(/failed/i);
@@ -235,7 +224,7 @@ describe('InvoiceDetailPage payment history: a row that does not count says why'
         refunds: [refund('r-pending', '20.00', 'PENDING'), { ...refund('r-failed', '30.00', 'FAILED'), method: 'CHECK' }],
       }),
     );
-    renderWithProviders(<InvoiceDetailPage />, { ability: adminAbility });
+    renderInvoiceDetail({ id: INVOICE_ID, ability: adminAbility });
 
     const pending = await historyRow(/\$20\.00/);
     expect(pending.textContent).toMatch(/pending/i);
@@ -257,7 +246,7 @@ describe('InvoiceDetailPage payment history: a row that does not count says why'
         ],
       }),
     );
-    renderWithProviders(<InvoiceDetailPage />, { ability: adminAbility });
+    renderInvoiceDetail({ id: INVOICE_ID, ability: adminAbility });
 
     const cash = await historyRow(/Cash/);
     expect(within(cash).queryByRole('button', { name: 'Void' })).toBeInTheDocument();
@@ -289,7 +278,7 @@ describe('InvoiceDetailPage Refund dialog: only money that landed can be reverse
         ],
       }),
     );
-    renderWithProviders(<InvoiceDetailPage />, { ability: adminAbility });
+    renderInvoiceDetail({ id: INVOICE_ID, ability: adminAbility });
     const { user, dialog } = await openRefund();
 
     await user.click(within(dialog).getByRole('combobox', { name: 'Reverse a specific payment' }));
@@ -312,7 +301,7 @@ describe('InvoiceDetailPage Refund dialog: only money that landed can be reverse
         refunds: [refund('r-pending', '30.00', 'PENDING')],
       }),
     );
-    renderWithProviders(<InvoiceDetailPage />, { ability: adminAbility });
+    renderInvoiceDetail({ id: INVOICE_ID, ability: adminAbility });
     const { user, dialog } = await openRefund();
 
     expect(within(dialog).getByText(/Net paid:/).textContent).toBe('Net paid: $120.00');

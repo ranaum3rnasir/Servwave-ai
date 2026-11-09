@@ -25,7 +25,7 @@ import { cpSync, mkdtempSync, readdirSync, rmSync, copyFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { PrismaClient } from '@prisma/client';
-import { deployFrom } from './migration-deploy-support';
+import { deployFrom, deployMigrations, createMigrationDatabase } from './migration-deploy-support';
 
 const url = process.env.TEST_DATABASE_URL;
 const suite = url ? describe : describe.skip;
@@ -65,9 +65,9 @@ suite('payment options migration (real database)', () => {
     return u.toString();
   }
 
-  async function createDatabase(): Promise<{ dbUrl: string; client: OptionsClient }> {
+  async function createDatabase(start: 'empty' | 'before' = 'before'): Promise<{ dbUrl: string; client: OptionsClient }> {
     const name = `pay19_mig_${randomUUID().slice(0, 8)}`;
-    await admin.$executeRawUnsafe(`CREATE DATABASE "${name}"`);
+    await createMigrationDatabase(admin, name, start === 'before' ? MIGRATION : null, tempDirs);
     databases.push(name);
     const dbUrl = urlFor(name);
     const client = clientAt(dbUrl);
@@ -76,12 +76,12 @@ suite('payment options migration (real database)', () => {
   }
 
   function deploy(dbUrl: string, which: 'all' | 'before'): string {
+    if (which === 'before') return deployMigrations(dbUrl, MIGRATION, 'before', tempDirs);
     const dir = mkdtempSync(join(tmpdir(), 'pay19-mig-'));
     tempDirs.push(dir);
     copyFileSync(join(PRISMA_DIR, 'schema.prisma'), join(dir, 'schema.prisma'));
     const source = join(PRISMA_DIR, 'migrations');
     for (const entry of readdirSync(source)) {
-      if (which === 'before' && entry !== 'migration_lock.toml' && entry >= MIGRATION) continue;
       cpSync(join(source, entry), join(dir, 'migrations', entry), { recursive: true });
     }
     // The shared deploy gives the database the stub auth helpers first (see migration-deploy-support).
@@ -145,7 +145,7 @@ suite('payment options migration (real database)', () => {
   });
 
   it('applies on a fresh database; an org and invoice written without the new fields read the defaults; running it twice changes nothing', async () => {
-    const { dbUrl, client } = await createDatabase();
+    const { dbUrl, client } = await createDatabase('empty');
     const dir = deploy(dbUrl, 'all');
     const { org, invoice } = await oldShapeOrg(client);
     await expectDefaults(client, org, invoice);

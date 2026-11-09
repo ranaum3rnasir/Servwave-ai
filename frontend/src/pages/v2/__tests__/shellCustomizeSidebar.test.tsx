@@ -35,7 +35,7 @@ vi.mock('@/components/timeclock/ClockInOutMenu', () => ({ ClockInOutMenu: () => 
 vi.mock('@/lib/api/communication', () => ({
   useUnreadCounts: () => ({ sms: 0, whatsapp: 0, email: 0 }),
 }));
-vi.mock('@/lib/api/organization', () => ({ useOrganization: () => ({ data: undefined }) }));
+vi.mock('@/lib/api/shared/organization', () => ({ useOrganization: () => ({ data: undefined }) }));
 
 const USER_ID = '00000000-0000-0000-0000-000000000001';
 const LAYOUT_KEY = `servwave:nav-layout:${USER_ID}`;

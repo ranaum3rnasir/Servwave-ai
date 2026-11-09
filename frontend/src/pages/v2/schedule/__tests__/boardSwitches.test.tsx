@@ -13,16 +13,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { addDays, format, startOfWeek } from 'date-fns';
 
 import api from '@/lib/axios';
 import { buildAbility, type AbilityRule, type AppAbility } from '@/lib/ability';
 import { useAuthStore } from '@/stores/auth.store';
-import { renderWithProviders } from '@/__tests__/helpers';
-import { TooltipProvider } from '@/ui-kit/components/ui/tooltip';
 import { GRID_EVENT_ID, GRID_EVENT_TYPE, FROM_MEMBER, JOB_ID, WALKTHROUGH_ID } from '@/components/schedule/dragChannels';
-import SchedulePage from '../SchedulePage';
+import { renderSchedule, serveSchedule } from '@/__tests__/harness/schedulePage';
 
 class ResizeObserverStub {
   observe() {}
@@ -170,25 +168,11 @@ const BUCKET_LEAD = {
 };
 
 function mockBoard() {
-  mockApi.get.mockImplementation((url: string, config?: { params?: unknown }) => {
-    const params = (config?.params ?? {}) as Record<string, unknown>;
-    if (url === '/api/jobs') {
-      const status = params.status;
-      const wantsBucket = status === 'UNSCHEDULED' || (Array.isArray(status) && status.includes('UNSCHEDULED'));
-      return Promise.resolve({ data: { jobs: wantsBucket ? [BUCKET_JOB] : [SCHEDULED_JOB] } });
-    }
-    if (url === '/api/leads') {
-      const wantsBucket = params.walkthrough_status === 'needs_scheduling';
-      return Promise.resolve({ data: { leads: wantsBucket ? [BUCKET_LEAD] : [WALKTHROUGH_LEAD] } });
-    }
-    if (url === '/api/departments') return Promise.resolve({ data: { departments: [] } });
-    if (url === '/api/users' || url === '/api/users/assignable') {
-      return Promise.resolve({ data: { users: STAFF.map((u) => ({ ...u, is_active: true, role: 'TECHNICIAN' })) } });
-    }
-    if (url === '/api/organization') return Promise.resolve({ data: {} });
-    if (url === '/api/service-plans/scheduler-bucket') return Promise.resolve({ data: { plans: [] } });
-    if (url === '/api/calendar-entries') return Promise.resolve({ data: { calendar_entries: [] } });
-    return Promise.resolve({ data: {} });
+  serveSchedule({
+    jobs: [SCHEDULED_JOB],
+    bucketJobs: [BUCKET_JOB],
+    leads: (p) => (p.walkthrough_status === 'needs_scheduling' ? [BUCKET_LEAD] : [WALKTHROUGH_LEAD]),
+    users: STAFF.map((u) => ({ ...u, is_active: true, role: 'TECHNICIAN' })),
   });
   mockApi.patch.mockResolvedValue({ data: {} });
   mockApi.post.mockResolvedValue({ data: {} });
@@ -205,12 +189,7 @@ async function mountBoard(ability: AppAbility) {
     } as never),
   );
   mockBoard();
-  const view = renderWithProviders(
-    <TooltipProvider>
-      <SchedulePage />
-    </TooltipProvider>,
-    { ability, initialEntries: ['/schedule'] },
-  );
+  const view = renderSchedule({ ability, entry: '/schedule' });
   await screen.findAllByText(/J00044/);
   await waitFor(() => expect(view.container.querySelector('.schedule-cal .animate-spin')).toBeNull());
   return view;
@@ -225,8 +204,12 @@ async function openEditorFor(label: RegExp): Promise<HTMLElement> {
   return screen.findByRole('dialog');
 }
 
-/** Long enough for a lazily-loaded dialog or a request to have shown up, so a negative assertion can fail. */
-const settle = () => new Promise((r) => setTimeout(r, 400));
+/**
+ * One macrotask turn, so a handler that was going to run has run. A negative assertion is only worth
+ * making after the same drop has been SEEN to work in this file (the lazy dialog is then already loaded),
+ * which is why each test below does the permitted case first.
+ */
+const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 0)); });
 
 const buckets = () => screen.getByTestId('unassigned-buckets');
 const hasBucket = (label: 'Jobs' | 'Walkthroughs') =>
@@ -482,17 +465,17 @@ describe('dragging a visit in the lanes', () => {
   });
 
   it('to a new time in the same lane needs Schedule visits', async () => {
-    const cannotMove = await mountBoard(customRole('assign_work_to_others', 'assign_people_to_jobs'));
+    const canMove = await mountBoard(customRole('assign_work_to_others', 'schedule_visits'));
+    await openMemberView();
+    laneDrop('jv-v2', BOB.id, BOB.id, 4);
+    expect(await screen.findByRole('button', { name: /Confirm reschedule/i })).toBeInTheDocument();
+    canMove.unmount();
+
+    await mountBoard(customRole('assign_work_to_others', 'assign_people_to_jobs'));
     await openMemberView();
     laneDrop('jv-v2', BOB.id, BOB.id, 4);
     await settle();
     expect(screen.queryByRole('button', { name: /Confirm reschedule/i })).toBeNull();
-    cannotMove.unmount();
-
-    await mountBoard(customRole('assign_work_to_others', 'schedule_visits'));
-    await openMemberView();
-    laneDrop('jv-v2', BOB.id, BOB.id, 4);
-    expect(await screen.findByRole('button', { name: /Confirm reschedule/i })).toBeInTheDocument();
   });
 });
 
@@ -506,31 +489,31 @@ function bucketDrop(channel: typeof JOB_ID | typeof WALKTHROUGH_ID, id: string, 
 
 describe('dropping an unscheduled card on a lane', () => {
   it('a job needs Schedule visits', async () => {
-    const without = await mountBoard(customRole('assign_work_to_others', 'book_walkthroughs'));
-    await openMemberView();
-    bucketDrop(JOB_ID, 'job-bucket-1', 4);
-    await settle();
-    expect(screen.queryByRole('dialog')).toBeNull();
-    without.unmount();
-
-    await mountBoard(customRole('assign_work_to_others', 'schedule_visits'));
+    const withIt = await mountBoard(customRole('assign_work_to_others', 'schedule_visits'));
     await openMemberView();
     bucketDrop(JOB_ID, 'job-bucket-1', 4);
     expect(await screen.findByRole('dialog')).toBeInTheDocument();
-  });
-
-  it('a walkthrough needs Book walkthroughs', async () => {
-    const without = await mountBoard(customRole('assign_work_to_others', 'schedule_visits'));
-    await openMemberView();
-    bucketDrop(WALKTHROUGH_ID, 'lead-bucket', 4);
-    await settle();
-    expect(screen.queryByRole('dialog')).toBeNull();
-    without.unmount();
+    withIt.unmount();
 
     await mountBoard(customRole('assign_work_to_others', 'book_walkthroughs'));
     await openMemberView();
+    bucketDrop(JOB_ID, 'job-bucket-1', 4);
+    await settle();
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('a walkthrough needs Book walkthroughs', async () => {
+    const withIt = await mountBoard(customRole('assign_work_to_others', 'book_walkthroughs'));
+    await openMemberView();
     bucketDrop(WALKTHROUGH_ID, 'lead-bucket', 4);
     expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    withIt.unmount();
+
+    await mountBoard(customRole('assign_work_to_others', 'schedule_visits'));
+    await openMemberView();
+    bucketDrop(WALKTHROUGH_ID, 'lead-bucket', 4);
+    await settle();
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 });
 

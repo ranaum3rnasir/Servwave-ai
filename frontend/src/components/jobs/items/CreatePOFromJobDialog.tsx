@@ -36,7 +36,7 @@ import { ToastAction } from '@/components/ui/toast';
 import { EmptyState } from '@/components/ui/empty-state';
 import { extractApiError } from '@/lib/utils';
 import { useAppAbility } from '@/contexts/AbilityContext';
-import { switchOn, useMySwitches } from '@/lib/api/mySwitches';
+import { switchOn, useMySwitches } from '@/lib/api/shared/mySwitches';
 import { DialogList } from '@/ui-kit/components/ui/dialogList';
 
 export interface CreatePOFromJobDialogProps {

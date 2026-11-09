@@ -14,8 +14,7 @@ import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
 import { buildAbility } from '@/lib/ability';
 import type { DashboardResponse, DashboardTileMeta } from '@/lib/api/dashboard';
-import { renderWithProviders, serveDashboard } from '@/__tests__/helpers';
-import DashboardPage from '../DashboardPage';
+import { serveDashboard, renderDashboard } from '@/__tests__/harness/dashboardPage';
 
 vi.hoisted(() => {
   vi.stubEnv('VITE_DASHBOARD_USE_MOCK', 'false');
@@ -54,7 +53,7 @@ describe('the dashboard layout is the server\'s', () => {
     serveDashboard(answer, [
       { id: 'kpi.open_leads', visible: true }, { id: 'kpi.jobs_today', visible: false }, { id: 'kpi.jobs_week', visible: true },
     ]);
-    renderWithProviders(<DashboardPage />, { ability: ADMIN });
+    renderDashboard({ ability: ADMIN });
 
     await screen.findByText('Open Leads');
     fireEvent.click(screen.getByRole('button', { name: /Customize home page/ }));
@@ -67,7 +66,7 @@ describe('the dashboard layout is the server\'s', () => {
       JSON.stringify([{ id: 'kpi.jobs_today', visible: true }, { id: 'kpi.open_leads', visible: false }]),
     );
     serveDashboard(answer, [{ id: 'kpi.open_leads', visible: true }]);
-    renderWithProviders(<DashboardPage />, { ability: ADMIN });
+    renderDashboard({ ability: ADMIN });
 
     await screen.findByText('Open Leads');
     fireEvent.click(screen.getByRole('button', { name: /Customize home page/ }));
@@ -76,7 +75,7 @@ describe('the dashboard layout is the server\'s', () => {
 
   it('saves a hide straight away, without any further action', async () => {
     const server = serveDashboard(answer, [{ id: 'kpi.jobs_today', visible: true }, { id: 'kpi.open_leads', visible: true }]);
-    renderWithProviders(<DashboardPage />, { ability: ADMIN });
+    renderDashboard({ ability: ADMIN });
     await screen.findByText('Open Leads');
 
     fireEvent.click(screen.getByRole('button', { name: /Customize home page/ }));
@@ -91,7 +90,7 @@ describe('the dashboard layout is the server\'s', () => {
   it('draws a default tile the server added at the end after the rest, and sends it back with them on the next save (S09.8)', async () => {
     // The server's answer is the saved layout merged forward: the last entry is a default tile the person never saw.
     const server = serveDashboard(answer, [{ id: 'kpi.open_leads', visible: true }, { id: 'kpi.jobs_today', visible: false }, { id: 'coming_up', visible: true }]);
-    renderWithProviders(<DashboardPage />, { ability: ADMIN });
+    renderDashboard({ ability: ADMIN });
     await screen.findByText('Open Leads');
     fireEvent.click(screen.getByRole('button', { name: /Customize home page/ }));
     expect(titlesOnPage()).toEqual(['Open Leads', 'Coming Up']);
@@ -104,7 +103,7 @@ describe('the dashboard layout is the server\'s', () => {
 
   it('saves a reorder straight away, and a fresh load finds the new order', async () => {
     const server = serveDashboard(answer, [{ id: 'kpi.jobs_today', visible: true }, { id: 'kpi.open_leads', visible: true }, { id: 'kpi.jobs_week', visible: true }]);
-    const first = renderWithProviders(<DashboardPage />, { ability: ADMIN });
+    const first = renderDashboard({ ability: ADMIN });
     await screen.findByText('Open Leads');
     fireEvent.click(screen.getByRole('button', { name: /Customize home page/ }));
 
@@ -117,7 +116,7 @@ describe('the dashboard layout is the server\'s', () => {
     // A reload: a new page, nothing carried over in the browser, reads the order from the server.
     first.unmount();
     localStorage.clear();
-    renderWithProviders(<DashboardPage />, { ability: ADMIN });
+    renderDashboard({ ability: ADMIN });
     await screen.findByText('Open Leads');
     fireEvent.click(screen.getByRole('button', { name: /Customize home page/ }));
     expect(titlesOnPage()).toEqual(['Open Leads', 'Jobs Today', 'Jobs This Week']);
@@ -125,7 +124,7 @@ describe('the dashboard layout is the server\'s', () => {
 
   it('saves a time-range choice, and the numbers shown do not change with it', async () => {
     const server = serveDashboard(answer, [{ id: 'kpi.jobs_today', visible: true }]);
-    renderWithProviders(<DashboardPage />, { ability: ADMIN });
+    renderDashboard({ ability: ADMIN });
     await screen.findByText('Jobs Today');
     // In edit mode the picker also lists the title: the tile is the one inside a button.
     const total = () => screen.getAllByText('Jobs Today').map((e) => e.closest('button')?.textContent).find(Boolean);
@@ -143,7 +142,7 @@ describe('the dashboard layout is the server\'s', () => {
 
   it('saves a tile added from the picker', async () => {
     const server = serveDashboard(answer, [{ id: 'kpi.jobs_today', visible: true }]);
-    renderWithProviders(<DashboardPage />, { ability: ADMIN });
+    renderDashboard({ ability: ADMIN });
     await screen.findByText('Jobs Today');
 
     fireEvent.click(screen.getByRole('button', { name: /Customize home page/ }));
@@ -156,7 +155,7 @@ describe('the dashboard layout is the server\'s', () => {
   it('asks the server to put the role\'s default back when the button "Reset to my role\'s default" is pressed', async () => {
     const roleDefault = [{ id: 'kpi.open_leads', visible: true }, { id: 'kpi.jobs_week', visible: true }];
     const server = serveDashboard(answer, [{ id: 'kpi.jobs_today', visible: true }], roleDefault);
-    renderWithProviders(<DashboardPage />, { ability: ADMIN });
+    renderDashboard({ ability: ADMIN });
     await screen.findByText('Jobs Today');
 
     fireEvent.click(screen.getByRole('button', { name: /Customize home page/ }));
@@ -172,7 +171,7 @@ describe('the dashboard layout is the server\'s', () => {
 
   it('shows an empty page after a reset to an empty default (a role made from blank)', async () => {
     const server = serveDashboard(answer, [{ id: 'kpi.jobs_today', visible: true }], []);
-    renderWithProviders(<DashboardPage />, { ability: ADMIN });
+    renderDashboard({ ability: ADMIN });
     await screen.findByText('Jobs Today');
 
     fireEvent.click(screen.getByRole('button', { name: /Customize home page/ }));
@@ -185,7 +184,7 @@ describe('the dashboard layout is the server\'s', () => {
   it('keeps an edit made after a reset: later saves go on from the reset layout', async () => {
     const roleDefault = [{ id: 'kpi.open_leads', visible: true }, { id: 'kpi.jobs_week', visible: true }];
     const server = serveDashboard(answer, [{ id: 'kpi.jobs_today', visible: true }], roleDefault);
-    renderWithProviders(<DashboardPage />, { ability: ADMIN });
+    renderDashboard({ ability: ADMIN });
     await screen.findByText('Jobs Today');
     fireEvent.click(screen.getByRole('button', { name: /Customize home page/ }));
     fireEvent.click(await screen.findByRole('button', { name: "Reset to my role's default" }));
@@ -197,11 +196,10 @@ describe('the dashboard layout is the server\'s', () => {
   });
 
   it('does not offer the reset while the saved layout could not be read, so nothing is put over it', async () => {
-    const server = serveDashboard(answer, [{ id: 'kpi.jobs_today', visible: true }]);
-    const served = mockApi.get.getMockImplementation()!;
-    mockApi.get.mockImplementation(((url: string, ...rest: unknown[]) =>
-      url === '/api/dashboard/layout' ? Promise.reject(new Error('Network Error')) : (served as (...a: unknown[]) => unknown)(url, ...rest)) as never);
-    renderWithProviders(<DashboardPage />, { ability: ADMIN });
+    const server = serveDashboard(answer, [{ id: 'kpi.jobs_today', visible: true }], undefined, {
+      routes: [{ match: (url) => url === '/api/dashboard/layout', data: () => { throw new Error('Network Error'); } }],
+    });
+    renderDashboard({ ability: ADMIN });
 
     fireEvent.click(await screen.findByRole('button', { name: /Customize home page/ }));
     await screen.findByText(/Edit mode/);
@@ -219,7 +217,7 @@ describe('a tile the person lost (S09.7)', () => {
 
   it('never draws a flagged tile, even one the dashboard answer still carries, and is not thrown by it', async () => {
     serveDashboard(answer, [{ id: 'kpi.jobs_today', visible: true }, lost('kpi.open_leads'), { id: 'kpi.jobs_week', visible: true }]);
-    renderWithProviders(<DashboardPage />, { ability: ADMIN });
+    renderDashboard({ ability: ADMIN });
 
     await screen.findByText('Jobs Today');
     expect(screen.queryByText('Open Leads')).not.toBeInTheDocument();
@@ -229,7 +227,7 @@ describe('a tile the person lost (S09.7)', () => {
 
   it('does not offer a lost tile in the picker, and does not count it as a tile on the page', async () => {
     serveDashboard(withoutLeads, [{ id: 'kpi.jobs_today', visible: true }, lost('kpi.open_leads')]);
-    renderWithProviders(<DashboardPage />, { ability: ADMIN });
+    renderDashboard({ ability: ADMIN });
     await screen.findByText('Jobs Today');
 
     fireEvent.click(screen.getByRole('button', { name: /Customize home page/ }));
@@ -240,14 +238,14 @@ describe('a tile the person lost (S09.7)', () => {
 
   it('says the page is empty when every tile left in the layout is a lost one', async () => {
     serveDashboard(withoutLeads, [lost('kpi.open_leads')]);
-    renderWithProviders(<DashboardPage />, { ability: ADMIN });
+    renderDashboard({ ability: ADMIN });
     expect(await screen.findByText(/Nothing is on your home page yet/)).toBeInTheDocument();
   });
 
   it('sends the lost tile back in its place, as the server gave it, when another tile is changed', async () => {
     const stored = [{ id: 'kpi.jobs_today', visible: true }, lost('kpi.open_leads', { size: 'full', range: '7d' }), { id: 'kpi.jobs_week', visible: true }];
     const server = serveDashboard(withoutLeads, stored);
-    renderWithProviders(<DashboardPage />, { ability: ADMIN });
+    renderDashboard({ ability: ADMIN });
     await screen.findByText('Jobs Today');
 
     fireEvent.click(screen.getByRole('button', { name: /Customize home page/ }));
@@ -259,7 +257,7 @@ describe('a tile the person lost (S09.7)', () => {
 
   it('steps a tile over a lost one when it is moved, and still sends the lost one back', async () => {
     const server = serveDashboard(withoutLeads, [{ id: 'kpi.jobs_today', visible: true }, lost('kpi.open_leads'), { id: 'kpi.jobs_week', visible: true }]);
-    renderWithProviders(<DashboardPage />, { ability: ADMIN });
+    renderDashboard({ ability: ADMIN });
     await screen.findByText('Jobs Today');
 
     fireEvent.click(screen.getByRole('button', { name: /Customize home page/ }));
@@ -278,7 +276,7 @@ describe('a tile the person lost (S09.7)', () => {
       server.layout = [{ id: 'kpi.jobs_today', visible: true }, lost('kpi.open_leads', { visible: false })];
       return Promise.reject({ response: { status: 409, data: { error: "That tile isn't available with your access.", code: 'TILE_NOT_AVAILABLE' } } });
     }) as never);
-    renderWithProviders(<DashboardPage />, { ability: ADMIN });
+    renderDashboard({ ability: ADMIN });
     await screen.findByText('Jobs Today');
 
     fireEvent.click(screen.getByRole('button', { name: /Customize home page/ }));
@@ -295,7 +293,7 @@ describe('a tile the person lost (S09.7)', () => {
   it('says nothing for a save that fails for another reason', async () => {
     serveDashboard(answer, [{ id: 'kpi.jobs_today', visible: true }]);
     mockApi.put.mockRejectedValue({ response: { status: 400, data: { error: 'Validation failed' } } } as never);
-    renderWithProviders(<DashboardPage />, { ability: ADMIN });
+    renderDashboard({ ability: ADMIN });
     await screen.findByText('Jobs Today');
     fireEvent.click(screen.getByRole('button', { name: /Customize home page/ }));
     fireEvent.click(await screen.findByRole('button', { name: 'Add Open Leads' }));
@@ -307,11 +305,10 @@ describe('a tile the person lost (S09.7)', () => {
 
 describe('an edit made after the saved layout could not be read', () => {
   it('saves nothing, so the saved layout is never overwritten by a layout built from nothing', async () => {
-    const server = serveDashboard(answer, [{ id: 'kpi.jobs_today', visible: true }]);
-    const served = mockApi.get.getMockImplementation()!;
-    mockApi.get.mockImplementation(((url: string, ...rest: unknown[]) =>
-      url === '/api/dashboard/layout' ? Promise.reject(new Error('Network Error')) : (served as (...a: unknown[]) => unknown)(url, ...rest)) as never);
-    renderWithProviders(<DashboardPage />, { ability: ADMIN });
+    const server = serveDashboard(answer, [{ id: 'kpi.jobs_today', visible: true }], undefined, {
+      routes: [{ match: (url) => url === '/api/dashboard/layout', data: () => { throw new Error('Network Error'); } }],
+    });
+    renderDashboard({ ability: ADMIN });
     fireEvent.click(await screen.findByRole('button', { name: /Customize home page/ }));
     await waitFor(() => expect(mockApi.get).toHaveBeenCalledWith('/api/dashboard/layout'));
 
@@ -325,7 +322,7 @@ describe('an edit made after the saved layout could not be read', () => {
 describe('an empty layout', () => {
   it('says so, and points at Customize home page, when the person has tiles they could add', async () => {
     serveDashboard(answer, []);
-    renderWithProviders(<DashboardPage />, { ability: ADMIN });
+    renderDashboard({ ability: ADMIN });
 
     expect(await screen.findByText(/Nothing is on your home page yet/)).toBeInTheDocument();
     expect(screen.queryByText('No tiles are available with your access.')).not.toBeInTheDocument();
@@ -335,7 +332,7 @@ describe('an empty layout', () => {
 
   it('shows the no-tiles line with the customize button when the person\'s access unlocks no tile', async () => {
     serveDashboard({ tiles: [], categories: [], data: {}, generated_at: answer.generated_at }, []);
-    renderWithProviders(<DashboardPage />, { ability: ADMIN });
+    renderDashboard({ ability: ADMIN });
 
     expect(await screen.findByText('No tiles are available with your access.')).toBeInTheDocument();
     expect(screen.queryByText(/Nothing is on your home page yet/)).not.toBeInTheDocument();
@@ -344,7 +341,7 @@ describe('an empty layout', () => {
 
   it('draws nothing from a layout that names only tiles the person does not have, and keeps the page working', async () => {
     serveDashboard(answer, [{ id: 'kpi.ar', visible: true }, { id: 'tile.retired.long.ago', visible: true }]);
-    renderWithProviders(<DashboardPage />, { ability: ADMIN });
+    renderDashboard({ ability: ADMIN });
     expect(await screen.findByText(/Nothing is on your home page yet/)).toBeInTheDocument();
     expect(screen.queryByText('Unpaid Balance')).not.toBeInTheDocument();
   });

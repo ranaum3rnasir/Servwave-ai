@@ -11,18 +11,13 @@ import { screen, waitFor, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
 import * as jobsApi from '@/lib/api/jobs';
-import { renderWithProviders, ALL_JOB_ACTIONS } from './helpers';
-import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
+import { ALL_JOB_ACTIONS } from './helpers';
+import { renderJobDetail, serveJobDetail, stubBrowser } from '@/__tests__/harness/jobDetailPage';
 import { useTasksStore } from '@/stores/tasksStore';
 
 // ── Stubs ────────────────────────────────────────────────────────────────────
 
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');
@@ -101,12 +96,14 @@ const TASK_SUMMARY = {
   next_due_at: '2026-06-20T17:00:00Z',
 };
 
-function mockAll() {
+function mockAll(more: Array<{ match: (url: string) => boolean; data: unknown }> = []) {
   // Mock the axios api instance for job + financials
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.includes('/financials')) return { data: FINANCIALS };
-    if (url.includes('/api/jobs/')) return { data: { job: BASE_JOB } };
-    return { data: {} };
+  serveJobDetail({
+    job: BASE_JOB,
+    routes: [
+      ...more,
+      { match: (url) => url.includes('/financials'), data: FINANCIALS },
+    ],
   });
 
   // Mock getJobTaskSummary at the module level
@@ -140,7 +137,7 @@ beforeEach(() => {
 describe('JobDetailPage — task signals (P3-2)', () => {
   it('renders the at-risk amber strip when overdue > 0', async () => {
     mockAll();
-    renderWithProviders(<JobDetailPage />);
+    renderJobDetail({ ability: undefined });
 
     await waitFor(() => {
       expect(screen.getByTestId('task-at-risk-strip')).toBeInTheDocument();
@@ -149,7 +146,7 @@ describe('JobDetailPage — task signals (P3-2)', () => {
 
   it('shows "(3)" count badge on the Tasks tab', async () => {
     mockAll();
-    renderWithProviders(<JobDetailPage />);
+    renderJobDetail({ ability: undefined });
 
     await waitFor(() => {
       // Tasks tab with the count
@@ -161,7 +158,7 @@ describe('JobDetailPage — task signals (P3-2)', () => {
 
   it('renders "New Task" button in the header action cluster', async () => {
     mockAll();
-    renderWithProviders(<JobDetailPage />);
+    renderJobDetail({ ability: undefined });
 
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /New Task/i })).toBeInTheDocument();
@@ -171,7 +168,7 @@ describe('JobDetailPage — task signals (P3-2)', () => {
   it('opens CreateTaskModal when "New Task" is clicked', async () => {
     mockAll();
     const user = userEvent.setup();
-    renderWithProviders(<JobDetailPage />);
+    renderJobDetail({ ability: undefined });
 
     const btn = await screen.findByRole('button', { name: /New Task/i });
     await user.click(btn);
@@ -226,14 +223,9 @@ describe('JobDetailPage — job-task-summary invalidated after task store mutati
 
   it('invalidates ["job-task-summary", id] when a job-linked task is added to the store', async () => {
     // Set up API mocks
-    vi.mocked(api).get.mockImplementation(async (url: string) => {
-      if (url.includes('/financials')) return { data: FINANCIALS };
-      if (url.includes('/api/jobs/')) return { data: { job: BASE_JOB } };
-      return { data: {} };
-    });
-    vi.spyOn(jobsApi, 'getJobTaskSummary').mockResolvedValue(TASK_SUMMARY);
+    mockAll();
 
-    const { queryClient } = renderWithProviders(<JobDetailPage />);
+    const { queryClient } = renderJobDetail({ ability: undefined });
 
     // Wait for the page to hydrate (J00001 appears in heading + breadcrumb)
     await waitFor(() => {
@@ -264,14 +256,9 @@ describe('JobDetailPage — job-task-summary invalidated after task store mutati
   });
 
   it('does NOT invalidate ["job-task-summary", id] on initial mount (no spurious refetch)', async () => {
-    vi.mocked(api).get.mockImplementation(async (url: string) => {
-      if (url.includes('/financials')) return { data: FINANCIALS };
-      if (url.includes('/api/jobs/')) return { data: { job: BASE_JOB } };
-      return { data: {} };
-    });
-    vi.spyOn(jobsApi, 'getJobTaskSummary').mockResolvedValue(TASK_SUMMARY);
+    mockAll();
 
-    const { queryClient } = renderWithProviders(<JobDetailPage />);
+    const { queryClient } = renderJobDetail({ ability: undefined });
 
     // Wait for page to settle (J00001 appears in heading + breadcrumb)
     await waitFor(() => {
@@ -301,12 +288,9 @@ describe('JobDetailPage — job-task-summary invalidated after task store mutati
 
 describe('JobDetailPage — header New Task refreshes the open Tasks tab', () => {
   it('re-reads the job\'s task list when the header create dialog closes', async () => {
-    mockAll();
-    const base = mockApi.get.getMockImplementation()!;
-    mockApi.get.mockImplementation(async (url: string, config?: unknown) =>
-      url === '/api/tasks' ? { data: { tasks: [] } } : base(url, config));
+    mockAll([{ match: (url) => url === '/api/tasks', data: { tasks: [] } }]);
     const user = userEvent.setup();
-    renderWithProviders(<JobDetailPage />);
+    renderJobDetail({ ability: undefined });
 
     await user.click(await screen.findByRole('tab', { name: /Tasks/i }));
     const listReads = () => mockApi.get.mock.calls.filter(([url]) => url === '/api/tasks').length;

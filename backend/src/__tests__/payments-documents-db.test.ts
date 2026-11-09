@@ -100,7 +100,7 @@ suite('Documents tab API (real database)', () => {
   /** Posts a multipart upload as this person. */
   async function upload(person: Person, entity: string, id: string, fields: Record<string, string>) {
     await fx.signedInAs(person);
-    const app = (await import('../app.js')).default as never;
+    const app = await fx.listener();
     let call = request(app).post(`/api/attachments/${entity}/${id}`).set('Authorization', `Bearer switches-${person.id}`)
       .attach('file', PDF, { filename: 'scope.pdf', contentType: 'application/pdf' });
     for (const [k, v] of Object.entries(fields)) call = call.field(k, v);
@@ -144,7 +144,7 @@ suite('Documents tab API (real database)', () => {
       const invoice = await fx.addInvoice(org, customer);
       const me = await officer(org);
       await fx.signedInAs(me);
-      const app = (await import('../app.js')).default as never;
+      const app = await fx.listener();
       const res = await request(app).post(`/api/attachments/invoice/${invoice.id}`).set('Authorization', `Bearer switches-${me.id}`)
         .attach('file', PDF, { filename: 'scope.pdf', contentType: 'application/pdf' })
         .field('display_name', 'x').field('description', '').field('source', MARK).field('source', MARK);

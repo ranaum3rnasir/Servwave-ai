@@ -23,7 +23,7 @@ import {
 import GlobalSearch from './GlobalSearch';
 import { NotificationBell } from '@/components/notifications/NotificationBell';
 import { GlobalDialer } from '@/components/communication/phone/GlobalDialer';
-import { useOrganization } from '@/lib/api/organization';
+import { useOrganization } from '@/lib/api/shared/organization';
 import { useUnreadCounts } from '@/lib/api/communication';
 import { useFeature } from '@/lib/entitlements';
 import { useIsDemoOrg } from '@/lib/useIsDemoOrg';

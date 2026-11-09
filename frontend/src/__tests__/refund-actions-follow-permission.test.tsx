@@ -9,11 +9,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import api from '@/lib/axios';
-import { renderWithProviders } from './helpers';
 import { buildAbility } from '@/lib/ability';
-import InvoiceDetailPage from '@/pages/v2/invoices/InvoiceDetailPage';
-import EstimateWorkspacePage from '@/pages/v2/estimates/EstimateWorkspacePage';
+import { renderInvoiceDetail } from '@/__tests__/harness/invoiceDetailPage';
+import { renderEstimateWorkspace, serveEstimateWorkspace } from '@/__tests__/harness/estimateWorkspacePage';
 
 const INVOICE_ID = 'inv-pay22-paid';
 const ESTIMATE_ID = 'est-pay22-deposit';
@@ -58,7 +56,6 @@ vi.mock('@/components/estimates/DuplicateEstimateDialog', () => ({ DuplicateEsti
 vi.mock('@/components/estimates/WaiveDepositDialog', () => ({ WaiveDepositDialog: () => null }));
 vi.mock('@/components/estimates/RefundDepositDialog', () => ({ RefundDepositDialog: () => null }));
 
-const mockApi = vi.mocked(api);
 
 /** An office user who runs invoices and estimates and records payments - everything but refunds. */
 const officeGrants = [
@@ -202,12 +199,11 @@ const ESTIMATE_WITH_PAID_DEPOSIT = {
 };
 
 function serve() {
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.includes('/api/invoices/')) return { data: { invoice: PAID_INVOICE } };
-    if (url.includes('/api/estimates/')) return { data: { estimate: ESTIMATE_WITH_PAID_DEPOSIT } };
-    if (url.includes('/state-tax-rates')) return { data: { data: [] } };
-    if (url === '/api/organization') return { data: { accepted_payment_methods: ['CASH'] } };
-    return { data: {} };
+  serveEstimateWorkspace({
+    estimate: ESTIMATE_WITH_PAID_DEPOSIT,
+    organization: { accepted_payment_methods: ['CASH'] },
+    // The invoice page is mounted by this file too, on the same server.
+    routes: [{ match: (url) => url.includes('/api/invoices/'), data: { invoice: PAID_INVOICE } }],
   });
 }
 
@@ -223,7 +219,7 @@ describe('invoice: Refund follows the refund permission', () => {
 
   it('a paid invoice offers no Refund, in the header or the More actions menu, without the permission', async () => {
     const user = userEvent.setup();
-    renderWithProviders(<InvoiceDetailPage />, { ability: withoutRefund });
+    renderInvoiceDetail({ id: INVOICE_ID, ability: withoutRefund });
 
     expect(await screen.findAllByText('I02201')).not.toHaveLength(0);
     expect(screen.queryByRole('button', { name: /^Refund$/ })).not.toBeInTheDocument();
@@ -233,7 +229,7 @@ describe('invoice: Refund follows the refund permission', () => {
   });
 
   it('the same invoice offers Refund to a person with the permission', async () => {
-    renderWithProviders(<InvoiceDetailPage />, { ability: withRefund });
+    renderInvoiceDetail({ id: INVOICE_ID, ability: withRefund });
 
     expect(await screen.findAllByRole('button', { name: /^Refund$/ })).not.toHaveLength(0);
   });
@@ -245,14 +241,14 @@ describe('estimate: Refund deposit follows the refund permission', () => {
   });
 
   it('a paid deposit offers no Refund deposit without the permission', async () => {
-    renderWithProviders(<EstimateWorkspacePage />, { ability: withoutRefund });
+    renderEstimateWorkspace({ ability: withoutRefund });
 
     expect(await screen.findAllByText('C02201-1')).not.toHaveLength(0);
     expect(screen.queryByRole('button', { name: 'Refund deposit' })).not.toBeInTheDocument();
   });
 
   it('the same deposit offers Refund deposit to a person with the permission', async () => {
-    renderWithProviders(<EstimateWorkspacePage />, { ability: withRefund });
+    renderEstimateWorkspace({ ability: withRefund });
 
     expect(await screen.findByRole('button', { name: 'Refund deposit' })).toBeInTheDocument();
   });

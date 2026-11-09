@@ -11,7 +11,7 @@
 import { useEffect, useRef } from 'react';
 import { useForm } from 'react-hook-form';
 
-import { useOrganization, useUpdateOrganization, type OrgFormValues } from '@/lib/api/organization';
+import { useOrganization, useUpdateOrganization, type OrgFormValues } from '@/lib/api/shared/organization';
 
 import { useSettingsBar } from './settingsBar';
 import { Section } from './components/section';

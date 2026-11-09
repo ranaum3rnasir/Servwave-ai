@@ -4,7 +4,7 @@ import { ConnectComponentsProvider, ConnectDocuments } from '@stripe/react-conne
 import { FileText, Upload } from 'lucide-react';
 
 import { useAppAbility } from '@/contexts/AbilityContext';
-import { useStripeStatus } from '@/lib/api/organization';
+import { useStripeStatus } from '@/lib/api/shared/organization';
 import { fetchDocumentsPage, paymentsPageKeys, useDocuments, type DocumentRow } from '@/lib/api/paymentsPage';
 import { downloadAttachment } from '@/lib/attachments/downloadAttachment';
 import { discardViewerConnect, getViewerConnect, onSessionRequestFailed, onSessionRequestSucceeded } from '@/lib/payments/payout-connect';

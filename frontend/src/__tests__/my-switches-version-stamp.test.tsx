@@ -11,7 +11,7 @@ import api from '@/lib/axios';
 import { queryClient } from '@/lib/queryClient';
 import { resetAccountScopedStores } from '@/lib/storeReset';
 import { heldSwitchesStamp, noteSwitchesStamp } from '@/lib/switchesStamp';
-import { useMySwitches } from '@/lib/api/mySwitches';
+import { useMySwitches } from '@/lib/api/shared/mySwitches';
 import { useAuthStore } from '@/stores/auth.store';
 
 // The suite-wide setup replaces the axios instance with spies; this file needs the real one, interceptors and all.

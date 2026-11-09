@@ -1,36 +1,17 @@
-/**
- * Email slice 5 — the Estimate workspace's hard-bounce banner.
- *
- * "Delivered and Bounced are shown as FACT... a hard bounce on an Estimate's
- * send specifically should surface something ACTIONABLE on that estimate's
- * own page - not just sit as a quiet pill in a list."
- *
- * Correlation under test: Email carries no estimate_id column, so the page
- * reads the lead's comm timeline (GET /api/leads/:id/communications) and
- * picks out THIS estimate's own send by its deterministic subject prefix
- * (`Estimate ${estimate_number} ...`) — see findTransactionalEmail's doc
- * comment in lib/api/jobCommunications.ts.
- */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
-import api from '@/lib/axios';
-import { renderWithProviders } from './helpers';
-import { buildAbility } from '@/lib/ability';
-import EstimateWorkspacePage from '@/pages/v2/estimates/EstimateWorkspacePage';
+import { renderEstimateWorkspace, serveEstimateWorkspace } from '@/__tests__/harness/estimateWorkspacePage';
 import type { CommItem } from '@/lib/api/jobCommunications';
-
-const adminAbility = buildAbility([{ action: 'manage', subject: 'all' }]);
+import { useAuthStore } from '@/stores/auth.store';
+import api from '@/lib/axios';
 
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');
   return {
     ...actual,
-    useParams: () => ({ id: 'est-bounce-test-id' }),
+    useParams: () => ({ id: __route.id }),
   };
 });
-
-// Same stub set as estimate-detail-deposit.test.tsx — nothing under test here
-// needs these heavy sub-surfaces real.
 vi.mock('@/features/estimate-workspace/components/EstimateTabs', () => ({
   EstimateTabs: () => null,
 }));
@@ -59,7 +40,38 @@ vi.mock('@/components/estimates/DuplicateEstimateDialog', () => ({ DuplicateEsti
 vi.mock('@/components/estimates/WaiveDepositDialog', () => ({ WaiveDepositDialog: () => null }));
 vi.mock('@/components/estimates/RefundDepositDialog', () => ({ RefundDepositDialog: () => null }));
 
-const mockApi = vi.mocked(api);
+const __route = vi.hoisted(() => ({ id: '' }));
+
+// Each test starts from the setup file's signed-in user and bare client calls: reset them here, so a test states its own user
+// and answers in its own `beforeEach` (`clearAllMocks` keeps implementations).
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(useAuthStore).mockReset();
+  vi.mocked(api.get).mockReset();
+  vi.mocked(api.post).mockReset();
+  vi.mocked(api.patch).mockReset();
+  vi.mocked(api.put).mockReset();
+  vi.mocked(api.delete).mockReset();
+});
+
+// The router mock reads the id this block's file used to fix.
+beforeEach(() => { __route.id = 'est-bounce-test-id'; });
+/**
+ * Email slice 5 — the Estimate workspace's hard-bounce banner.
+ *
+ * "Delivered and Bounced are shown as FACT... a hard bounce on an Estimate's
+ * send specifically should surface something ACTIONABLE on that estimate's
+ * own page - not just sit as a quiet pill in a list."
+ *
+ * Correlation under test: Email carries no estimate_id column, so the page
+ * reads the lead's comm timeline (GET /api/leads/:id/communications) and
+ * picks out THIS estimate's own send by its deterministic subject prefix
+ * (`Estimate ${estimate_number} ...`) — see findTransactionalEmail's doc
+ * comment in lib/api/jobCommunications.ts.
+ */
+
+// Same stub set as estimate-detail-deposit.test.tsx — nothing under test here
+// needs these heavy sub-surfaces real.
 
 const ESTIMATE = {
   id: 'est-bounce-test-id',
@@ -134,12 +146,7 @@ function emailItem(overrides: Partial<CommItem> = {}): CommItem {
 }
 
 function setupMocks(leadItems: CommItem[]) {
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.includes('/state-tax-rates')) return { data: { data: [] } };
-    if (url.includes('/api/estimates/')) return { data: { estimate: ESTIMATE } };
-    if (url.includes('/communications')) return { data: { items: leadItems } };
-    return { data: {} };
-  });
+  serveEstimateWorkspace({ estimate: ESTIMATE, routes: [{ match: (url) => url.includes('/communications'), data: { items: leadItems } }] });
 }
 
 beforeEach(() => {
@@ -149,7 +156,7 @@ beforeEach(() => {
 describe('EstimateWorkspacePage — hard-bounce banner (email slice 5)', () => {
   it('shows nothing when no email has ever been sent for this estimate', async () => {
     setupMocks([]);
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     await waitFor(() => {
       expect(screen.getAllByText('E00777').length).toBeGreaterThan(0);
@@ -159,7 +166,7 @@ describe('EstimateWorkspacePage — hard-bounce banner (email slice 5)', () => {
 
   it('shows nothing when the matching send is DELIVERED', async () => {
     setupMocks([emailItem({ deliveryStatus: 'DELIVERED' })]);
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     await waitFor(() => {
       expect(screen.getAllByText('E00777').length).toBeGreaterThan(0);
@@ -171,7 +178,7 @@ describe('EstimateWorkspacePage — hard-bounce banner (email slice 5)', () => {
     setupMocks([
       emailItem({ deliveryStatus: 'BOUNCED', bounceKind: 'SOFT', deliveryStatusReason: 'mailbox full' }),
     ]);
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     await waitFor(() => {
       expect(screen.getAllByText('E00777').length).toBeGreaterThan(0);
@@ -183,7 +190,7 @@ describe('EstimateWorkspacePage — hard-bounce banner (email slice 5)', () => {
     setupMocks([
       emailItem({ deliveryStatus: 'BOUNCED', bounceKind: 'HARD', deliveryStatusReason: '550 5.1.1 mailbox unavailable' }),
     ]);
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     await waitFor(() => {
       expect(screen.getByText(/bounced - the customer likely never received it/i)).toBeInTheDocument();
@@ -203,7 +210,7 @@ describe('EstimateWorkspacePage — hard-bounce banner (email slice 5)', () => {
         bounceKind: 'HARD',
       }),
     ]);
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     await waitFor(() => {
       expect(screen.getAllByText('E00777').length).toBeGreaterThan(0);
@@ -223,7 +230,7 @@ describe('EstimateWorkspacePage — hard-bounce banner (email slice 5)', () => {
         bounceKind: 'HARD',
       }),
     ]);
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     await waitFor(() => {
       expect(screen.getAllByText('E00777').length).toBeGreaterThan(0);
@@ -245,7 +252,7 @@ describe('EstimateWorkspacePage — hard-bounce banner (email slice 5)', () => {
         deliveryStatus: 'DELIVERED',
       }),
     ]);
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     await waitFor(() => {
       expect(screen.getAllByText('E00777').length).toBeGreaterThan(0);

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useOrganization, useUpdateOrganization, useUploadLogo } from '@/lib/api/organization';
+import { useOrganization, useUpdateOrganization, useUploadLogo } from '@/lib/api/shared/organization';
 import { useSettingsBar } from './SettingsLayout';
 import { getAccessToken } from '@/lib/supabase';
 import { TabsContent } from '@/components/ui/tabs';

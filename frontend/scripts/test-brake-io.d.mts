@@ -1,0 +1,15 @@
+export declare const BUDGET_FILE: string;
+export declare const PAGE_CEILINGS_FILE: string;
+export declare const TIME_LIST_FILE: string;
+export declare function readJson(path: string): any;
+export declare function sourceFiles(frontend: string): string[];
+export declare function scanPages(frontend: string): { counts: Record<string, number>; testFiles: number; pages: string[] };
+export declare function changedFiles(frontend: string, opts: { changedFrom?: string; base?: string; env: Record<string, string | undefined> }): string[] | null;
+export type ResolvedBase = { ref: string; commit: string };
+export declare function resolveBase(frontend: string, opts: { base?: string; env: Record<string, string | undefined> }): ResolvedBase | null;
+export declare function baseCopy(frontend: string, name: string, resolved: ResolvedBase | null): any | null;
+export declare function trackedTestCount(frontend: string, resolved: ResolvedBase | null): number;
+export declare function changedTestSources(frontend: string, resolved: ResolvedBase): { path: string; source: string; baseSource: string | null }[];
+export declare function loadBrakeFiles(frontend: string, overrides?: Record<string, string | undefined>): { budget: any; ceilings: Record<string, number>; listed: { tests: string[]; files: string[] } };
+export declare function writeJson(path: string, value: unknown): void;
+export declare function judgeGrowth(frontend: string, opts: { base?: string; env: Record<string, string | undefined>; full: boolean; overrides?: Record<string, string | undefined> }): { files: { budget: any; ceilings: Record<string, number>; listed: any }; resolved: ResolvedBase | null; scan: ReturnType<typeof scanPages>; pages: ReturnType<typeof import('./test-brake-lib.mjs').pageCeilings>; fileCount: import('./test-brake-lib.mjs').FileCountVerdict | null; filesNow: number };

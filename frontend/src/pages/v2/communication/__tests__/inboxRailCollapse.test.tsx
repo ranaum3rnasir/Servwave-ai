@@ -8,7 +8,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { renderWithProviders } from '@/__tests__/helpers';
+import { renderInbox } from '@/__tests__/harness/inboxPage';
 import { buildAbility } from '@/lib/ability';
 import type { Email, EmailGroup, ForwardRule, TeamMember } from '@/lib/api/communication';
 
@@ -37,32 +37,23 @@ const GROUPS_FIXTURE: EmailGroup[] = [];
 const FORWARDS_FIXTURE: ForwardRule[] = [];
 const MEMBERS_FIXTURE: TeamMember[] = [];
 
-vi.mock('@/lib/api/communication', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/communication')>();
-  return {
-    ...actual,
-    useEmails: () => ({ data: EMAILS_FIXTURE }),
-    useEmailGroups: () => ({ data: GROUPS_FIXTURE }),
-    useForwardRules: () => ({ data: FORWARDS_FIXTURE }),
-    useTeamMembers: () => ({ data: MEMBERS_FIXTURE }),
-    useSendingIdentity: () => ({ data: undefined }),
-    useMarkEmailThreadRead: () => ({ mutate: vi.fn() }),
-    useSendEmail: () => ({ mutate: vi.fn(), isPending: false }),
-  };
-});
-
-import InboxPage from '@/pages/v2/communication/InboxPage';
-
-function renderInbox() {
-  return renderWithProviders(<InboxPage />, { ability: readAbility });
-}
+vi.mock('@/lib/api/communication', async (importOriginal) =>
+  (await import('@/__tests__/harness/inboxApiStub')).communicationStubs(await importOriginal<typeof import('@/lib/api/communication')>(), {
+    leave: ['useMarkEmailThreadUnread', 'useMyMailbox'],
+    hooks: {
+      useEmails: () => ({ data: EMAILS_FIXTURE }),
+      useEmailGroups: () => ({ data: GROUPS_FIXTURE }),
+      useForwardRules: () => ({ data: FORWARDS_FIXTURE }),
+      useTeamMembers: () => ({ data: MEMBERS_FIXTURE }),
+    },
+  }));
 
 describe('v2 InboxPage — folder rail auto-collapse (#1343)', () => {
   it('keeps the folder rail open when a message is opened on desktop', async () => {
     // setup.ts mocks matchMedia to `matches: false` for every query, which is
     // the >=lg desktop branch of `useMediaQuery('(max-width: 1023.98px)')`.
     const user = userEvent.setup();
-    renderInbox();
+    renderInbox({ ability: readAbility });
     await user.click(await screen.findByText('AC still not cooling'));
 
     expect(await screen.findAllByText(/Following up on the visit from last week/)).not.toHaveLength(0);
@@ -73,7 +64,7 @@ describe('v2 InboxPage — folder rail auto-collapse (#1343)', () => {
 
   it('still collapses and reopens the rail from the manual toggles on desktop', async () => {
     const user = userEvent.setup();
-    renderInbox();
+    renderInbox({ ability: readAbility });
     await user.click(await screen.findByText('AC still not cooling'));
 
     await user.click(screen.getByRole('button', { name: 'Collapse menu' }));
@@ -113,7 +104,7 @@ describe('v2 InboxPage — narrow viewport rail auto-collapse (#1343)', () => {
 
   it('keeps the rail closed when a message is opened below lg', async () => {
     const user = userEvent.setup();
-    renderInbox();
+    renderInbox({ ability: readAbility });
     // The rail STARTS closed below lg and opens as a menu overlay over the list (so a message cannot be opened while it is
     // open); picking a folder in it closes it again. Open it by hand first so this proves the rail is still closed after.
     await user.click(screen.getByRole('button', { name: 'Open menu' }));

@@ -86,7 +86,7 @@ import { useAttachTargets } from './useAttachTargets';
 import { extractApiError } from '@/lib/utils';
 import { Text } from '@/components/ui/text';
 import { pickerValueToIso } from '@/lib/schedule-tz';
-import { useOrganization } from '@/lib/api/organization';
+import { useOrganization } from '@/lib/api/shared/organization';
 import { useAuthStore } from '@/stores/auth.store';
 import {
   MANUAL_COMM_CHANNELS,

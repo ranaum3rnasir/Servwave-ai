@@ -15,7 +15,7 @@ import type { BlockedNumber } from "@/lib/api/communication";
 
 // The view renders `blockedAt` on the ORG's clock, so it reads the org query. This
 // spec renders it bare (no QueryClientProvider), hence the stub.
-vi.mock("@/lib/api/organization", () => ({
+vi.mock("@/lib/api/shared/organization", () => ({
   useOrganization: () => ({ data: { timezone: "America/New_York" } }),
 }));
 

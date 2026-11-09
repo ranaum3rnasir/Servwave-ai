@@ -10,8 +10,8 @@ import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
 import { toast } from '@/components/ui/use-toast';
-import { renderWithProviders, ALL_JOB_ACTIONS } from './helpers';
-import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
+import { ALL_JOB_ACTIONS } from './helpers';
+import { renderJobDetail, serveJobDetail, stubBrowser } from '@/__tests__/harness/jobDetailPage';
 import { buildAbility } from '@/lib/ability';
 import { requestCall } from '@/lib/communication/phoneTabHandoff';
 import { catalogToggle } from './support/backendSwitchCatalog';
@@ -23,12 +23,7 @@ vi.mock('@/components/ui/use-toast', async (importOriginal) => ({
   toast: vi.fn(),
 }));
 
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 const mockNavigate = vi.fn();
 vi.mock('react-router-dom', async () => {
@@ -129,12 +124,13 @@ const jobWith = (over: Record<string, unknown> = {}) => ({
 
 function renderJobPage(holds: Holds, job = jobWith(), opts: { service?: boolean } = {}) {
   phoneService.value = opts.service ?? true;
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url === '/api/permission-switches/me') return { data: meAnswer(holds) };
-    if (url.includes('/api/jobs/')) return { data: { job } };
-    return { data: {} };
+  serveJobDetail({
+    job,
+    routes: [
+      { match: (url) => url === '/api/permission-switches/me', data: meAnswer(holds) },
+    ],
   });
-  return renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+  return renderJobDetail({ ability: adminAbility });
 }
 
 /** The Overview tab's customer card. */

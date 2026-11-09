@@ -18,9 +18,9 @@ import userEvent from '@testing-library/user-event';
 
 import api from '@/lib/axios';
 import { buildAbility } from '@/lib/ability';
-import { renderWithProviders, ALL_JOB_ACTIONS } from '@/__tests__/helpers';
+import { ALL_JOB_ACTIONS } from '@/__tests__/helpers';
 
-import JobDetailPage from '../JobDetailPage';
+import { renderJobDetail, serveJobDetail, stubBrowser } from '@/__tests__/harness/jobDetailPage';
 
 const ORG_TZ = 'Asia/Manila'; // UTC+8, no DST.
 const JOB_ID = 'j0000000-0000-0000-0000-000000000001';
@@ -36,20 +36,15 @@ vi.mock('@/lib/api/users', async (importOriginal) => {
   };
 });
 
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');
   return { ...actual, useParams: () => ({ id: JOB_ID }), useNavigate: () => vi.fn() };
 });
 
-vi.mock('@/lib/api/organization', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/organization')>();
+vi.mock('@/lib/api/shared/organization', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/api/shared/organization')>();
   return {
     ...actual,
     useOrganization: () => ({ data: { id: 'org-1', timezone: ORG_TZ }, isLoading: false, isError: false }),
@@ -100,16 +95,17 @@ const BASE_JOB = {
 };
 
 function mockJob(job: Record<string, unknown> = BASE_JOB) {
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.includes('/visits')) return { data: { visits: [] } };
-    if (url.includes('/financials')) return { data: { final_invoice: null, invoices: [], payments: [] } };
-    if (url.includes(`/api/jobs/${JOB_ID}`)) return { data: { job } };
-    return { data: {} };
+  serveJobDetail({
+    job,
+    visits: [],
+    routes: [
+      { match: (url) => url.includes('/financials'), data: { final_invoice: null, invoices: [], payments: [] } },
+    ],
   });
 }
 
 async function openScheduleTile() {
-  renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+  renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
   await screen.findByRole('heading', { name: /J00001/ });
   await userEvent.click(screen.getByRole('button', { name: /reschedule job/i }));
 }
@@ -193,7 +189,7 @@ describe('v2 job page - adding crew is not a reschedule', () => {
       completed_at: '2026-09-08T02:00:00.000Z',
       assignees: [{ user: { id: 'u-dana', first_name: 'Dana', last_name: 'Ruiz', role: 'TECHNICIAN' } }],
     });
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    renderJobDetail({ ability: adminAbility, entry: `/jobs/${JOB_ID}` });
     await screen.findByRole('heading', { name: /J00001/ });
 
     await userEvent.click(screen.getByRole('button', { name: /^Actions$/ }));

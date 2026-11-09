@@ -42,8 +42,8 @@ const orgMock = vi.hoisted(() => ({
 
 // useScheduleTimezone reads org.timezone through this module, so this is the seam that can
 // simulate the query landing after the dialog has already mounted and seeded itself.
-vi.mock('@/lib/api/organization', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/organization')>();
+vi.mock('@/lib/api/shared/organization', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/api/shared/organization')>();
   return { ...actual, useOrganization: () => orgMock.state };
 });
 

@@ -3,14 +3,16 @@
    migrations run, so the migrations meet them as they would on the hosted database and the open-table checks
    (permission-outside-roles-db.test.ts, rls-coverage.test.ts) run against real roles.
 
-   Pure: reads ci.yml and the role script. A workflow that stops creating the roles, or creates them after the migrations,
-   fails here.
+   Pure: reads ci.yml, the role script and the Database command's order of checks. A command that stops creating the roles, or
+   creates them after the migrations, fails here. The roles live on the run's own private server, which is deleted with them: no
+   step drops them, and a workflow that tried to would fail here.
    ========================================================================== */
 
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
+import { dbCommandList } from './support/db-command-list';
 
 // js-yaml ships no types of its own; only `load` is used.
 const { load } = require('js-yaml') as { load(text: string): unknown };
@@ -18,12 +20,6 @@ const { load } = require('js-yaml') as { load(text: string): unknown };
 const BACKEND = join(__dirname, '..', '..');
 const CI = readFileSync(join(BACKEND, '..', '.github', 'workflows', 'ci.yml'), 'utf8');
 const SQL = readFileSync(join(BACKEND, 'scripts', 'ci-outside-roles.sql'), 'utf8');
-
-/** The Database job's steps, by name, in order. */
-function databaseJobSteps(): { name: string; body: string }[] {
-  const job = /^ {2}database:\n([\s\S]*?)(?=^ {2}[a-z][a-z-]*:\n|(?![\s\S]))/m.exec(CI)?.[1] ?? '';
-  return job.split(/\n(?= {6}- name: )/).slice(1).map((chunk) => ({ name: /- name: (.*)/.exec(chunk)![1]!.trim(), body: chunk }));
-}
 
 type Step = { name?: string; run?: string; shell?: string; if?: string | boolean; with?: Record<string, unknown> };
 type Job = { if?: string | boolean; steps?: Step[] };
@@ -52,17 +48,16 @@ describe('CI makes its database with the outside roles (guard)', () => {
     }
   });
 
-  it('runs the role script in the Database job after the database is made and before the migrations', () => {
-    const steps = databaseJobSteps();
-    expect(steps.length).toBeGreaterThan(5);
-    const at = (pred: (s: { name: string; body: string }) => boolean) => steps.findIndex(pred);
-    const created = at((s) => s.name === 'Create throwaway database');
-    const roles = at((s) => /psql\b[^\n]*-f scripts\/ci-outside-roles\.sql/.test(s.body));
-    const migrated = at((s) => s.name === 'Apply migrations');
-    expect(created).toBeGreaterThanOrEqual(0);
-    expect(roles, 'no step runs scripts/ci-outside-roles.sql').toBeGreaterThan(created);
-    expect(migrated).toBeGreaterThan(roles);
-    expect(steps[roles]!.body).toContain('ON_ERROR_STOP=1');
+  it('has the command create the roles first, before the migrations, with the script that is in the repository', () => {
+    const order = dbCommandList().coreOrder;
+    expect(order.slice(0, 2)).toEqual(['outside roles', 'migrations apply']);
+    expect(SQL.length).toBeGreaterThan(100);
+  });
+
+  it('reads back, in the suites that run on every run, that the roles were there before the migrations (CI=true is supplied)', () => {
+    const readback = readFileSync(join(BACKEND, 'src', '__tests__', 'permission-outside-roles-db.test.ts'), 'utf8');
+    expect(readback).toContain("process.env.CI === 'true'");
+    expect(dbCommandList().all).toContain('src/__tests__/permission-outside-roles-db.test.ts');
   });
 
   it('gives the database the stub auth helpers a guarded migration names once `authenticated` exists', () => {
@@ -70,24 +65,22 @@ describe('CI makes its database with the outside roles (guard)', () => {
     for (const fn of ['uid', 'role', 'jwt']) expect(SQL).toContain(`IF to_regprocedure('auth.${fn}()') IS NULL THEN`);
   });
 
-  it('drops the roles again in the step that releases the shared cluster, after its database is gone', () => {
-    const last = databaseJobSteps().at(-1)!;
-    expect(last.name).toBe('Drop throwaway database and release the lock');
-    expect(last.body).toMatch(/if: always\(\)/);
-    const dropDb = last.body.indexOf('dropdb --if-exists');
-    const dropRoles = last.body.indexOf("DROP ROLE IF EXISTS anon' -c 'DROP ROLE IF EXISTS authenticated'");
-    expect(dropDb).toBeGreaterThan(0);
-    expect(dropRoles).toBeGreaterThan(dropDb);
+  it('has no step that drops the roles: the private server is deleted with them, and the shared one is never touched', () => {
+    const wf = load(CI) as Workflow;
+    const text = JSON.stringify(wf.jobs.database);
+    expect(text).not.toMatch(/DROP ROLE|dropdb|\b5432\b/i);
+    // Always runs; the one addition is the push-to-main rule of #3240 (nothing was started on a skipped push, so there is nothing to stop).
+    expect(wf.jobs.database!.steps!.at(-1)!.if).toBe("${{ always() && needs.pick-runners.outputs.tree_skip != 'true' }}");
   });
 
-  // Round 1 shipped a cleanup step with an unclosed quote: bash refused the whole script, so the roles were never dropped and
-  // the shared cluster's lock was never released. Every script CI runs must parse, these two above all.
-  it('gives bash only scripts it can parse, the role step and the cleanup step included', () => {
+  // Round 1 of the old job shipped a cleanup step with an unclosed quote: bash refused the whole script, so the cleanup never ran.
+  // Every script CI runs must parse, the command step and the always-run stop above all.
+  it('gives bash only scripts it can parse, the command step and the stop step included', () => {
     const blocks = runBlocks();
-    expect(blocks.length).toBeGreaterThan(30);
+    expect(blocks.length).toBeGreaterThan(15);
     const names = blocks.map((b) => b.where);
-    expect(names).toContain('database › Create the outside roles');
-    expect(names).toContain('database › Drop throwaway database and release the lock');
+    expect(names).toContain('database › Database check (private server, core checks, lanes, proof every file ran)');
+    expect(names).toContain('database › Stop the private database server');
     const broken = blocks.map((b) => ({ ...b, ...bashParses(b.script) })).filter((b) => !b.ok).map((b) => `${b.where}: ${b.error}`);
     expect(broken).toEqual([]);
   });

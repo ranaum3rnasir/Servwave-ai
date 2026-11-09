@@ -1,40 +1,20 @@
-/**
- * Roles & Permissions, PRD 6, S06.16 - Reopen on the routed job page.
- *
- * Reopen sits in the overflow menu of a Done or Cancelled job and is offered by the job's own action list (`job.actions`):
- * the browser never judges the status or the switch itself, so a person whose list has no `reopen` sees no Reopen on any
- * status, and one whose list has it sees it on the status the server offered it for.
- */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
-import { buildAbility } from '@/lib/ability';
 import { toast } from '@/ui-kit/components/ui/sonner';
-import { renderWithProviders } from './helpers';
-import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
-
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
+import { JOB_ID, mountJobDetail, stubBrowser } from './harness/jobDetailPage';
 
 vi.mock('@/components/tasks/JobLeadTasksTab', () => ({ JobLeadTasksTab: () => null }));
-
 vi.mock('@/ui-kit/components/ui/sonner', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/ui-kit/components/ui/sonner')>()),
   toast: Object.assign(vi.fn(), { error: vi.fn() }),
 }));
+vi.mock('react-router-dom', async () => (await import('./harness/jobDetailRouter')).jobDetailRouter());
 
-const JOB_ID = 'j0000000-0000-0000-0000-000000000016';
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual('react-router-dom');
-  return { ...actual, useParams: () => ({ id: JOB_ID }), useNavigate: () => vi.fn() };
-});
+stubBrowser();
 
 // Everything is allowed to this person by role: only the job's own list decides what the page draws.
-const ability = buildAbility([{ action: 'manage', subject: 'all' }]);
 const mockApi = vi.mocked(api);
 
 const VISIT = {
@@ -45,25 +25,14 @@ const VISIT = {
 };
 
 function mountJob(over: Record<string, unknown> = {}) {
-  const job = {
-    id: JOB_ID, job_number: 'J00016', status: 'DONE', scope_notes: null, estimated_duration: null, completion_notes: null,
-    scheduled_start: '2026-10-02T13:00:00.000Z', scheduled_end: '2026-10-02T15:00:00.000Z', started_at: null,
-    completed_at: '2026-10-02T15:00:00.000Z', cancelled_at: null, cancelled_reason: null, cancel_reason: null,
-    created_at: '2026-10-01T00:00:00.000Z', updated_at: '2026-10-01T00:00:00.000Z',
-    customer: { id: 'c1', first_name: 'John', last_name: 'Doe', company_name: null, email: 'j@d.com', phone: '5551234567' },
-    assignees: [], visits: [VISIT], service_location: null, estimate: null, invoices: [], linked_estimates: [], tags: [],
-    source_plan_id: null, source_plan: null, locked: true, locked_actions: [], actions: ['reopen'],
-    new_visit_closed_reason: 'Reopen this job first', ready_to_close: null,
-    ...over,
-  };
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url === `/api/jobs/${JOB_ID}/visits`) return { data: { visits: [VISIT] } } as never;
-    if (url.endsWith('/scopes')) return { data: { scopes: [], billing: { total: 0, invoiced: 0, remaining: 0 } } } as never;
-    if (url.endsWith('/line-items')) return { data: { lines: [], billing: { total: 0, invoiced: 0, remaining: 0 } } } as never;
-    if (url.includes(`/api/jobs/${JOB_ID}`)) return { data: { job } } as never;
-    return { data: {} } as never;
+  return mountJobDetail({
+    job: {
+      job_number: 'J00016', status: 'DONE', completed_at: '2026-10-02T15:00:00.000Z', visits: [VISIT],
+      locked: true, locked_actions: [], actions: ['reopen'], new_visit_closed_reason: 'Reopen this job first', ready_to_close: null,
+      ...over,
+    },
+    visits: [VISIT],
   });
-  return renderWithProviders(<JobDetailPage />, { ability });
 }
 
 const reopenCalls = () => mockApi.post.mock.calls.filter(([url]) => String(url).endsWith('/reopen'));
@@ -75,9 +44,7 @@ async function openMenu(user: ReturnType<typeof userEvent.setup>) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
-  if (!Element.prototype.hasPointerCapture) Element.prototype.hasPointerCapture = () => false;
-  if (!Element.prototype.scrollIntoView) Element.prototype.scrollIntoView = () => {};
+  stubBrowser();
   mockApi.post.mockResolvedValue({ data: { job: {} } } as never);
 });
 

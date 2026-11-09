@@ -7,28 +7,17 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
-import api from '@/lib/axios';
 import { renderWithProviders } from './helpers';
-import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
+import api from '@/lib/axios';
+import { JOB_ID, mountJobDetail, stubBrowser } from './harness/jobDetailPage';
 import { ActivityPanel } from '@/components/crm/ActivityPanel';
-import { buildAbility } from '@/lib/ability';
 
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 vi.mock('@/components/tasks/JobLeadTasksTab', () => ({ JobLeadTasksTab: () => null }));
 
-const JOB_ID = 'j0000000-0000-0000-0000-000000000032';
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual('react-router-dom');
-  return { ...actual, useParams: () => ({ id: JOB_ID }), useNavigate: () => vi.fn() };
-});
+vi.mock('react-router-dom', async () => (await import('./harness/jobDetailRouter')).jobDetailRouter());
 
-const ability = buildAbility([{ action: 'manage', subject: 'all' }]);
 const mockApi = vi.mocked(api);
 
 /** The History entry as the server lists it: no creator, the words the upgrade writes. */
@@ -42,26 +31,17 @@ const UPGRADE_ENTRY = {
 };
 
 function mount(over: Record<string, unknown>) {
-  const job = {
-    id: JOB_ID, job_number: 'J00032', status: 'DONE', scope_notes: null, estimated_duration: null, completion_notes: null,
-    scheduled_start: null, scheduled_end: null, started_at: null,
-    completed_at: '2026-03-04T15:20:00.000Z', closed_at: '2026-03-04T15:20:00.000Z', closed_by_id: null,
-    cancelled_at: null, cancelled_reason: null, created_at: '2026-03-01T00:00:00.000Z', updated_at: '2026-03-04T15:20:00.000Z',
-    customer: { id: 'c1', first_name: 'John', last_name: 'Doe', company_name: null, email: 'j@d.com', phone: '5551234567' },
-    assignees: [], visits: [], service_location: null, estimate: null, invoices: [], linked_estimates: [], tags: [],
-    source_plan_id: null, source_plan: null, locked: true, locked_actions: [], actions: [],
-    new_visit_closed_reason: 'Reopen this job first', ready_to_close: null,
-    ...over,
-  };
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url === `/api/jobs/${JOB_ID}/visits`) return { data: { visits: [] } } as never;
-    if (url.endsWith('/scopes')) return { data: { scopes: [], billing: { total: 0, invoiced: 0, remaining: 0 } } } as never;
-    if (url.endsWith('/line-items')) return { data: { lines: [], billing: { total: 0, invoiced: 0, remaining: 0 } } } as never;
-    if (url.includes('/timeline')) return { data: { events: [UPGRADE_ENTRY] } } as never;
-    if (url.includes(`/api/jobs/${JOB_ID}`)) return { data: { job } } as never;
-    return { data: {} } as never;
+  return mountJobDetail({
+    job: {
+      job_number: 'J00032', status: 'DONE', scheduled_start: null, scheduled_end: null,
+      completed_at: '2026-03-04T15:20:00.000Z', closed_at: '2026-03-04T15:20:00.000Z', closed_by_id: null,
+      created_at: '2026-03-01T00:00:00.000Z', updated_at: '2026-03-04T15:20:00.000Z',
+      locked: true, locked_actions: [], actions: [],
+      new_visit_closed_reason: 'Reopen this job first', ready_to_close: null,
+      ...over,
+    },
+    routes: [{ match: (url) => url.includes('/timeline'), data: { events: [UPGRADE_ENTRY] } }],
   });
-  return renderWithProviders(<JobDetailPage />, { ability });
 }
 
 beforeEach(() => {

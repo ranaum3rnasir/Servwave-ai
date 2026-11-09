@@ -15,29 +15,18 @@ import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
 import { renderWithProviders } from './helpers';
-import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
+import { JOB_ID, mountJobDetail, stubBrowser } from './harness/jobDetailPage';
 import { ActivityPanel } from '@/components/crm/ActivityPanel';
-import { buildAbility } from '@/lib/ability';
 
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 vi.mock('@/components/tasks/JobLeadTasksTab', () => ({ JobLeadTasksTab: () => null }));
 
-const JOB_ID = 'j0000000-0000-0000-0000-000000000001';
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual('react-router-dom');
-  return { ...actual, useParams: () => ({ id: JOB_ID }), useNavigate: () => vi.fn() };
-});
+vi.mock('react-router-dom', async () => (await import('./harness/jobDetailRouter')).jobDetailRouter());
 
 /** The PRD's own wording, written out here rather than imported from the page. */
 const LOCK_REASON = 'This job is locked. Only someone who can change locked jobs can change it.';
 
-const ability = buildAbility([{ action: 'manage', subject: 'all' }]);
 const mockApi = vi.mocked(api);
 
 const note = (id: string, first: string, answer: Record<string, unknown>) => ({
@@ -55,27 +44,19 @@ let noteRows: unknown[] = [];
 let timelineRows: unknown[] = [];
 
 function mount(overrides: Record<string, unknown> = {}) {
-  const job = {
-    id: JOB_ID, job_number: 'J00001', status: 'IN_PROGRESS', scope_notes: null, estimated_duration: null, completion_notes: null,
-    scheduled_start: '2026-08-21T13:00:00.000Z', scheduled_end: '2026-08-21T15:00:00.000Z', started_at: null,
-    completed_at: null, cancelled_at: null, cancelled_reason: null,
-    created_at: '2026-08-01T00:00:00.000Z', updated_at: '2026-08-01T00:00:00.000Z',
-    customer: { id: 'c1', first_name: 'John', last_name: 'Doe', company_name: null, email: 'j@d.com', phone: '5551234567' },
-    assignees: [], visits: [], service_location: null, estimate: null, invoices: [], linked_estimates: [], tags: [],
-    source_plan_id: null, source_plan: null, actions: ['add_note'], locked: false, locked_actions: [],
-    ...overrides,
-  };
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.startsWith(`/api/jobs/${JOB_ID}/notes`)) return { data: { notes: noteRows } } as never;
-    if (url === `/api/jobs/${JOB_ID}/timeline`) return { data: { events: timelineRows } } as never;
-    if (url === `/api/jobs/${JOB_ID}/visits`) return { data: { visits: [] } } as never;
-    if (url.endsWith('/scopes')) return { data: { scopes: [], billing: { total: 0, invoiced: 0, remaining: 0 } } } as never;
-    if (url.endsWith('/line-items')) return { data: { lines: [], billing: { total: 0, invoiced: 0, remaining: 0 } } } as never;
-    if (url.startsWith('/api/attachments/')) return { data: { attachments: [] } } as never;
-    if (url.includes(`/api/jobs/${JOB_ID}`)) return { data: { job } } as never;
-    return { data: {} } as never;
+  return mountJobDetail({
+    job: {
+      job_number: 'J00001', status: 'IN_PROGRESS', scheduled_start: '2026-08-21T13:00:00.000Z', scheduled_end: '2026-08-21T15:00:00.000Z',
+      created_at: '2026-08-01T00:00:00.000Z', updated_at: '2026-08-01T00:00:00.000Z',
+      actions: ['add_note'], locked: false, locked_actions: [],
+      ...overrides,
+    },
+    routes: [
+      { match: (url) => url.startsWith(`/api/jobs/${JOB_ID}/notes`), data: () => ({ notes: noteRows }) },
+      { match: (url) => url === `/api/jobs/${JOB_ID}/timeline`, data: () => ({ events: timelineRows }) },
+      { match: (url) => url.startsWith('/api/attachments/'), data: { attachments: [] } },
+    ],
   });
-  return renderWithProviders(<JobDetailPage />, { ability });
 }
 
 beforeEach(() => {

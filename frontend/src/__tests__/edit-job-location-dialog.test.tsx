@@ -2,9 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
-import { renderWithProviders, ALL_JOB_ACTIONS } from './helpers';
-import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
-import { buildAbility } from '@/lib/ability';
+import { ALL_JOB_ACTIONS } from './helpers';
+import { mountJobDetail, stubBrowser } from './harness/jobDetailPage';
 
 // The dialog is driven THROUGH THE PAGE, never mounted on its own. A component test that
 // holds `currentLocation` fixed passes against the broken code and proves nothing: the whole
@@ -18,12 +17,7 @@ vi.mock('@/components/tasks/JobLeadTasksTab', () => ({
 
 // floating-ui (under Radix) does `new ResizeObserver(...)`; the global setup mock returns a
 // plain object and isn't constructable (same stub as job-detail-page.test.tsx).
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 const JOB_ID = 'j0000000-0000-0000-0000-000000000001';
 const CUSTOMER_ID = 'c0000000-0000-0000-0000-000000000001';
@@ -36,8 +30,6 @@ vi.mock('react-router-dom', async () => {
     useNavigate: () => vi.fn(),
   };
 });
-
-const adminAbility = buildAbility([{ action: 'manage', subject: 'all' }]);
 
 const mockApi = vi.mocked(api);
 
@@ -96,14 +88,13 @@ const BASE_JOB = {
 };
 
 /** Serve the job the mutable `served` box currently holds, exactly as the real GET would. */
+let serving: Parameters<typeof mountJobDetail>[0] = {};
 function serveJob(getServed: () => unknown) {
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.includes('/api/jobs/')) return { data: { job: getServed() } };
-    if (url.includes('/api/customers/')) {
-      return { data: { customer: { id: CUSTOMER_ID, service_locations: [LOC_TX, LOC_CA] } } };
-    }
-    return { data: {} };
-  });
+  // The harness mounts the page after serving: this only states the job and the customer's saved addresses.
+  serving = {
+    job: getServed as () => Record<string, unknown>,
+    routes: [{ match: (url: string) => url.includes('/api/customers/'), data: { customer: { id: CUSTOMER_ID, service_locations: [LOC_TX, LOC_CA] } } }],
+  };
 }
 
 const openDialog = async (user: ReturnType<typeof userEvent.setup>) => {
@@ -120,7 +111,7 @@ describe('JobDetailPage — changing the job service location', () => {
     const user = userEvent.setup();
     serveJob(() => BASE_JOB);
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+    mountJobDetail(serving);
 
     const dialog = await openDialog(user);
     expect(await within(dialog).findByText(/2 Bay St, San Francisco, CA 94105/)).toBeInTheDocument();
@@ -142,7 +133,7 @@ describe('JobDetailPage — changing the job service location', () => {
       };
     });
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+    mountJobDetail(serving);
 
     const dialog = await openDialog(user);
     await user.click(await within(dialog).findByText(/2 Bay St, San Francisco, CA 94105/));
@@ -172,7 +163,7 @@ describe('JobDetailPage — changing the job service location', () => {
       response: { data: { error: 'Location locked — job has invoices' } },
     });
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+    mountJobDetail(serving);
 
     const dialog = await openDialog(user);
     await user.click(await within(dialog).findByText(/2 Bay St, San Francisco, CA 94105/));
@@ -199,7 +190,7 @@ describe('JobDetailPage — changing the job service location', () => {
       };
     });
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+    mountJobDetail(serving);
 
     const dialog = await openDialog(user);
     await user.click(await within(dialog).findByText(/2 Bay St, San Francisco, CA 94105/));

@@ -1,37 +1,23 @@
-/**
- * Roles & Permissions S04.27 - the estimate page draws send, edit, delete, archive and record payment from the server's
- * answer for THIS estimate (`estimate.actions`), not from the person's switches alone. A creator with View estimates
- * off finishes the estimate they made (their ability holds nothing on estimates at all); a person whose answer for the
- * estimate is empty gets none of the buttons, an everything-granted ability included. Renders the routed page
- * (pages/v2/estimates/EstimateWorkspacePage).
- */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
-import { renderWithProviders } from './helpers';
 import { buildAbility } from '@/lib/ability';
-import EstimateWorkspacePage from '@/pages/v2/estimates/EstimateWorkspacePage';
+import { renderEstimateWorkspace, serveEstimateWorkspace } from '@/__tests__/harness/estimateWorkspacePage';
 import { ESTIMATE_STATUS } from '@/constants/estimateStatus';
-
-const ESTIMATE_ID = 'est-s0427-actions-id';
+import { useAuthStore } from '@/stores/auth.store';
 
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');
-  return { ...actual, useParams: () => ({ id: ESTIMATE_ID }), useNavigate: () => vi.fn() };
+  return { ...actual, useParams: () => ({ id: __route.id }), useNavigate: () => vi.fn() };
 });
-
-// Heavy sub-surfaces with no bearing on the hero buttons - stubbed out (same set as
-// estimate-copy-to-invoice.test.tsx, the sibling suite exercising this same page).
 vi.mock('@/features/estimate-workspace/components/EstimateTabs', () => ({ EstimateTabs: () => null }));
 vi.mock('@/components/estimates/EstimateLineItemsEditor', () => ({
   EstimateLineItemsEditor: () => null,
   EstimateScopeOfWorkCard: () => null,
   estimateLinesToInvoiceShape: (lines: unknown) => lines,
 }));
-vi.mock('@/features/estimate-workspace/components/SignatureCard', () => ({
-  SignatureCard: () => null,
-}));
+vi.mock('@/features/estimate-workspace/components/SignatureCard', () => ({ SignatureCard: () => null }));
 vi.mock('@/features/estimate-workspace/components/NotesCard', () => ({ NotesCard: () => null }));
 vi.mock('@/features/estimate-workspace/components/HistoryPanel', () => ({ HistoryPanel: () => null }));
 vi.mock('@/components/tasks/JobLeadTasksTab', () => ({ JobLeadTasksTab: () => null }));
@@ -42,6 +28,35 @@ vi.mock('@/components/estimates/RecordEstimatePaymentDialog', () => ({ RecordEst
 vi.mock('@/components/estimates/DuplicateEstimateDialog', () => ({ DuplicateEstimateDialog: () => null }));
 vi.mock('@/components/estimates/WaiveDepositDialog', () => ({ WaiveDepositDialog: () => null }));
 vi.mock('@/components/estimates/RefundDepositDialog', () => ({ RefundDepositDialog: () => null }));
+
+const __route = vi.hoisted(() => ({ id: '' }));
+
+// Each test starts from the setup file's signed-in user and bare client calls: reset them here, so a test states its own user
+// and answers in its own `beforeEach` (`clearAllMocks` keeps implementations).
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(useAuthStore).mockReset();
+  vi.mocked(api.get).mockReset();
+  vi.mocked(api.post).mockReset();
+  vi.mocked(api.patch).mockReset();
+  vi.mocked(api.put).mockReset();
+  vi.mocked(api.delete).mockReset();
+});
+
+// The router mock reads the id this block's file used to fix.
+beforeEach(() => { __route.id = ESTIMATE_ID; });
+/**
+ * Roles & Permissions S04.27 - the estimate page draws send, edit, delete, archive and record payment from the server's
+ * answer for THIS estimate (`estimate.actions`), not from the person's switches alone. A creator with View estimates
+ * off finishes the estimate they made (their ability holds nothing on estimates at all); a person whose answer for the
+ * estimate is empty gets none of the buttons, an everything-granted ability included. Renders the routed page
+ * (pages/v2/estimates/EstimateWorkspacePage).
+ */
+
+const ESTIMATE_ID = 'est-s0427-actions-id';
+
+// Heavy sub-surfaces with no bearing on the hero buttons - stubbed out (same set as
+// estimate-copy-to-invoice.test.tsx, the sibling suite exercising this same page).
 
 /** A draft estimate: send, record payment, archive and delete all fit its status. */
 const DRAFT_ESTIMATE = {
@@ -103,13 +118,8 @@ const DRAFT_ESTIMATE = {
   actions: [] as string[],
 };
 
-
 function setupMocks(fixture: Record<string, unknown>) {
-  vi.mocked(api.get).mockImplementation(async (url: string) => {
-    if (url.includes('/state-tax-rates')) return { data: { data: [] } };
-    if (url.includes('/api/estimates/')) return { data: { estimate: fixture } };
-    return { data: {} };
-  });
+  serveEstimateWorkspace({ estimate: fixture });
 }
 
 /** A person whose switches grant nothing on estimates: they reach the page by the creator rule alone. */
@@ -129,7 +139,7 @@ describe('EstimateWorkspacePage - the buttons follow the answer for this estimat
   it('offers send, archive and delete on a draft the person made, with no View estimates and no Edit estimates', async () => {
     setupMocks({ ...DRAFT_ESTIMATE, actions: ['edit', 'send', 'delete', 'cancel'] });
 
-    renderWithProviders(<EstimateWorkspacePage />, { ability: noEstimateSwitches() });
+    renderEstimateWorkspace({ ability: noEstimateSwitches() });
 
     expect(await screen.findByRole('button', { name: 'Send' })).toBeInTheDocument();
     await openActionsMenu();
@@ -143,7 +153,7 @@ describe('EstimateWorkspacePage - the buttons follow the answer for this estimat
   it('offers none of them on an estimate whose answer is empty, to a person whose ability holds every grant', async () => {
     setupMocks({ ...DRAFT_ESTIMATE, actions: [] });
 
-    renderWithProviders(<EstimateWorkspacePage />, { ability: everythingGranted() });
+    renderEstimateWorkspace({ ability: everythingGranted() });
 
     await openActionsMenu();
     await screen.findByRole('menuitem', { name: /duplicate/i });
@@ -157,7 +167,7 @@ describe('EstimateWorkspacePage - the buttons follow the answer for this estimat
   it('offers record payment when the answer lists it, whatever the ability says', async () => {
     setupMocks({ ...DRAFT_ESTIMATE, actions: ['record_payment'] });
 
-    renderWithProviders(<EstimateWorkspacePage />, { ability: noEstimateSwitches() });
+    renderEstimateWorkspace({ ability: noEstimateSwitches() });
 
     expect((await screen.findAllByRole('button', { name: 'Record Payment' })).length).toBeGreaterThan(0);
     expect(screen.queryByRole('button', { name: 'Send' })).not.toBeInTheDocument();

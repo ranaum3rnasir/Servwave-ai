@@ -16,7 +16,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const mutate = vi.fn();
 const toastSpy = vi.fn();
 
-vi.mock('@/lib/api/organization', () => ({
+vi.mock('@/lib/api/shared/organization', () => ({
   useUploadLogo: () => ({ mutate, isPending: false }),
 }));
 

@@ -25,7 +25,7 @@ import { Trash2 } from 'lucide-react';
 import api from '@/lib/axios';
 import { type PriceBookItem } from '@/lib/api/invoices';
 import { useLocations } from '@/lib/api/inventory';
-import { useOrganization } from '@/lib/api/organization';
+import { useOrganization } from '@/lib/api/shared/organization';
 import { useAppAbility } from '@/contexts/AbilityContext';
 import {
   getLastStockLocationId,

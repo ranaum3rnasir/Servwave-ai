@@ -99,6 +99,36 @@ diagnosis; a note is a lead to verify against the code, not proof.
 Before running test suites, typechecks, builds or verifier runs, read the vault note
 `Workflows/Remote-Test-Runner/Remote-Test-Runner.md` and follow it.
 
+## Frontend tests: where a test belongs
+
+The suite grew by about 12 files a day and dozens of files mount the job detail page, each with its own fake
+server. A brake in `npm run test:ci` now fails the check on growth (`docs/ci.md`), so write tests like this:
+
+1. **Find before you write.** Search for the module's existing test file and add cases to it. A new test
+   file needs a reason you can state in one line.
+2. **One harness per page.** A page has one shared test harness (render, fake server, providers); do not
+   build another per file. Harnesses live in `frontend/src/__tests__/harness/` (the routed job detail page's is
+   `jobDetailPage.tsx`); import it, state only what differs, and keep the API client files import-free of each
+   other (shared pieces go in `frontend/src/lib/api/shared/`, guard: `api-clients-import-alone.guard.test.ts`).
+3. **One mount per state.** Mount a page once per state it can be in and assert everything about that
+   state there, not one mount per assertion.
+4. **Lowest level that can fail.** Test a rule at the pure function or hook that owns it; mount the page
+   only for what only the page can break.
+5. **No real timer over 100 ms and no absence proof by a rejected `findBy`.** Use fake timers; to prove
+   something is absent, wait for the thing that replaces it, not for a `findBy` to time out.
+6. **Scale with the smallest number that crosses the threshold.** To test "more than 50 rows" use the
+   fewest rows that cross the line (or lower the threshold through the module's own parameter).
+7. **The budget.** The check judges what your change does, not totals. A test over 2 s, or a file over 10 s of
+   body time, in a file you added or changed fails. A page fails its ceiling in `frontend/test-page-ceilings.json`
+   only if you add test files mounting it and it is then over (a new page starts at 3). `maxTestFiles` in
+   `frontend/test-budget.json` moves with your file count in the same diff: add k test files, raise it by k;
+   delete, lower it. That is bookkeeping, not a raise. What Ran reviews are the raises: CPU-seconds, minutes, a
+   page ceiling, the over-the-line list. Do not raise those to get green. (CPU over budget only warns while
+   `cpuEnforcement` is `"warn"`.)
+
+A builder's report carries one line: `tests added to: <file>` or `new file because: <reason>`; the
+verifier checks it.
+
 ## Agent skills
 
 ### Every PR carries a video proof

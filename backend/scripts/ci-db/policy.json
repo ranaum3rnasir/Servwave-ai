@@ -1,0 +1,29 @@
+{
+  "floor": 6600,
+  "maxRetried": 10,
+  "totalTestSecondsBudget": 3600,
+  "allowedSkips": [
+    {
+      "file": "src/__tests__/branding-and-descriptor-sandbox-db.test.ts",
+      "reason": "payment sandbox: needs the processor's sandbox key"
+    },
+    {
+      "file": "src/__tests__/close-open-checkout-links-sandbox-db.test.ts",
+      "reason": "payment sandbox: needs the processor's sandbox key"
+    },
+    {
+      "file": "src/__tests__/public-invoice-partial-tip-sandbox-db.test.ts",
+      "reason": "payment sandbox: needs the processor's sandbox key"
+    },
+    {
+      "file": "src/__tests__/job-types-db.test.ts",
+      "reason": "baseline: the list has a reorder route, so the case that says it has none is skipped",
+      "max": 1
+    },
+    {
+      "file": "src/__tests__/lead-sources-db.test.ts",
+      "reason": "baseline: the list has no reorder route, so the two reorder cases are skipped",
+      "max": 2
+    }
+  ]
+}

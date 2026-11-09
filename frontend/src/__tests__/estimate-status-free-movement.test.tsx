@@ -15,9 +15,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
-import { renderWithProviders } from './helpers';
-import { buildAbility } from '@/lib/ability';
-import EstimateWorkspacePage from '@/pages/v2/estimates/EstimateWorkspacePage';
+import { renderEstimateWorkspace, serveEstimateWorkspace } from '@/__tests__/harness/estimateWorkspacePage';
 import { ESTIMATE_STATUS } from '@/constants/estimateStatus';
 
 const ESTIMATE_ID = 'est-free-movement-id';
@@ -47,7 +45,6 @@ vi.mock('@/components/estimates/DuplicateEstimateDialog', () => ({ DuplicateEsti
 vi.mock('@/components/estimates/WaiveDepositDialog', () => ({ WaiveDepositDialog: () => null }));
 vi.mock('@/components/estimates/RefundDepositDialog', () => ({ RefundDepositDialog: () => null }));
 
-const adminAbility = buildAbility([{ action: 'manage', subject: 'all' }]);
 
 /**
  * A fully-sent estimate with a live customer link and NO money trail - the state in which every
@@ -116,13 +113,9 @@ const BASE_ESTIMATE = {
 
 function renderAt(status: string, overrides: Record<string, unknown> = {}) {
   const estimate = { ...BASE_ESTIMATE, status, ...overrides };
-  vi.mocked(api.get).mockImplementation(async (url: string) => {
-    if (url.includes('/state-tax-rates')) return { data: { data: [] } };
-    if (url.includes('/api/estimates/')) return { data: { estimate } };
-    return { data: {} };
-  });
+  serveEstimateWorkspace({ estimate });
   vi.mocked(api.patch).mockResolvedValue({ data: { estimate } });
-  return renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+  return renderEstimateWorkspace();
 }
 
 const openPill = async (user: ReturnType<typeof userEvent.setup>) => {

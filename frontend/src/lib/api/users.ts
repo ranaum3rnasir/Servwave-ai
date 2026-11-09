@@ -2,8 +2,7 @@ import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tansta
 import api from '@/lib/axios';
 import { toast } from '@/components/ui/use-toast';
 import { extractApiError } from '@/lib/utils';
-import { allPersonSwitchesKey } from '@/lib/api/permissionSwitches';
-import { MAILBOXES_KEY } from '@/lib/api/communication';
+import { allPersonSwitchesKey, MAILBOXES_KEY } from '@/lib/api/shared/queryKeys';
 
 export type UserRole = 'ADMIN' | 'SALES' | 'DISPATCHER' | 'TECHNICIAN';
 

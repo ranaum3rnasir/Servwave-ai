@@ -15,7 +15,7 @@ import api from '@/lib/axios';
 import { buildAbility } from '@/lib/ability';
 import { useSettingsGuard } from '@/stores/settingsGuard.store';
 import { settingsV2Routes } from '@/pages/v2/routes/settings.routes';
-import type { SwitchSet } from '@/lib/api/permissionSwitches';
+import type { SwitchSet } from '@/lib/api/shared/switchTypes';
 import { renderWithProviders } from './helpers';
 import { FIXTURE_CATALOG, catalogSwitch, presetSet } from './support/permissionCatalogFixture';
 

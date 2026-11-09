@@ -107,7 +107,6 @@ describe('the Tax Rates settings page follows Company settings', () => {
 
     // The address renders nothing for anyone who is not an Admin: no page, no no-access pane, no reads.
     await screen.findByRole('navigation', { name: 'Settings' });
-    await new Promise((resolve) => setTimeout(resolve, 150));
     expect(screen.queryByText(/Your organization.s tax rates/)).toBeNull();
     expect(screen.queryByRole('button', { name: /Add rate/ })).toBeNull();
     expect(calledUrls()).not.toContain('/api/org-tax-rates');

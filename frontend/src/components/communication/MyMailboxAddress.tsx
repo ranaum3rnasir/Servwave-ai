@@ -3,7 +3,7 @@ import { Check, Copy, Mail } from 'lucide-react';
 
 import { useFeature } from '@/lib/entitlements';
 import { useMyMailbox } from '@/lib/api/communication';
-import { useShowEmail } from '@/lib/api/mySwitches';
+import { useShowEmail } from '@/lib/api/shared/mySwitches';
 
 import { Button } from '@/ui-kit/components/ui/button';
 import { cn } from '@/ui-kit/lib/utils';

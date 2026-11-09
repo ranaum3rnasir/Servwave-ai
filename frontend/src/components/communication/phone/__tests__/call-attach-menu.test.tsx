@@ -23,7 +23,7 @@ vi.mock("@/components/contact/useContactPolicyInput", () => ({
   }),
 }));
 
-vi.mock("@/lib/api/organization", () => ({
+vi.mock("@/lib/api/shared/organization", () => ({
   useOrganization: () => ({ data: { timezone: "America/New_York" } }),
 }));
 

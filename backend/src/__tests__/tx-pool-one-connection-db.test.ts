@@ -37,13 +37,15 @@ vi.mock('../lib/email', async (importOriginal) => ({
 }));
 
 import { switchFixture, type Person } from './permission-switches-fixture';
-import { SHORT_POOL_TIMEOUT_SECONDS } from './one-connection-client.js';
 import { setRoleSwitchValues } from '../lib/permissions/switches/store';
 import { supabaseAdmin } from '../lib/supabase';
 import { SWITCH_CATALOG, type SwitchValue } from '../lib/permissions/switches/catalog';
 import { reviewAttentionSettled } from '../services/notifications/reviewAttentionQueue';
 
 const suite = process.env.TEST_DATABASE_URL ? describe : describe.skip;
+
+/** The advisory lock that keeps the pool's one connection busy (advisory locks belong to one database, this suite's own). */
+const BUSY_LOCK_KEY = 3246001;
 
 /** Every switch in the catalog on (a choice at its widest option, a list empty). */
 const ALL_ON: Record<string, SwitchValue> = Object.fromEntries(
@@ -378,21 +380,46 @@ suite('transactional routes on a one-connection pool (real database)', () => {
      * Runs `act` with the pool's one connection kept busy from the moment a transaction commits, so a read made after
      * the write fails the way it does on the hosted database under load: it waits behind other work and times out.
      * Scenario pass 2 saw saves answer 500 although every value WAS stored.
+     *
+     * The connection is held by a lock the TEST owns (an advisory lock, which belongs to this suite's own database), taken on
+     * a client of the test's own before the route runs and released the moment the route has answered. A route that reads after
+     * its commit waits behind the lock and times out as before; a route that does not is answered at once and the line is
+     * freed at once, instead of after a fixed five seconds.
      */
     async function busyAfterCommit<T>(act: () => Promise<T>): Promise<T> {
+      const { PrismaClient } = await import('@prisma/client');
+      const holder = new PrismaClient({ datasources: { db: { url: process.env.TEST_DATABASE_URL! } } });
+      let release!: () => void;
+      const released = new Promise<void>((resolve) => { release = resolve; });
+      let held!: () => void;
+      const lockTaken = new Promise<void>((resolve) => { held = resolve; });
+      const holding = holder.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(${BUSY_LOCK_KEY})`;
+        held();
+        await released;
+      }, { timeout: 60_000, maxWait: 10_000 });
+      // A holder that fails must fail the case: nothing held means nothing tested.
+      let holderFailure: unknown;
+      holding.catch((err) => { holderFailure = err ?? new Error('the lock holder failed'); held(); });
+      await lockTaken;
+      if (holderFailure) { await holder.$disconnect(); throw holderFailure; }
+
       const realTransaction = db.$transaction.bind(db) as (...args: unknown[]) => Promise<unknown>;
       let busy: Promise<unknown> = Promise.resolve();
       const spy = vi.spyOn(db, '$transaction').mockImplementation(((...args: unknown[]) =>
         realTransaction(...args).then((out) => {
-          // A Prisma query only starts once it is awaited or chained, so it is chained here.
-          busy = db.$queryRawUnsafe(`SELECT pg_sleep(${SHORT_POOL_TIMEOUT_SECONDS + 1})`).then(() => undefined);
+          // A Prisma query only starts once it is awaited or chained, so it is chained here. It sits behind the lock the test holds.
+          busy = db.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(${BUSY_LOCK_KEY})`.then(() => undefined);
           return out;
         })) as never);
       try {
         return await act();
       } finally {
         spy.mockRestore();
+        release();
         await busy.catch(() => undefined);
+        // Rethrows when the holder's transaction failed while the route ran.
+        await holding.finally(() => holder.$disconnect());
       }
     }
 

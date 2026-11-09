@@ -1,12 +1,7 @@
 import { HelpIcon } from '@/components/permissions/HelpIcon';
 import { choiceLabel, valueText } from '@/components/permissions/switchValueText';
-import {
-  usePersonSwitches,
-  useSavePersonSwitches,
-  useSwitchCatalog,
-  type CatalogSwitch,
-  type SwitchValue,
-} from '@/lib/api/permissionSwitches';
+import { usePersonSwitches, useSavePersonSwitches, useSwitchCatalog, type CatalogSwitch } from '@/lib/api/permissionSwitches';
+import { type SwitchValue } from '@/lib/api/shared/switchTypes';
 import { Button } from '@/ui-kit/components/ui/button';
 import { Switch } from '@/ui-kit/components/ui/switch';
 

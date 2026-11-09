@@ -23,8 +23,8 @@ import { AbilityProvider } from '@/contexts/AbilityContext';
 import { TooltipProvider as KitTooltipProvider } from '@/ui-kit/components/ui/tooltip';
 import { buildAbility } from '@/lib/ability';
 import { LEAD_FIXTURE, NOTES_FIXTURE } from './helpers';
-import LeadDetailPage from '@/pages/v2/leads/LeadDetailPage';
-import EstimateWorkspacePage from '@/pages/v2/estimates/EstimateWorkspacePage';
+import { leadDetailElement, serveLeadDetail, stubBrowser } from '@/__tests__/harness/leadDetailPage';
+import { estimateWorkspaceElement } from '@/__tests__/harness/estimateWorkspacePage';
 import NewEstimateRedirect from '@/pages/v2/estimates/NewEstimateRedirect';
 
 // Lead page surfaces with no bearing on the status menu (same stubs as lead-detail-page.test.tsx).
@@ -48,8 +48,7 @@ vi.mock('@/components/estimates/DuplicateEstimateDialog', () => ({ DuplicateEsti
 vi.mock('@/components/estimates/WaiveDepositDialog', () => ({ WaiveDepositDialog: () => null }));
 vi.mock('@/components/estimates/RefundDepositDialog', () => ({ RefundDepositDialog: () => null }));
 
-class ResizeObserverStub { observe() {} unobserve() {} disconnect() {} }
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 const LEAD_ID = LEAD_FIXTURE.id;
 const ESTIMATE_ID = 'est-send-refresh-1';
@@ -129,9 +128,9 @@ function renderApp() {
           <MemoryRouter initialEntries={[`/leads/${LEAD_ID}`]}>
             <NavProbe />
             <Routes>
-              <Route path="/leads/:id" element={<LeadDetailPage />} />
+              <Route path="/leads/:id" element={leadDetailElement()} />
               <Route path="/estimates/new" element={<NewEstimateRedirect />} />
-              <Route path="/estimates/:id" element={<EstimateWorkspacePage />} />
+              <Route path="/estimates/:id" element={estimateWorkspaceElement()} />
             </Routes>
           </MemoryRouter>
         </KitTooltipProvider>
@@ -146,16 +145,17 @@ beforeEach(() => {
   localStorage.clear();
   serverLead = { ...LEAD_FIXTURE, ...BEFORE_SEND };
   serverEstimate = ESTIMATE;
-  vi.mocked(api.get).mockImplementation(async (url: string) => {
-    if (url === `/api/leads/${LEAD_ID}`) return { data: { lead: serverLead } };
-    if (url.includes('/notes')) return { data: { notes: NOTES_FIXTURE } };
-    if (url.includes('/api/tags')) return { data: { tags: [] } };
-    if (url.includes('/state-tax-rates')) return { data: { data: [] } };
-    if (url.startsWith(`/api/estimates/${ESTIMATE_ID}`)) return { data: { estimate: serverEstimate } };
-    if (url === '/api/organization') {
-      return { data: { accepted_payment_methods: ['CARD'], deposit_default_type: 'PERCENTAGE', deposit_default_percentage: 50 } };
-    }
-    return { data: {} };
+  serveLeadDetail({
+    lead: () => serverLead,
+    notes: NOTES_FIXTURE,
+    routes: [
+      { match: (url) => url.includes('/state-tax-rates'), data: { data: [] } },
+      { match: (url) => url.startsWith(`/api/estimates/${ESTIMATE_ID}`), data: () => ({ estimate: serverEstimate }) },
+      {
+        match: (url) => url === '/api/organization',
+        data: { accepted_payment_methods: ['CARD'], deposit_default_type: 'PERCENTAGE', deposit_default_percentage: 50 },
+      },
+    ],
   });
   vi.mocked(api.patch).mockImplementation(async (url: string, body?: unknown) => {
     if (url === `/api/estimates/${ESTIMATE_ID}/status` && (body as { status?: string })?.status === 'DRAFT') {

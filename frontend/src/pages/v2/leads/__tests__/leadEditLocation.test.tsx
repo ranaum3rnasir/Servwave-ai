@@ -2,9 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
-import { renderWithProviders } from '@/__tests__/helpers';
-import LeadFormPage from '@/pages/v2/leads/LeadFormPage';
 import { buildAbility } from '@/lib/ability';
+import { renderLeadForm, serveLeadForm } from '@/__tests__/harness/leadFormPage';
 
 /*
  * The lead's Edit form is now the ONLY place a lead's service location is read back and changed
@@ -25,7 +24,7 @@ vi.mock('react-router-dom', async () => {
   return { ...actual, useNavigate: () => mockNavigate, useParams: () => ({ id: LEAD_ID }) };
 });
 
-vi.mock('@/lib/api/organization', () => ({
+vi.mock('@/lib/api/shared/organization', () => ({
   useOrganization: () => ({ data: { job_type_options: [], source_options: [] } }),
   useUpdateOrganization: () => ({ mutate: vi.fn() }),
 }));
@@ -90,11 +89,7 @@ const locationTrigger = () =>
   screen.getAllByRole('combobox').find((el) => / - /.test(el.textContent ?? ''));
 
 const serve = (lead: unknown) => {
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.includes(`/api/leads/${LEAD_ID}`)) return { data: { lead } };
-    if (url.includes('/api/users')) return { data: { users: [] } };
-    return { data: {} };
-  });
+  serveLeadForm({ lead, routes: [{ match: (url) => url.includes('/api/users'), data: { users: [] } }] });
 };
 
 beforeEach(() => {
@@ -105,7 +100,7 @@ beforeEach(() => {
 describe("LeadFormPage (edit) - the lead's location is its anchor", () => {
   it('opens on the anchored address, not the customer\'s primary', async () => {
     serve(ANCHORED_LEAD);
-    renderWithProviders(<LeadFormPage />, { ability: adminAbility, initialEntries: [`/leads/${LEAD_ID}/edit`] });
+    renderLeadForm({ ability: adminAbility, entry: `/leads/${LEAD_ID}/edit` });
 
     // The anchor is Miami; the PRIMARY is the ashkelon row. Falling back to the primary is what
     // made an untouched save re-point the lead.
@@ -118,7 +113,7 @@ describe("LeadFormPage (edit) - the lead's location is its anchor", () => {
   it('saves an untouched form without moving the lead', async () => {
     const user = userEvent.setup();
     serve(ANCHORED_LEAD);
-    renderWithProviders(<LeadFormPage />, { ability: adminAbility, initialEntries: [`/leads/${LEAD_ID}/edit`] });
+    renderLeadForm({ ability: adminAbility, entry: `/leads/${LEAD_ID}/edit` });
 
     await waitFor(() => expect(locationTrigger()?.textContent).toMatch(/500 Ocean Drive/));
     await user.click(screen.getByRole('button', { name: /save changes/i }));
@@ -133,7 +128,7 @@ describe("LeadFormPage (edit) - the lead's location is its anchor", () => {
 
   it('does not call an unchanged location a state change', async () => {
     serve(ANCHORED_LEAD);
-    renderWithProviders(<LeadFormPage />, { ability: adminAbility, initialEntries: [`/leads/${LEAD_ID}/edit`] });
+    renderLeadForm({ ability: adminAbility, entry: `/leads/${LEAD_ID}/edit` });
 
     await waitFor(() => expect(locationTrigger()?.textContent).toMatch(/500 Ocean Drive/));
     // `leadState` used to read the null deprecated column, so ANY location read as a move into a
@@ -145,7 +140,7 @@ describe("LeadFormPage (edit) - the lead's location is its anchor", () => {
 describe('LeadFormPage (edit) - a frozen lead still shows where the work is', () => {
   it('renders the anchored address in the locked box', async () => {
     serve({ ...ANCHORED_LEAD, estimates: [{ id: 'est-1' }] });
-    renderWithProviders(<LeadFormPage />, { ability: adminAbility, initialEntries: [`/leads/${LEAD_ID}/edit`] });
+    renderLeadForm({ ability: adminAbility, entry: `/leads/${LEAD_ID}/edit` });
 
     // Reading the deprecated columns here rendered a locked address of "-": the page hiding the
     // very thing the lock is about.

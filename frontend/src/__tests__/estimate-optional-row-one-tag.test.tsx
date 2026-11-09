@@ -34,7 +34,8 @@ import { EstimateLineItemsEditor, EstimateScopeOfWorkCard } from '@/components/e
 import { LineItemRow } from '@/components/jobs/items/LineItemRow';
 import { LineItemsTable } from '@/components/jobs/items/LineItemsTable';
 import { ScopeOfWorkCard } from '@/components/jobs/items/ScopeOfWorkCard';
-import type { InvoiceLineItem, Scope } from '@/lib/api/jobs';
+import type { InvoiceLineItem } from '@/lib/api/jobs';
+import type { Scope } from '@/lib/api/shared/scope';
 import type { EstimateLineItem } from '@/lib/api/estimates';
 
 vi.mock('@/lib/api/invoices', async () => {

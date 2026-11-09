@@ -17,7 +17,7 @@ vi.mock('@/lib/axios', () => ({
 }));
 
 const mockOrg = vi.fn();
-vi.mock('@/lib/api/organization', () => ({
+vi.mock('@/lib/api/shared/organization', () => ({
   useOrganization: () => mockOrg(),
 }));
 

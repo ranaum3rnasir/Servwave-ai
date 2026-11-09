@@ -8,13 +8,13 @@ import { ChartCard } from '@/components/charts';
 import { token } from '@/design-system';
 import { findReport } from '@/lib/reports/report-catalog';
 import { EmployeePayrollCard } from '@/components/timeclock/EmployeePayrollCard';
-import { reachesBeyondOwn, useMySwitches } from '@/lib/api/mySwitches';
+import { reachesBeyondOwn, useMySwitches } from '@/lib/api/shared/mySwitches';
 import { useOtReviews, usePunches, useUpsertOtReview } from '@/lib/api/timeclock';
 import { formatPlace } from '@/lib/timeclock/place';
 import { buildSessions, isLate, type Session } from '@/lib/timeclock/aggregate';
 import { buildDays, buildPayroll, type WeekRow } from '@/lib/timeclock/payroll';
 import type { ReviewState } from '@/lib/timeclock/types';
-import { useOrganization } from '@/lib/api/organization';
+import { useOrganization } from '@/lib/api/shared/organization';
 
 import { EmptyState } from '@/ui-kit/components/data/emptyState';
 import { Badge } from '@/ui-kit/components/ui/badge';

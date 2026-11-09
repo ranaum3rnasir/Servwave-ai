@@ -29,6 +29,10 @@ beforeEach(() => {
   });
 });
 
+/** Cheap lookups for the big cards: getByRole / getByLabelText compute an accessible name for every row's controls (seconds for 150 to 500 rows on a small machine), so find the create button and its input by visible text. */
+const createButton = (c: HTMLElement, singular: string) => within(c).getByText(`Create ${singular}`).closest('button')!;
+const nameInput = (c: HTMLElement, singular: string) => c.querySelector<HTMLInputElement>(`#${CSS.escape(within(c).getByText(`Name of the new ${singular}`).getAttribute('for')!)}`)!;
+
 const card = (title: string) => screen.getByRole('heading', { name: title }).closest('[data-slot="card"]') as HTMLElement;
 
 describe('150 sources and 500 job types', () => {
@@ -81,8 +85,8 @@ describe('150 sources and 500 job types', () => {
         return rect(0, 0);
       };
 
-      await user.click(within(c()).getByRole('button', { name: 'Create source' }));
-      await user.type(within(c()).getByLabelText('Name of the new source'), 'Fresh source{Enter}');
+      await user.click(createButton(c(), 'source'));
+      await user.type(nameInput(c(), 'source'), 'Fresh source{Enter}');
       await within(c()).findByText('Fresh source');
       await waitFor(() => expect(top).toBe(6052 - 416));
       expect(server.calls.some((x) => x.method === 'post' && x.url === '/api/lead-sources')).toBe(true);
@@ -97,8 +101,12 @@ describe('the 500-row cap', () => {
     renderWithProviders(<ListsPage />, { ability: PAGE });
     const c = () => card('Job types');
     await within(c()).findByText('Type 1');
-    await user.click(within(c()).getByRole('button', { name: 'Create job type' }));
-    await user.type(within(c()).getByLabelText('Name of the new job type'), 'One too many{Enter}');
+    // Same cheap lookups as above: the 500-row case used to spend ~15 s in accessible-name queries, not in the cap.
+    await user.click(createButton(c(), 'job type'));
+    const input = nameInput(c(), 'job type');
+    await user.click(input);
+    await user.paste('One too many');
+    await user.keyboard('{Enter}');
     expect(await within(c()).findByRole('alert')).toHaveTextContent('This list can hold up to 500 items.');
   });
 });

@@ -18,7 +18,7 @@ import type { Branch, Category, Item, Location, Vendor } from '@/lib/api/invento
 import { useLogisticOrders } from '@/lib/api/logisticOrders';
 import { useAppAbility } from '@/contexts/AbilityContext';
 import { canSeePricing, canSeePrices as canSeePricesAbility, canStartPurchaseOrder } from '@/lib/ability';
-import { switchOn, useMySwitches } from '@/lib/api/mySwitches';
+import { switchOn, useMySwitches } from '@/lib/api/shared/mySwitches';
 import { useConfirm } from '@/hooks/useConfirm';
 import { extractApiError, formatCurrencyWhole } from '@/lib/utils';
 import { cn } from '@/ui-kit/lib/utils';

@@ -17,7 +17,7 @@ import {
   copyEstimateToInvoice, deleteEstimate, setEstimateStatus, setEstimateStatusTo,
   type EstimateLineItem, type EstimateScopePhoto, type Scope,
 } from '@/lib/api/estimates';
-import { useOrganization } from '@/lib/api/organization';
+import { useOrganization } from '@/lib/api/shared/organization';
 import { useLeadCommunications, findTransactionalEmail } from '@/lib/api/jobCommunications';
 import { depositInvoiceIsUnpaid } from '@/lib/deposit';
 import { extractApiError } from '@/lib/utils';
@@ -40,7 +40,7 @@ import { RecordEstimatePaymentDialog } from '@/components/estimates/RecordEstima
 import { RefundDepositDialog } from '@/components/estimates/RefundDepositDialog';
 import { SendEstimateDialog } from '@/components/estimates/SendEstimateDialog';
 import type { DepositPolicy } from '@/lib/payment-options';
-import type { PaymentMethod } from '@/lib/api/organization';
+import type { PaymentMethod } from '@/lib/api/shared/organization';
 import { VoidApprovalDialog } from '@/components/estimates/VoidApprovalDialog';
 import { WaiveDepositDialog } from '@/components/estimates/WaiveDepositDialog';
 import { TagInput } from '@/components/leads/TagInput';

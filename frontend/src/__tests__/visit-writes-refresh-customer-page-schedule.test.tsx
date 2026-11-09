@@ -16,11 +16,9 @@ import { addDays, format, startOfWeek } from 'date-fns';
 import api from '@/lib/axios';
 import { buildAbility } from '@/lib/ability';
 import { asWallClock } from '@/lib/schedule-tz';
-import { renderWithProviders } from '@/__tests__/helpers';
 import { expectCustomerPageStale, seedCustomerPage } from '@/__tests__/support/customerPageCache';
-import { TooltipProvider } from '@/ui-kit/components/ui/tooltip';
 import { GRID_EVENT_ID, GRID_EVENT_TYPE, FROM_MEMBER } from '@/components/schedule/dragChannels';
-import SchedulePage from '@/pages/v2/schedule/SchedulePage';
+import { renderSchedule, serveSchedule } from '@/__tests__/harness/schedulePage';
 import { ScheduleCreatePopover } from '@/pages/v2/schedule/creation/scheduleCreatePopover';
 import { useScheduleVisit } from '@/lib/api/service-plans';
 
@@ -78,25 +76,7 @@ const WALKTHROUGH_LEAD = {
 };
 
 function mockBoard(jobs: Array<Record<string, unknown>>, leads: Array<Record<string, unknown>>) {
-  mockApi.get.mockImplementation((url: string, config?: { params?: unknown }) => {
-    if (url === '/api/jobs') {
-      const status = (config?.params as { status?: unknown } | undefined)?.status;
-      const wantsBucket = status === 'UNSCHEDULED' || (Array.isArray(status) && status.includes('UNSCHEDULED'));
-      return Promise.resolve({ data: { jobs: wantsBucket ? [] : jobs } });
-    }
-    if (url === '/api/departments') return Promise.resolve({ data: { departments: [] } });
-    if (url === '/api/leads') {
-      const params = (config?.params ?? {}) as { walkthrough_after?: string };
-      return Promise.resolve({ data: { leads: params.walkthrough_after ? leads : [] } });
-    }
-    if (url === '/api/users' || url === '/api/users/assignable') {
-      return Promise.resolve({
-        data: { users: [ALICE, BOB].map((u) => ({ ...u, is_active: true, role: 'TECHNICIAN' })) },
-      });
-    }
-    if (url === '/api/service-plans/scheduler-bucket') return Promise.resolve({ data: { plans: [] } });
-    return Promise.resolve({ data: {} });
-  });
+  serveSchedule({ jobs: jobs, bucketJobs: [], leads: (p) => (p.walkthrough_after ? leads : []), users: [ALICE, BOB].map((u) => ({ ...u, is_active: true, role: 'TECHNICIAN' })) });
 }
 
 /** Mounts the board in Member view with the customer page's queries cached beside it. */
@@ -105,12 +85,7 @@ async function mountBoard(
   waitForText: RegExp,
 ) {
   mockBoard(jobs, leads);
-  const { queryClient } = renderWithProviders(
-    <TooltipProvider>
-      <SchedulePage />
-    </TooltipProvider>,
-    { ability: ADMIN },
-  );
+  const { queryClient } = renderSchedule({ ability: ADMIN });
   seedCustomerPage(queryClient);
   await screen.findAllByText(waitForText);
   fireEvent.click(screen.getByRole('button', { name: 'Member' }));

@@ -48,7 +48,7 @@ suite('re-audit pass 2 fixes, builder F (real database)', () => {
   const fx = switchFixture(db, async () => (await import('../app.js')).default as never);
   let app: Parameters<typeof request>[0];
   beforeAll(async () => {
-    app = (await import('../app.js')).default as never;
+    app = await fx.listener();
   }, 120_000);
 
   const orgs: string[] = [];

@@ -8,12 +8,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import api from '@/lib/axios';
-import { renderWithProviders } from '@/__tests__/helpers';
-import LeadFormPage from '@/pages/v2/leads/LeadFormPage';
 import { buildAbility } from '@/lib/ability';
 import { useAuthStore } from '@/stores/auth.store';
-import type { AxiosRequestConfig } from 'axios';
+import { renderLeadForm, serveLeadForm } from '@/__tests__/harness/leadFormPage';
 
 type AuthState = ReturnType<typeof useAuthStore.getState>;
 
@@ -21,7 +18,7 @@ vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
   return { ...actual, useNavigate: () => vi.fn() };
 });
-vi.mock('@/lib/api/organization', () => ({
+vi.mock('@/lib/api/shared/organization', () => ({
   useOrganization: () => ({ data: { job_type_options: [], source_options: [] } }),
   useUpdateOrganization: () => ({ mutate: vi.fn() }),
 }));
@@ -29,7 +26,6 @@ vi.mock('@/lib/api/organization', () => ({
 const CREATOR = { id: 'u-creator', first_name: 'Casey', last_name: 'Creator' };
 const PEOPLE = [{ id: 'u-olive', first_name: 'Olive', last_name: 'Owner', role: 'SALES', department: null }];
 
-const mockApi = vi.mocked(api);
 const canBookAndAssign = buildAbility([
   { action: 'create', subject: 'Lead' },
   { action: 'assign', subject: 'Lead' },
@@ -44,16 +40,14 @@ type Answer = 'pending' | 'fail' | 'ok' | 'empty';
 
 /** Answers the pre-fill at once and the roster the way the case says, per slot; a pending roster never answers. */
 function rosters(answerFor: (slot: string) => Answer) {
-  mockApi.get.mockImplementation(async (url: string, config?: AxiosRequestConfig) => {
-    if (url === '/api/leads/creator-prefill') return { data: { prefill: { owner_id: CREATOR.id, dispatcher_id: null } } };
-    if (url === '/api/users/assignable') {
-      const slot = String((config?.params as Record<string, unknown> | undefined)?.eligible_for);
-      const answer = answerFor(slot);
+  serveLeadForm({
+    creatorPrefill: { prefill: { owner_id: CREATOR.id, dispatcher_id: null } },
+    assignable: (params) => {
+      const answer = answerFor(String(params.eligible_for));
       if (answer === 'pending') return new Promise(() => {});
       if (answer === 'fail') throw new Error('Request failed with status code 500');
-      return { data: answer === 'empty' ? [] : PEOPLE };
-    }
-    return { data: {} };
+      return answer === 'empty' ? [] : PEOPLE;
+    },
   });
 }
 
@@ -69,7 +63,7 @@ beforeEach(() => {
   );
 });
 
-const renderForm = () => renderWithProviders(<LeadFormPage />, { ability: canBookAndAssign, initialEntries: ['/leads/create'] });
+const renderForm = () => renderLeadForm({ ability: canBookAndAssign, entry: '/leads/create' });
 
 describe('the new-lead form while the rosters load', () => {
   it('shows a loading placeholder for Owner, Dispatcher and Performers, never an empty list', async () => {

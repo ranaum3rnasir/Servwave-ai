@@ -52,7 +52,7 @@ import { ToastAction } from '@/components/ui/toast';
 import { toast } from '@/components/ui/use-toast';
 import { cn, formatCurrency } from '@/lib/utils';
 import { ClampedDescription } from './ClampedDescription';
-import type { Scope } from '@/lib/api/jobs';
+import type { Scope } from '@/lib/api/shared/scope';
 import { canAutoFocus } from '@/ui-kit/lib/autoFocus';
 
 // What the customer did with the offer, or null while there is nothing to report. Reads from

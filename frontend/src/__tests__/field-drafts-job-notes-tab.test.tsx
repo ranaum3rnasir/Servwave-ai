@@ -1,34 +1,40 @@
-/**
- * Mobile slice 57: the job page's Notes tab keeps a half-typed note when the tab is switched
- * (the panel unmounts, which used to throw the text away), and puts it back with "Draft restored".
- */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import api from '@/lib/axios';
-import { renderWithProviders, ALL_JOB_ACTIONS } from './helpers';
-import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
 import { buildAbility } from '@/lib/ability';
 import { useAuthStore, type User } from '@/stores/auth.store';
+import { ALL_JOB_ACTIONS } from '@/__tests__/helpers';
+import { JOB_ID, renderJobDetail, serveJobDetail, stubBrowser } from '@/__tests__/harness/jobDetailPage';
+import api from '@/lib/axios';
 import { draftStorageKey, readDraft } from '@/lib/drafts/fieldDraftStore';
+
+stubBrowser();
 
 vi.mock('@/components/tasks/JobLeadTasksTab', () => ({ JobLeadTasksTab: () => null }));
 
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
-
-const JOB_ID = 'j0000000-0000-0000-0000-000000000001';
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');
-  return { ...actual, useParams: () => ({ id: 'j0000000-0000-0000-0000-000000000001' }), useNavigate: () => vi.fn() };
+  return { ...actual, useParams: () => ({ id: JOB_ID }), useNavigate: () => vi.fn() };
 });
 
+// Each test starts from the setup file's signed-in user and bare client calls: reset them here, so a test states its own user
+// and answers in its own `beforeEach` (`clearAllMocks` keeps implementations).
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(useAuthStore).mockReset();
+  vi.mocked(api.get).mockReset();
+  vi.mocked(api.post).mockReset();
+  vi.mocked(api.patch).mockReset();
+  vi.mocked(api.put).mockReset();
+  vi.mocked(api.delete).mockReset();
+});
+
+stubBrowser();
+
 const adminAbility = buildAbility([{ action: 'manage', subject: 'all' }]);
+
 const mockApi = vi.mocked(api);
+
 const ORG = 'org-aaaa';
 
 const JOB = {
@@ -55,17 +61,18 @@ beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
   setUser('user-tech');
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.includes('/notes')) return { data: { notes: [] } };
-    if (url.includes('/api/jobs/')) return { data: { job: JOB } };
-    return { data: {} };
+  serveJobDetail({
+    job: JOB,
+    routes: [
+      { match: (url) => url.includes('/notes'), data: { notes: [] } },
+    ],
   });
 });
 
 describe('job page Notes tab', () => {
   it('keeps a note typed in the tab across a tab switch, restored with "Draft restored"', async () => {
     const user = userEvent.setup();
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+    renderJobDetail({ ability: adminAbility });
 
     await user.click(await screen.findByRole('tab', { name: 'Notes' }));
     await user.type(await screen.findByLabelText('Note'), 'Replaced both hinges, door still rubs');
@@ -84,7 +91,7 @@ describe('job page Notes tab', () => {
   it('adding the note clears the draft', async () => {
     mockApi.post.mockResolvedValue({ data: { note: { id: 'n1' } } });
     const user = userEvent.setup();
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+    renderJobDetail({ ability: adminAbility });
 
     await user.click(await screen.findByRole('tab', { name: 'Notes' }));
     await user.type(await screen.findByLabelText('Note'), 'done');
@@ -96,14 +103,14 @@ describe('job page Notes tab', () => {
 
   it("does not show another user's draft", async () => {
     const user = userEvent.setup();
-    const first = renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+    const first = renderJobDetail({ ability: adminAbility });
     await user.click(await screen.findByRole('tab', { name: 'Notes' }));
     await user.type(await screen.findByLabelText('Note'), "first user's private note");
     first.unmount();
     expect(readDraft(tabKey('user-tech'))).toBe("first user's private note");
 
     setUser('user-other');
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+    renderJobDetail({ ability: adminAbility });
     await user.click(await screen.findByRole('tab', { name: 'Notes' }));
     expect(await screen.findByLabelText('Note')).toHaveValue('');
     expect(screen.queryByText('Draft restored')).not.toBeInTheDocument();

@@ -5,7 +5,7 @@ import type { SortingState } from '@tanstack/react-table';
 import { Download, Plus } from 'lucide-react';
 
 import api from '@/lib/axios';
-import { useOrganization } from '@/lib/api/organization';
+import { useOrganization } from '@/lib/api/shared/organization';
 import { useScheduleTimezone } from '@/lib/schedule-tz';
 import { STATUS_REGISTRY } from '@/design-system/status-registry';
 import { useAppAbility } from '@/contexts/AbilityContext';

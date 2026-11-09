@@ -1,5 +1,5 @@
 import { Loader2, Upload } from 'lucide-react';
-import { useUploadLogo } from '@/lib/api/organization';
+import { useUploadLogo } from '@/lib/api/shared/organization';
 import { toast } from '@/components/ui/use-toast';
 
 export function LogoUpload() {

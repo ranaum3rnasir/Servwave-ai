@@ -27,7 +27,7 @@ import { formatCurrency, formatCurrencyWhole } from '@/lib/utils';
 import { ChartCard } from '@/components/charts';
 import { chartPalette, token } from '@/design-system';
 import { SelectField } from '@/components/form/SelectField';
-import { useOrganization } from '@/lib/api/organization';
+import { useOrganization } from '@/lib/api/shared/organization';
 import { Heading } from '@/components/ui/heading';
 
 /**

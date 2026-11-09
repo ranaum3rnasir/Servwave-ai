@@ -33,7 +33,7 @@ import { renderWithProviders } from './helpers';
 import { buildAbility } from '@/lib/ability';
 import { LOST_REASON_OPTIONS } from '@/constants/lostReasons';
 import { DeclineEstimateInternalDialog } from '@/components/estimates/DeclineEstimateInternalDialog';
-import PublicEstimatePage from '@/pages/v2/auth-public/PublicEstimatePage';
+import { renderPublicEstimate, servePublicEstimate } from '@/__tests__/harness/publicEstimatePage';
 import api from '@/lib/axios';
 
 const adminAbility = buildAbility([{ action: 'manage', subject: 'all' }]);
@@ -145,16 +145,9 @@ describe('the staff decline dialog offers the organisation\'s reasons', () => {
 // The customer's page
 // ═══════════════════════════════════════════════════════════════════
 
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
-  return {
-    ...actual,
-    useParams: () => ({ id: 'est-decline-1' }),
-    useSearchParams: () => [new URLSearchParams('token=tok-decline'), vi.fn()],
-  };
-});
+vi.mock('react-router-dom', async () => (await import('@/__tests__/harness/publicEstimateMocks')).publicRouter());
 
-vi.mock('react-signature-canvas', () => ({ default: () => null }));
+vi.mock('react-signature-canvas', async () => (await import('@/__tests__/harness/publicEstimateMocks')).blankPad());
 
 const SENT_ESTIMATE_RESPONSE = {
   estimate: {
@@ -190,22 +183,16 @@ const SENT_ESTIMATE_RESPONSE = {
  * the route answers non-2xx and the picker must still be usable.
  */
 function stubPublicFetch({ reasonsOk = true }: { reasonsOk?: boolean } = {}) {
-  const spy = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
-    if (init?.method === 'POST') {
-      return Promise.resolve({
-        ok: true,
-        json: async () => ({ estimate: { ...SENT_ESTIMATE_RESPONSE.estimate, status: 'DECLINED' } }),
-      });
-    }
-    if (String(url).includes('/decline-reasons')) {
-      return reasonsOk
-        ? Promise.resolve({ ok: true, json: async () => ({ decline_reasons: PUBLIC_ROWS }) })
-        : Promise.resolve({ ok: false, json: async () => ({ error: 'nope' }) });
-    }
-    return Promise.resolve({ ok: true, json: async () => SENT_ESTIMATE_RESPONSE });
+  return servePublicEstimate({
+    page: SENT_ESTIMATE_RESPONSE,
+    write: { body: { estimate: { ...SENT_ESTIMATE_RESPONSE.estimate, status: 'DECLINED' } } },
+    routes: [
+      {
+        match: (url) => url.includes('/decline-reasons'),
+        answer: reasonsOk ? { body: { decline_reasons: PUBLIC_ROWS } } : { ok: false, body: { error: 'nope' } },
+      },
+    ],
   });
-  vi.stubGlobal('fetch', spy);
-  return spy;
 }
 
 function reasonsCalls(spy: ReturnType<typeof vi.fn>) {
@@ -214,7 +201,7 @@ function reasonsCalls(spy: ReturnType<typeof vi.fn>) {
 
 async function openPublicDeclineDialog() {
   const user = userEvent.setup();
-  renderWithProviders(<PublicEstimatePage />);
+  renderPublicEstimate({ id: 'est-decline-1', token: 'tok-decline' });
   await screen.findByRole('button', { name: /Decline/i });
   await user.click(screen.getByRole('button', { name: /^Decline$/i }));
   await screen.findByRole('dialog');
@@ -243,7 +230,7 @@ describe('the public decline dialog offers the organisation\'s reasons', () => {
     // decline.
     const spy = stubPublicFetch();
     const user = userEvent.setup();
-    renderWithProviders(<PublicEstimatePage />);
+    renderPublicEstimate({ id: 'est-decline-1', token: 'tok-decline' });
     await screen.findByRole('button', { name: /Decline/i });
 
     expect(reasonsCalls(spy)).toHaveLength(0);

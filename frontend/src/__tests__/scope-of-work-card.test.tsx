@@ -8,7 +8,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ScopeOfWorkCard } from '@/components/jobs/items/ScopeOfWorkCard';
-import type { Scope } from '@/lib/api/jobs';
+import type { Scope } from '@/lib/api/shared/scope';
 
 vi.mock('@/components/ui/use-toast', () => ({ toast: vi.fn() }));
 import { toast } from '@/components/ui/use-toast';

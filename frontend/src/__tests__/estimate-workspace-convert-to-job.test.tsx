@@ -12,11 +12,8 @@ import userEvent from '@testing-library/user-event';
 import { useLocation } from 'react-router-dom';
 import api from '@/lib/axios';
 import { toast } from '@/ui-kit/components/ui/sonner';
-import { renderWithProviders } from './helpers';
-import { buildAbility } from '@/lib/ability';
-import EstimateWorkspacePage from '@/pages/v2/estimates/EstimateWorkspacePage';
+import { renderEstimateWorkspace, serveEstimateWorkspace } from '@/__tests__/harness/estimateWorkspacePage';
 
-const adminAbility = buildAbility([{ action: 'manage', subject: 'all' }]);
 
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');
@@ -90,21 +87,12 @@ function LocationProbe() {
 }
 
 async function convertFromTheHeader(response: Record<string, unknown>) {
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.includes('/state-tax-rates')) return { data: { data: [] } };
-    if (url.includes('/api/lost-reason-options')) return { data: { lost_reason_options: [] } };
-    if (url.includes('/api/estimates/')) return { data: { estimate: wonEstimate() } };
-    if (url.includes('/communications')) return { data: { items: [] } };
-    return { data: {} };
-  });
+  serveEstimateWorkspace({ estimate: wonEstimate(), routes: [
+      { match: (url) => url.includes('/communications'), data: { items: [] } },
+      { match: (url) => url.includes('/api/lost-reason-options'), data: { lost_reason_options: [] } },
+    ] });
   mockApi.post.mockResolvedValue({ data: response });
-  renderWithProviders(
-    <>
-      <EstimateWorkspacePage />
-      <LocationProbe />
-    </>,
-    { ability: adminAbility, initialEntries: ['/estimates/est-convert-1'] },
-  );
+  renderEstimateWorkspace({ beside: <LocationProbe />, entry: '/estimates/est-convert-1' });
   await userEvent.click(await screen.findByRole('button', { name: /Create Job/i }));
   await waitFor(() => expect(mockApi.post).toHaveBeenCalledTimes(1));
 }

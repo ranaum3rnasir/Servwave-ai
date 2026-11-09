@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/axios';
-import { createOrgListApi } from './orgListRows';
+import { createOrgListApi } from '@/lib/api/shared/orgListRows';
 
 /** The Lists page's reads and writes of the Job types rows (V7-04a). */
 export const jobTypeKeys = { all: ['job-types'] as const };

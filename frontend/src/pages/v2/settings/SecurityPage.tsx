@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 
-import { useOrganization, useUpdateOrganization } from '@/lib/api/organization';
+import { useOrganization, useUpdateOrganization } from '@/lib/api/shared/organization';
 import api from '@/lib/axios';
 import { extractApiError } from '@/lib/utils';
 import { useAuthStore } from '@/stores/auth.store';

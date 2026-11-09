@@ -1,8 +1,13 @@
 import { vi } from 'vitest';
+import { applyLaneSetup } from './db-lane-setup';
 
 // Lets the shared Prisma client (lib/prisma.ts) deliver `$on('query')` events, which the query counter in
 // support/query-counter.ts reads. Test-only: lib/prisma.ts ignores it in production.
 process.env.PRISMA_QUERY_EVENTS ??= 'on';
+
+// The Database check's lanes (scripts/ci-db/): inside `npm run test:db` each worker takes its own lane database before a test
+// file loads. Nothing happens outside that command, so a hand-set TEST_DATABASE_URL works as it always did.
+applyLaneSetup();
 
 // Mock env before anything else imports it
 vi.mock('../config/env', async () => ({ env: (await import('./test-env.js')).testEnv }));
@@ -28,6 +33,16 @@ vi.mock('@google/genai', () => ({
     };
   },
 }));
+
+// date-fns-tz: tests load the same CommonJS build the production server runs (the backend is compiled to CommonJS).
+// Left alone, vitest hands the ESM build to Node, whose formatInTimeZone path imports the whole date-fns ESM barrel
+// (about 250 files, ~0.7 s) in every test file that loads the app. Same package, same version, same functions: only
+// the module format differs. test-setup-guards.test.ts proves the functions are identical to production's.
+vi.mock('date-fns-tz', async () => {
+  const { createRequire } = await import('node:module');
+  const cjs = createRequire(__filename)('date-fns-tz') as Record<string, unknown>;
+  return { ...cjs, default: cjs };
+});
 
 // Mock rate limiter — passthrough in tests
 vi.mock('express-rate-limit', () => ({

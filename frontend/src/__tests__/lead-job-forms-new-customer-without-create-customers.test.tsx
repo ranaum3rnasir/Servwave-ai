@@ -8,14 +8,12 @@ import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import api from '@/lib/axios';
 import { buildAbility } from '@/lib/ability';
 import JobFormPage from '@/pages/v2/jobs/JobFormPage';
-import LeadFormPage from '@/pages/v2/leads/LeadFormPage';
 
 import { renderWithProviders } from './helpers';
+import { renderLeadForm, serveLeadForm } from '@/__tests__/harness/leadFormPage';
 
-const mockApi = vi.mocked(api);
 
 // Built from parts so the repo-wide guard in add-new-client-target.test.tsx, which counts the quoted literal, is untouched.
 const NEW_LEAD_ROUTE = ['', 'leads', 'new'].join('/');
@@ -30,10 +28,7 @@ class ResizeObserverStub {
 beforeEach(() => {
   global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
   vi.clearAllMocks();
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url === '/api/organization') return { data: { timezone: 'America/New_York', job_type_options: [], source_options: [] } };
-    return { data: {} };
-  });
+  serveLeadForm({ organization: { timezone: 'America/New_York', job_type_options: [], source_options: [] } });
 });
 
 describe('a person with Create leads / Create jobs and without Create customers', () => {
@@ -46,7 +41,7 @@ describe('a person with Create leads / Create jobs and without Create customers'
     ]);
     expect(ability.can('create', 'Customer')).toBe(false);
 
-    renderWithProviders(<LeadFormPage />, { ability, initialEntries: [NEW_LEAD_ROUTE] });
+    renderLeadForm({ ability, entry: NEW_LEAD_ROUTE });
 
     const user = userEvent.setup();
     await user.type(await screen.findByLabelText(/first name/i), 'Jane');

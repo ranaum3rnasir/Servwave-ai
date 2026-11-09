@@ -14,7 +14,7 @@ import { EntitySmsDrawer } from '@/components/communication/shared/EntitySmsDraw
 
 const mockApi = vi.mocked(api);
 
-vi.mock('@/lib/api/organization', () => ({
+vi.mock('@/lib/api/shared/organization', () => ({
   useOrganization: () => ({ data: { timezone: 'America/New_York' } }),
 }));
 

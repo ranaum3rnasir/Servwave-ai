@@ -11,7 +11,7 @@ import { buildAbility } from '@/lib/ability';
  * and placed in the new-customer part (the phone box, with no customer picked).
  */
 
-vi.mock('@/lib/api/organization', () => ({
+vi.mock('@/lib/api/shared/organization', () => ({
   useOrganization: () => ({ data: { job_type_options: [], source_options: [], timezone: 'America/New_York' } }),
 }));
 

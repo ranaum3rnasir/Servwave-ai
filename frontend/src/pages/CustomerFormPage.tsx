@@ -5,7 +5,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/axios';
-import { useOrganization } from '@/lib/api/organization';
+import { useOrganization } from '@/lib/api/shared/organization';
 import { useAppAbility } from '@/contexts/AbilityContext';
 import { cn, extractApiError, formatPhoneInput } from '@/lib/utils';
 import { Button } from '@/components/ui/button';

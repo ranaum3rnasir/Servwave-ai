@@ -1,6 +1,6 @@
 import { Label } from '@/components/ui/label';
 import { SelectField } from '@/components/form/SelectField';
-import type { PaymentMethod } from '@/lib/api/organization';
+import type { PaymentMethod } from '@/lib/api/shared/organization';
 import { NO_RECORDABLE_METHODS } from '@/lib/api/recordablePaymentMethods';
 import { PAYMENT_METHOD_LABELS } from '@/lib/payment-methods';
 

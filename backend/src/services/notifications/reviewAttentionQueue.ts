@@ -132,6 +132,11 @@ export function flushReviewAttention(queue: PendingAttention[]): void {
   flushing.add(sending);
 }
 
+/** How many flushes are still sending (read by lib/after-response.ts's drain). */
+export function reviewAttentionPending(): number {
+  return flushing.size;
+}
+
 /** Resolves when every flush started so far has finished. For tests that must read the alerts a request left behind. */
 export async function reviewAttentionSettled(): Promise<void> {
   // The response's own 'finish' may still be on its way to the event loop when the client has the answer.

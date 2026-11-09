@@ -9,12 +9,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import api from '@/lib/axios';
-import { renderWithProviders } from './helpers';
 import { buildAbility } from '@/lib/ability';
 import { requestCall } from '@/lib/communication/phoneTabHandoff';
-import EstimateWorkspacePage from '@/pages/v2/estimates/EstimateWorkspacePage';
-import InvoiceDetailPage from '@/pages/v2/invoices/InvoiceDetailPage';
+import { renderEstimateWorkspace, serveEstimateWorkspace } from '@/__tests__/harness/estimateWorkspacePage';
+import { renderInvoiceDetail, serveInvoiceDetail } from '@/__tests__/harness/invoiceDetailPage';
 import { ESTIMATE_STATUS } from '@/constants/estimateStatus';
 import { catalogToggle } from './support/backendSwitchCatalog';
 
@@ -62,7 +60,6 @@ vi.mock('@/lib/entitlements', async (importOriginal) => {
   };
 });
 
-const mockApi = vi.mocked(api);
 const adminAbility = buildAbility([{ action: 'manage', subject: 'all' }]);
 
 type Switches = { copyPhone: boolean; copyEmail: boolean; contact: boolean; view: boolean };
@@ -131,13 +128,11 @@ const PAGES = [
   {
     name: 'the estimate workspace header',
     render: (switches: Switches) => {
-      mockApi.get.mockImplementation(async (url: string) => {
-        if (url === '/api/permission-switches/me') return { data: meAnswer(switches) };
-        if (url.includes('/state-tax-rates')) return { data: { data: [] } };
-        if (url.includes('/api/estimates/')) return { data: { estimate: ESTIMATE } };
-        return { data: {} };
+      serveEstimateWorkspace({
+        estimate: ESTIMATE,
+        routes: [{ match: (url) => url === '/api/permission-switches/me', data: meAnswer(switches) }],
       });
-      return renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+      return renderEstimateWorkspace();
     },
     context: { customerId: CUSTOMER.id, customerName: 'Alice Test', leadId: 'lead-1', leadLabel: 'L00042' },
     // The estimate header names the customer, with no link to the customer's page for anyone.
@@ -146,12 +141,11 @@ const PAGES = [
   {
     name: 'the invoice page',
     render: (switches: Switches) => {
-      mockApi.get.mockImplementation(async (url: string) => {
-        if (url === '/api/permission-switches/me') return { data: meAnswer(switches) };
-        if (url.startsWith('/api/invoices/')) return { data: { invoice: INVOICE } };
-        return { data: {} };
+      serveInvoiceDetail({
+        invoice: INVOICE,
+        routes: [{ match: (url) => url === '/api/permission-switches/me', data: meAnswer(switches) }],
       });
-      return renderWithProviders(<InvoiceDetailPage />, { ability: adminAbility });
+      return renderInvoiceDetail({ id: RECORD_ID, ability: adminAbility });
     },
     context: { customerId: CUSTOMER.id, customerName: 'Alice Test' },
     nameLinks: true,

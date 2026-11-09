@@ -691,8 +691,8 @@ suite('the lead and estimate alerts (real database)', () => {
     };
     const publicCall = async (path: string, body: object) => {
       const { default: request } = await import('supertest');
-      const { default: app } = await import('../app.js');
-      const res = await request(app as never).post(path).send(body);
+      const app = await fx.listener();
+      const res = await request(app).post(path).send(body);
       return { status: res.status, body: res.body as unknown };
     };
     const DOORS: Door[] = [
@@ -805,8 +805,8 @@ suite('the lead and estimate alerts (real database)', () => {
       await db.webFormIntegration.create({ data: { organization_id: org, provider: 'forminator', url_token: token, enabled: true } });
       try {
         const { default: request } = await import('supertest');
-        const { default: app } = await import('../app.js');
-        const res = await request(app as never)
+        const app = await fx.listener();
+        const res = await request(app)
           .post(`/api/webhooks/web-form/forminator/${token}`)
           .set('Content-Type', 'application/json')
           .send(JSON.stringify({ name_1: 'Dana', name_2: 'Okafor', email_1: 'dana.okafor@example.test', phone_1: '(609) 555-0123', textarea_1: 'A new front door.', form_title: 'Request a Quote' }));
@@ -835,8 +835,8 @@ suite('the lead and estimate alerts (real database)', () => {
       await db.webFormIntegration.create({ data: { organization_id: org, provider: 'forminator', url_token: token, enabled: true } });
       try {
         const { default: request } = await import('supertest');
-        const { default: app } = await import('../app.js');
-        await request(app as never)
+        const app = await fx.listener();
+        await request(app)
           .post(`/api/webhooks/web-form/forminator/${token}`)
           .set('Content-Type', 'application/json')
           .send(JSON.stringify({ name_1: 'Dana', name_2: 'Okafor', phone_1: '(609) 555-0123', textarea_1: 'A new front door.', form_title: 'Request a Quote' }));

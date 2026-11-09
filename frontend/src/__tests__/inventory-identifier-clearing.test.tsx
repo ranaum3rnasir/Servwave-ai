@@ -65,7 +65,7 @@ vi.mock('@/lib/api/inventory', async (importOriginal) => {
   };
 });
 
-vi.mock('@/lib/api/organization', () => ({
+vi.mock('@/lib/api/shared/organization', () => ({
   useOrganization: () => ({
     data: { id: 'org-1', default_inventory_location_id: h.LOC_ID },
     isLoading: false,

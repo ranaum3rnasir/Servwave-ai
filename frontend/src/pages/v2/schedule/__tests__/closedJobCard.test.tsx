@@ -17,11 +17,9 @@ import { addDays, format, startOfWeek } from 'date-fns';
 import api from '@/lib/axios';
 import { toast } from '@/ui-kit/components/ui/sonner';
 import { buildAbility } from '@/lib/ability';
-import { renderWithProviders } from '@/__tests__/helpers';
-import { TooltipProvider } from '@/ui-kit/components/ui/tooltip';
 import { GRID_EVENT_ID, GRID_EVENT_TYPE, FROM_MEMBER } from '@/components/schedule/dragChannels';
 
-import SchedulePage from '../SchedulePage';
+import { renderSchedule, serveSchedule } from '@/__tests__/harness/schedulePage';
 
 vi.mock('@/ui-kit/components/ui/sonner', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -94,31 +92,12 @@ const CANCELLED_CREWED = job({ id: 'job-cx-1', number: 'J00074', status: 'CANCEL
 const OPEN_CREWED = job({ id: 'job-open-1', number: 'J00075', status: 'SCHEDULED', offset: 5, visit: { id: 'v-open-1', status: 'SCHEDULED', assignees: onVisit } });
 
 function mockBoard(jobs: Array<Record<string, unknown>>) {
-  mockApi.get.mockImplementation((url: string, config?: { params?: unknown }) => {
-    if (url === '/api/jobs') {
-      const status = (config?.params as { status?: unknown } | undefined)?.status;
-      const wantsBucket = status === 'UNSCHEDULED' || (Array.isArray(status) && status.includes('UNSCHEDULED'));
-      return Promise.resolve({ data: { jobs: wantsBucket ? [] : jobs } });
-    }
-    if (url === '/api/departments') return Promise.resolve({ data: { departments: [] } });
-    if (url === '/api/leads') return Promise.resolve({ data: { leads: [] } });
-    if (url === '/api/users' || url === '/api/users/assignable') {
-      return Promise.resolve({ data: { users: [{ ...ALICE, is_active: true, role: 'TECHNICIAN' }] } });
-    }
-    if (url === '/api/organization') return Promise.resolve({ data: {} });
-    if (url === '/api/service-plans/scheduler-bucket') return Promise.resolve({ data: { plans: [] } });
-    return Promise.resolve({ data: {} });
-  });
+  serveSchedule({ jobs: jobs, bucketJobs: [], users: [{ ...ALICE, is_active: true, role: 'TECHNICIAN' }] });
 }
 
 function mount(jobs: Array<Record<string, unknown>>) {
   mockBoard(jobs);
-  return renderWithProviders(
-    <TooltipProvider>
-      <SchedulePage />
-    </TooltipProvider>,
-    { ability: ADMIN },
-  );
+  return renderSchedule({ ability: ADMIN });
 }
 
 /** The card element a board id paints (the Standard board's wrapper or a Member board's card). */

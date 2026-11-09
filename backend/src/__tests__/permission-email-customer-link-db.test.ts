@@ -20,6 +20,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 import { createHmac, randomBytes, randomUUID } from 'crypto';
 import request from 'supertest';
+import { afterResponseDrained } from '../lib/after-response';
 import type { PrismaClient } from '@prisma/client';
 
 const { clientPromise, fetchReceived } = vi.hoisted(() => {
@@ -73,9 +74,9 @@ suite('the customer link by address (real database, real webhook route)', () => 
 
   beforeAll(async () => {
     db = (await clientPromise) as PrismaClient;
-    app = (await import('../app.js')).default as never;
-    fx = switchFixture(db, async () => app);
-    // The webhook reads its secret from the environment object at request time.
+    fx = switchFixture(db, async () => (await import('../app.js')).default as never);
+
+    app = await fx.listener();    // The webhook reads its secret from the environment object at request time.
     (env as { RESEND_WEBHOOK_SECRET?: string }).RESEND_WEBHOOK_SECRET = WEBHOOK_SECRET;
   }, 120_000);
 
@@ -228,7 +229,7 @@ suite('the customer link by address (real database, real webhook route)', () => 
     });
     const res = await request(app).post('/api/webhooks/resend').set('Content-Type', 'application/json').set(signed(eventId, body)).send(body);
     // The webhook answers first and announces after: let the announce finish before the case reads or the suite cleans up.
-    await new Promise((r) => setTimeout(r, 500));
+    await afterResponseDrained();
     return { res, providerId };
   }
 

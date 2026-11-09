@@ -1,5 +1,5 @@
 import { Navigate, Outlet } from 'react-router-dom';
-import { routeAccess, switchOn, useMySwitchesStatus } from '@/lib/api/mySwitches';
+import { routeAccess, switchOn, useMySwitchesStatus } from '@/lib/api/shared/mySwitches';
 
 interface Props {
   /** Switches that must ALL be on (a list page: its View and its Show; a page: its Access switch). */

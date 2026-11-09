@@ -13,7 +13,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { renderWithProviders } from '@/__tests__/helpers';
+import { renderInbox } from '@/__tests__/harness/inboxPage';
 import { buildAbility } from '@/lib/ability';
 import { MEDIA } from '@/ui-kit/lib/breakpoints';
 import type { Email } from '@/lib/api/communication';
@@ -54,26 +54,13 @@ const EMAILS: Email[] = [
   },
 ];
 
-const NONE: never[] = [];
-
-vi.mock('@/lib/api/communication', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/communication')>();
-  return {
-    ...actual,
-    useEmails: () => ({ data: EMAILS }),
-    // Stable references: the page re-seeds state from these in effects keyed on the value, so a
-    // fresh `[]` per render would loop forever.
-    useEmailGroups: () => ({ data: NONE }),
-    useForwardRules: () => ({ data: NONE }),
-    useTeamMembers: () => ({ data: NONE }),
-    useSendingIdentity: () => ({ data: undefined }),
-    useMarkEmailThreadRead: () => ({ mutate: vi.fn() }),
-    useMarkEmailThreadUnread: () => ({ mutate: vi.fn() }),
-    useSendEmail: () => ({ mutate: vi.fn(), isPending: false }),
-  };
-});
-
-import InboxPage from '@/pages/v2/communication/InboxPage';
+// The standard stubs hold stable references: the page re-seeds state from these in effects keyed on the value, so a
+// fresh `[]` per render would loop forever.
+vi.mock('@/lib/api/communication', async (importOriginal) =>
+  (await import('@/__tests__/harness/inboxApiStub')).communicationStubs(await importOriginal<typeof import('@/lib/api/communication')>(), {
+    leave: ['useMyMailbox'],
+    hooks: { useEmails: () => ({ data: EMAILS }) },
+  }));
 
 type Width = 'phone' | 'tablet' | 'desktop';
 
@@ -96,11 +83,6 @@ afterEach(() => {
   vi.restoreAllMocks();
   mockWidth('desktop');
 });
-
-function renderInbox() {
-  return renderWithProviders(<InboxPage />, { ability });
-}
-
 
 /**
  * `findByRole` / `getByRole` build a dump of every accessible role when they fail, which exhausts
@@ -132,13 +114,13 @@ const ALL_ACTIONS = [
 describe('inbox rail below lg (CMP-02)', () => {
   it.each(['phone', 'tablet'] as const)('is closed by default at %s width', (width) => {
     mockWidth(width);
-    renderInbox();
+    renderInbox({ ability });
     expect(screen.queryByRole('button', { name: 'Open menu' }), 'Open menu').not.toBeNull();
     expect(screen.queryByRole('button', { name: /^Drafts/ }), 'Drafts').toBeNull();
   });
 
   it('is open by default at desktop width', () => {
-    renderInbox();
+    renderInbox({ ability });
     expect(screen.queryByRole('button', { name: /^Drafts/ }), 'Drafts').not.toBeNull();
     expect(screen.queryByRole('button', { name: 'Collapse menu' }), 'Collapse menu').not.toBeNull();
   });
@@ -146,7 +128,7 @@ describe('inbox rail below lg (CMP-02)', () => {
   it('can still be opened by hand on a phone', async () => {
     mockWidth('phone');
     const user = userEvent.setup();
-    renderInbox();
+    renderInbox({ ability });
     const openMenu = screen.queryByRole('button', { name: 'Open menu' });
     expect(openMenu, 'Open menu').not.toBeNull();
     await user.click(openMenu!);
@@ -158,7 +140,7 @@ describe('the reader as a content overlay below lg (CMP-03, A11Y-04)', () => {
   it.each(['phone', 'tablet'] as const)('opens as a dialog named by the subject at %s width', async (width) => {
     mockWidth(width);
     const user = userEvent.setup();
-    renderInbox();
+    renderInbox({ ability });
     await user.click(rowFor(SUBJECT));
     const dialog = await dialogNamed(SUBJECT);
     expect(dialog).toHaveAttribute('data-slot', 'dialog-content');
@@ -171,7 +153,7 @@ describe('the reader as a content overlay below lg (CMP-03, A11Y-04)', () => {
   it('puts focus inside and traps it there', async () => {
     mockWidth('phone');
     const user = userEvent.setup();
-    renderInbox();
+    renderInbox({ ability });
     await user.click(rowFor(SUBJECT));
     const dialog = await dialogNamed(SUBJECT);
     await waitFor(() => expect(dialog).toContainElement(document.activeElement as HTMLElement));
@@ -188,7 +170,7 @@ describe('the reader as a content overlay below lg (CMP-03, A11Y-04)', () => {
   it('gives focus back to the message in the list when Back closes it', async () => {
     mockWidth('phone');
     const user = userEvent.setup();
-    renderInbox();
+    renderInbox({ ability });
     await user.click(rowFor(SUBJECT));
     const dialog = await dialogNamed(SUBJECT);
     await user.click(within(dialog).getByRole('button', { name: 'Back' }));
@@ -199,7 +181,7 @@ describe('the reader as a content overlay below lg (CMP-03, A11Y-04)', () => {
   it('gives focus back to the message in the list when Escape closes it', async () => {
     mockWidth('phone');
     const user = userEvent.setup();
-    renderInbox();
+    renderInbox({ ability });
     // The second message, so the test cannot pass by focusing the first row.
     await user.click(rowFor('Gate code changed'));
     await dialogNamed('Gate code changed');
@@ -210,7 +192,7 @@ describe('the reader as a content overlay below lg (CMP-03, A11Y-04)', () => {
 
   it('mounts no dialog and one reader at desktop width', async () => {
     const user = userEvent.setup();
-    renderInbox();
+    renderInbox({ ability });
     await user.click(rowFor(SUBJECT));
     expect(await screen.findAllByText(/Following up on the visit/)).not.toHaveLength(0);
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
@@ -228,7 +210,7 @@ describe('the reader action bar (CMP-03)', () => {
   it('keeps four buttons and a More menu on a phone', async () => {
     mockWidth('phone');
     const user = userEvent.setup();
-    renderInbox();
+    renderInbox({ ability });
     await user.click(rowFor(SUBJECT));
     const bar = await actionBar();
     expect(namesIn(bar)).toEqual(['Back', 'Archive', 'Delete', 'Reply', 'More']);
@@ -237,7 +219,7 @@ describe('the reader action bar (CMP-03)', () => {
   it('reaches every other action through More on a phone', async () => {
     mockWidth('phone');
     const user = userEvent.setup();
-    renderInbox();
+    renderInbox({ ability });
     await user.click(rowFor(SUBJECT));
     const bar = await actionBar();
     await user.click(within(bar).getByRole('button', { name: 'More' }));
@@ -262,7 +244,7 @@ describe('the reader action bar (CMP-03)', () => {
   it('runs an action from the menu: Report spam closes the reader', async () => {
     mockWidth('phone');
     const user = userEvent.setup();
-    renderInbox();
+    renderInbox({ ability });
     await user.click(rowFor(SUBJECT));
     const bar = await actionBar();
     await user.click(within(bar).getByRole('button', { name: 'More' }));
@@ -274,7 +256,7 @@ describe('the reader action bar (CMP-03)', () => {
   it('runs an action from the bar: Archive closes the reader', async () => {
     mockWidth('phone');
     const user = userEvent.setup();
-    renderInbox();
+    renderInbox({ ability });
     await user.click(rowFor(SUBJECT));
     const bar = await actionBar();
     await user.click(within(bar).getByRole('button', { name: 'Archive' }));
@@ -285,7 +267,7 @@ describe('the reader action bar (CMP-03)', () => {
   it('keeps the full bar from md up (tablet)', async () => {
     mockWidth('tablet');
     const user = userEvent.setup();
-    renderInbox();
+    renderInbox({ ability });
     await user.click(rowFor(SUBJECT));
     const bar = await actionBar();
     const names = namesIn(bar);
@@ -295,7 +277,7 @@ describe('the reader action bar (CMP-03)', () => {
 
   it('keeps the full bar at desktop width', async () => {
     const user = userEvent.setup();
-    renderInbox();
+    renderInbox({ ability });
     await user.click(rowFor(SUBJECT));
     const bar = await actionBar();
     const names = namesIn(bar);
@@ -307,7 +289,7 @@ describe('the reader action bar (CMP-03)', () => {
 describe('the compose window', () => {
   it('stays a docked card at desktop width, not a dialog', async () => {
     const user = userEvent.setup();
-    renderInbox();
+    renderInbox({ ability });
     await user.click(screen.getByRole('button', { name: /Compose/ }));
     await waitFor(() => expect(screen.queryByPlaceholderText('Subject')).not.toBeNull());
     expect(screen.queryByRole('dialog')).toBeNull();
@@ -317,7 +299,7 @@ describe('the compose window', () => {
   it('is a full-screen form dialog on a phone, with Send inside it', async () => {
     mockWidth('phone');
     const user = userEvent.setup();
-    renderInbox();
+    renderInbox({ ability });
     await user.click(screen.getByRole('button', { name: /Compose/ }));
     const compose = await dialogNamed('New message');
     expect(compose).toHaveAttribute('data-presentation', 'fullscreen');
@@ -331,7 +313,7 @@ describe('a reply popped out of the reader on a phone', () => {
   it('is a full-screen form dialog, and the reader closes so it is not left inert beneath', async () => {
     mockWidth('phone');
     const user = userEvent.setup();
-    renderInbox();
+    renderInbox({ ability });
     await user.click(rowFor(SUBJECT));
     const bar = await actionBar();
     await user.click(within(bar).getByRole('button', { name: 'Reply' }));

@@ -19,10 +19,10 @@
  * backend/src/controllers/estimate-lines.controller.ts.
  */
 import api from '@/lib/axios';
-// Scope is defined once in jobs.ts (Job needs the richer listJobScopes) and imported here so
+// Scope is defined once in shared/scope.ts and imported here so
 // Estimate.scopes / Job.scopes / Invoice.scopes — the same JSONB shape on all three — never
 // silently drift (same re-export convention as `@/lib/api/invoices.ts`).
-import type { Scope } from './jobs';
+import type { Scope } from './shared/scope';
 export type { Scope };
 import type { EstimateStatusValue } from '@/constants/estimateStatus';
 

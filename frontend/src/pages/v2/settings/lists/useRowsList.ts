@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { useAppAbility } from '@/contexts/AbilityContext';
-import type { OrgListApi, OrgListResponse, OrgListRow } from '@/lib/api/orgListRows';
+import type { OrgListApi, OrgListResponse, OrgListRow } from '@/lib/api/shared/orgListRows';
 import { pluralise, type ListController, type ListDef, type ListItem } from './listDefs';
 
 function toItem(def: ListDef, row: OrgListRow): ListItem {

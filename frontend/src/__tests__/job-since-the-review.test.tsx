@@ -10,28 +10,16 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, within, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
-import { renderWithProviders } from './helpers';
-import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
-import { buildAbility } from '@/lib/ability';
+import { JOB_ID, mountJobDetail, stubBrowser } from './harness/jobDetailPage';
 import type { ReadyToCloseAnswer } from '@/components/jobs/review/ReadyToCloseBanner';
 import type { JobReview, ReviewItem } from '@/lib/api/jobReview';
 
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 vi.mock('@/components/tasks/JobLeadTasksTab', () => ({ JobLeadTasksTab: () => null }));
 
-const JOB_ID = 'j0000000-0000-0000-0000-000000000020';
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual('react-router-dom');
-  return { ...actual, useParams: () => ({ id: JOB_ID }), useNavigate: () => vi.fn() };
-});
+vi.mock('react-router-dom', async () => (await import('./harness/jobDetailRouter')).jobDetailRouter());
 
-const ability = buildAbility([{ action: 'manage', subject: 'all' }]);
 const mockApi = vi.mocked(api);
 
 const readyToClose = (over: Partial<ReadyToCloseAnswer> = {}): ReadyToCloseAnswer => ({
@@ -68,29 +56,22 @@ const VISIT = {
 };
 
 function mount(over: { job?: Record<string, unknown>; review?: JobReview | null } = {}) {
-  const job = {
-    id: JOB_ID, job_number: 'J00020', status: 'READY_TO_CLOSE', scope_notes: null, estimated_duration: null, completion_notes: null,
-    scheduled_start: '2026-10-02T13:00:00.000Z', scheduled_end: '2026-10-02T15:00:00.000Z', started_at: null,
-    completed_at: '2026-10-02T15:00:00.000Z', cancelled_at: null, cancelled_reason: null,
-    created_at: '2026-10-01T00:00:00.000Z', updated_at: '2026-10-01T00:00:00.000Z',
-    customer: { id: 'c1', first_name: 'John', last_name: 'Doe', company_name: null, email: 'j@d.com', phone: '5551234567' },
-    assignees: [], visits: [VISIT], service_location: null, estimate: null, invoices: [], linked_estimates: [], tags: [],
-    source_plan_id: null, source_plan: null, locked: true, locked_actions: [], actions: ['mark_done'],
-    new_visit_closed_reason: 'Reopen this job first', ready_to_close: readyToClose(),
-    ...over.job,
-  };
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url === `/api/jobs/${JOB_ID}/review`) {
-      if (over.review === null) throw new Error('boom');
-      return { data: { review: over.review ?? reviewAnswer([]) } } as never;
-    }
-    if (url === `/api/jobs/${JOB_ID}/visits`) return { data: { visits: [VISIT] } } as never;
-    if (url.endsWith('/scopes')) return { data: { scopes: [], billing: { total: 0, invoiced: 0, remaining: 0 } } } as never;
-    if (url.endsWith('/line-items')) return { data: { lines: [], billing: { total: 0, invoiced: 0, remaining: 0 } } } as never;
-    if (url.includes(`/api/jobs/${JOB_ID}`)) return { data: { job } } as never;
-    return { data: {} } as never;
+  return mountJobDetail({
+    job: {
+      job_number: 'J00020', status: 'READY_TO_CLOSE', completed_at: '2026-10-02T15:00:00.000Z', visits: [VISIT],
+      locked: true, locked_actions: [], actions: ['mark_done'],
+      new_visit_closed_reason: 'Reopen this job first', ready_to_close: readyToClose(),
+      ...over.job,
+    },
+    visits: [VISIT],
+    routes: [{
+      match: (url) => url === `/api/jobs/${JOB_ID}/review`,
+      data: () => {
+        if (over.review === null) throw new Error('boom');
+        return { review: over.review ?? reviewAnswer([]) };
+      },
+    }],
   });
-  return renderWithProviders(<JobDetailPage />, { ability });
 }
 
 const reviewCalls = () => mockApi.get.mock.calls.filter(([url]) => String(url).endsWith('/review'));

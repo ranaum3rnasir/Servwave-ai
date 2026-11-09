@@ -15,10 +15,8 @@ import { addDays, startOfWeek } from 'date-fns';
 import api from '@/lib/axios';
 import { buildAbility, type AbilityRule } from '@/lib/ability';
 import { useAuthStore } from '@/stores/auth.store';
-import { renderWithProviders } from '@/__tests__/helpers';
-import { TooltipProvider } from '@/ui-kit/components/ui/tooltip';
 import { toast } from '@/ui-kit/components/ui/sonner';
-import SchedulePage from '../SchedulePage';
+import { renderSchedule, serveSchedule } from '@/__tests__/harness/schedulePage';
 
 vi.mock('@/ui-kit/components/ui/sonner', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/ui-kit/components/ui/sonner')>()),
@@ -85,18 +83,7 @@ const OPEN_VISITS_REFUSAL = {
 let boardJob: typeof SCHEDULED_JOB = SCHEDULED_JOB;
 
 function mockBoard() {
-  mockApi.get.mockImplementation((url: string) => {
-    if (url === '/api/jobs') return Promise.resolve({ data: { jobs: [boardJob] } });
-    if (url === '/api/leads') return Promise.resolve({ data: { leads: [] } });
-    if (url === '/api/departments') return Promise.resolve({ data: { departments: [] } });
-    if (url === '/api/users' || url === '/api/users/assignable') {
-      return Promise.resolve({ data: { users: [{ ...BOB, is_active: true, role: 'TECHNICIAN' }] } });
-    }
-    if (url === '/api/organization') return Promise.resolve({ data: {} });
-    if (url === '/api/service-plans/scheduler-bucket') return Promise.resolve({ data: { plans: [] } });
-    if (url === '/api/calendar-entries') return Promise.resolve({ data: { calendar_entries: [] } });
-    return Promise.resolve({ data: {} });
-  });
+  serveSchedule({ jobs: [boardJob], bucketJobs: [boardJob], users: [{ ...BOB, is_active: true, role: 'TECHNICIAN' }] });
   mockApi.patch.mockResolvedValue({ data: {} });
 }
 
@@ -110,12 +97,7 @@ async function mountBoard(rules: AbilityRule[] = VIEW_AND_COMPLETE) {
     } as never),
   );
   mockBoard();
-  const view = renderWithProviders(
-    <TooltipProvider>
-      <SchedulePage />
-    </TooltipProvider>,
-    { ability: buildAbility(rules), initialEntries: ['/schedule'] },
-  );
+  const view = renderSchedule({ ability: buildAbility(rules), entry: '/schedule' });
   await screen.findAllByText(/J00044/);
   await waitFor(() => expect(view.container.querySelector('.schedule-cal .animate-spin')).toBeNull());
   return view;

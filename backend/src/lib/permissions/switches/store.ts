@@ -393,6 +393,43 @@ function entryFor(key: string): SwitchEntry {
   return entry;
 }
 
+/**
+ * Store these values on a role in ONE statement, however many there are (an insert that updates the row when the switch is
+ * already stored: what an upsert each did, with the same row ids, created_at and an updated_at set to now).
+ */
+async function upsertRoleSwitchRows(
+  tx: Prisma.TransactionClient,
+  organizationId: string,
+  roleKey: string,
+  values: Record<string, SwitchValue>,
+): Promise<void> {
+  const keys = Object.keys(values);
+  if (!keys.length) return;
+  const json = keys.map((k) => JSON.stringify(values[k]));
+  await tx.$executeRaw`
+    INSERT INTO permission_role_switches (id, organization_id, role_key, switch_key, value, created_at, updated_at)
+    SELECT gen_random_uuid(), ${organizationId}::uuid, ${roleKey}, s.switch_key, s.value::jsonb, ${new Date().toISOString()}::timestamp, ${new Date().toISOString()}::timestamp
+    FROM unnest(${keys}::text[], ${json}::text[]) AS s(switch_key, value)
+    ON CONFLICT (organization_id, role_key, switch_key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at`;
+}
+
+/** Store these values as a person's own, in ONE statement (see `upsertRoleSwitchRows`). */
+async function upsertUserSwitchRows(
+  tx: Prisma.TransactionClient,
+  organizationId: string,
+  userId: string,
+  values: Record<string, SwitchValue>,
+): Promise<void> {
+  const keys = Object.keys(values);
+  if (!keys.length) return;
+  const json = keys.map((k) => JSON.stringify(values[k]));
+  await tx.$executeRaw`
+    INSERT INTO permission_user_switches (id, organization_id, user_id, switch_key, value, created_at, updated_at)
+    SELECT gen_random_uuid(), ${organizationId}::uuid, ${userId}::uuid, s.switch_key, s.value::jsonb, ${new Date().toISOString()}::timestamp, ${new Date().toISOString()}::timestamp
+    FROM unnest(${keys}::text[], ${json}::text[]) AS s(switch_key, value)
+    ON CONFLICT (user_id, switch_key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at`;
+}
+
 type LogRow = Prisma.PermissionChangeLogCreateManyInput;
 
 function logRow(
@@ -544,14 +581,7 @@ async function writeRoleSwitchValues(args: {
     const violations = validateSwitchSet({ ...before, ...args.values }, args.copiedFromHolder ? {} : { held: before });
     if (violations.length) throw new InvalidSwitchSetError(violations);
     after = { ...before, ...args.values };
-    for (const key of keys) {
-      const value = args.values[key]!;
-      await tx.permissionRoleSwitch.upsert({
-        where: { organization_id_role_key_switch_key: { organization_id: args.organizationId, role_key: args.roleKey, switch_key: key } },
-        create: { organization_id: args.organizationId, role_key: args.roleKey, switch_key: key, value },
-        update: { value },
-      });
-    }
+    await upsertRoleSwitchRows(tx, args.organizationId, args.roleKey, args.values);
     const changed = keys.filter((k) => !sameSwitchValue(before[k], args.values[k]));
     if (changed.length) {
       await tx.permissionChangeLog.createMany({ data: changed.map((k) => logRow(base, k, before[k]!, args.values[k]!)) });
@@ -880,17 +910,11 @@ async function storePersonValues(
   reason: ChangeReason,
 ): Promise<void> {
   const keys = Object.keys(values);
-  for (const key of keys) {
-    if (sameSwitchValue(values[key], state.roleVals[key])) {
-      await tx.permissionUserSwitch.deleteMany({ where: { user_id: person.id, switch_key: key } });
-      continue;
-    }
-    await tx.permissionUserSwitch.upsert({
-      where: { user_id_switch_key: { user_id: person.id, switch_key: key } },
-      create: { organization_id: person.organization_id, user_id: person.id, switch_key: key, value: values[key]! },
-      update: { value: values[key]! },
-    });
-  }
+  const followRole = keys.filter((key) => sameSwitchValue(values[key], state.roleVals[key]));
+  const own = Object.fromEntries(keys.filter((key) => !followRole.includes(key)).map((key) => [key, values[key]!]));
+  // Always one delete (of nothing, when no value follows the role), so the number of statements never depends on the values.
+  if (keys.length) await tx.permissionUserSwitch.deleteMany({ where: { user_id: person.id, switch_key: { in: followRole } } });
+  await upsertUserSwitchRows(tx, person.organization_id, person.id, own);
   const changed = keys.filter((k) => !sameSwitchValue(state.values[k], values[k]));
   if (changed.length) {
     const base = { organization_id: person.organization_id, target_type: 'USER', target_id: person.id, actor_id: actorId, reason };

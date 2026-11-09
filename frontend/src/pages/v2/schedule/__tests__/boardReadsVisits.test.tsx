@@ -1,3 +1,30 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { buildAbility } from '@/lib/ability';
+import { renderSchedule, serveSchedule, ScheduleEvent } from '@/__tests__/harness/schedulePage';
+import { addDays, format, startOfWeek } from 'date-fns';
+import api from '@/lib/axios';
+import { renderWithProviders } from '@/__tests__/helpers';
+import { MemberWeekBoard } from '@/components/schedule/MemberWeekBoard';
+import { TechnicianGridView } from '@/components/schedule/TechnicianGridView';
+import { jobToEvents } from '@/components/schedule/eventAdapters';
+import { draftFromDrop } from '@/components/schedule/scheduleModel';
+import { asWallClock } from '@/lib/schedule-tz';
+import { GRID_EVENT_ID, GRID_EVENT_TYPE, FROM_MEMBER } from '@/components/schedule/dragChannels';
+import { useAuthStore } from '@/stores/auth.store';
+
+// Each test starts from the setup file's signed-in user and bare client calls: reset them here, so a test states its own user
+// and answers in its own `beforeEach` (`clearAllMocks` keeps implementations).
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(useAuthStore).mockReset();
+  vi.mocked(api.get).mockReset();
+  vi.mocked(api.post).mockReset();
+  vi.mocked(api.patch).mockReset();
+  vi.mocked(api.put).mockReset();
+  vi.mocked(api.delete).mockReset();
+});
+
 /**
  * Multi-visit spec slice S6 - the board paints one card per VISIT, not one per job.
  *
@@ -12,23 +39,6 @@
  * alone because three cards sharing one id is the failure mode that typechecks perfectly: the id
  * is simultaneously the React key, the drag payload and the path segment in every write.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, fireEvent, waitFor } from '@testing-library/react';
-import { addDays, format, startOfWeek } from 'date-fns';
-
-import api from '@/lib/axios';
-import { buildAbility } from '@/lib/ability';
-import { renderWithProviders } from '@/__tests__/helpers';
-import { TooltipProvider } from '@/ui-kit/components/ui/tooltip';
-import { MemberWeekBoard } from '@/components/schedule/MemberWeekBoard';
-import { TechnicianGridView } from '@/components/schedule/TechnicianGridView';
-import { jobToEvents } from '@/components/schedule/eventAdapters';
-import { draftFromDrop } from '@/components/schedule/scheduleModel';
-import { asWallClock } from '@/lib/schedule-tz';
-
-import { GRID_EVENT_ID, GRID_EVENT_TYPE, FROM_MEMBER } from '@/components/schedule/dragChannels';
-
-import SchedulePage, { ScheduleEvent } from '../SchedulePage';
 
 const ADMIN = buildAbility([{ action: 'manage', subject: 'all' }]);
 const mockApi = vi.mocked(api);
@@ -82,25 +92,7 @@ const THREE_VISIT_JOB = {
  * drop rather than a reschedule.
  */
 function mockBoard(jobs: Array<Record<string, unknown>>, bucket: Array<Record<string, unknown>> = []) {
-  mockApi.get.mockImplementation((url: string, config?: { params?: unknown }) => {
-    if (url === '/api/jobs') {
-      const status = (config?.params as { status?: unknown } | undefined)?.status;
-      const wantsBucket = status === 'UNSCHEDULED'
-        || (Array.isArray(status) && status.includes('UNSCHEDULED'));
-      return Promise.resolve({ data: { jobs: wantsBucket ? bucket : jobs } });
-    }
-    if (url === '/api/departments') return Promise.resolve({ data: { departments: [] } });
-    if (url === '/api/leads') return Promise.resolve({ data: { leads: [] } });
-    // The board's roster moved to the scoped endpoint; serve it the same fixture.
-    if (url === '/api/users' || url === '/api/users/assignable') {
-      return Promise.resolve({
-        data: { users: [{ id: 'm-alice', first_name: 'Alice', last_name: 'Ng', is_active: true, role: 'TECHNICIAN' }] },
-      });
-    }
-    if (url === '/api/organization') return Promise.resolve({ data: {} });
-    if (url === '/api/service-plans/scheduler-bucket') return Promise.resolve({ data: { plans: [] } });
-    return Promise.resolve({ data: {} });
-  });
+  serveSchedule({ jobs: jobs, bucketJobs: bucket, users: [{ id: 'm-alice', first_name: 'Alice', last_name: 'Ng', is_active: true, role: 'TECHNICIAN' }] });
 }
 
 const boardIds = (container: HTMLElement) =>
@@ -116,12 +108,7 @@ describe('the routed schedule board paints one card per visit (S6, F1)', () => {
   it('renders three distinct cards for one job holding three visits', async () => {
     mockBoard([THREE_VISIT_JOB]);
 
-    const { container } = renderWithProviders(
-      <TooltipProvider>
-        <SchedulePage />
-      </TooltipProvider>,
-      { ability: ADMIN },
-    );
+    const { container } = renderSchedule({ ability: ADMIN });
 
     await screen.findAllByText(/J00041/);
 
@@ -202,12 +189,7 @@ describe('all-day is a fact about the TRIP, not about the job (S6, F2)', () => {
   it('keeps the timed trip in the timed grid while its all-day sibling sits in the strip', async () => {
     mockBoard([ONE_ALL_DAY_TRIP]);
 
-    const { container } = renderWithProviders(
-      <TooltipProvider>
-        <SchedulePage />
-      </TooltipProvider>,
-      { ability: ADMIN },
-    );
+    const { container } = renderSchedule({ ability: ADMIN });
     await screen.findAllByText(/J00041/);
 
     expect(container.querySelector('.rbc-allday-cell [data-board-id="jv-v1"]')).not.toBeNull();
@@ -222,12 +204,7 @@ describe('the card says which trip it is, from the payload (S6, F2, D13)', () =>
 
   async function openMemberBoard(job: Record<string, unknown>) {
     mockBoard([job]);
-    renderWithProviders(
-      <TooltipProvider>
-        <SchedulePage />
-      </TooltipProvider>,
-      { ability: ADMIN },
-    );
+    renderSchedule({ ability: ADMIN });
     await screen.findAllByText(/J00041/);
     fireEvent.click(screen.getByRole('button', { name: 'Member' }));
     await screen.findByTestId(cellFor(1));
@@ -275,12 +252,7 @@ describe('dragging the third visit moves the THIRD visit (S6, F3, D34)', () => {
   /** Open the member board, drag one card onto another day in the same lane, and confirm. */
   async function dragAndConfirm(boardId: string, toOffset: number) {
     mockBoard([THREE_VISIT_JOB]);
-    renderWithProviders(
-      <TooltipProvider>
-        <SchedulePage />
-      </TooltipProvider>,
-      { ability: ADMIN },
-    );
+    renderSchedule({ ability: ADMIN });
     await screen.findAllByText(/J00041/);
 
     fireEvent.click(screen.getByRole('button', { name: 'Member' }));
@@ -336,12 +308,7 @@ describe('saving a new time in the event editor moves THAT trip (S6, F3, D34)', 
 
   it('PATCHes the edited visit rather than re-POSTing /assign, which moves visit 1', async () => {
     mockBoard([THREE_VISIT_JOB]);
-    renderWithProviders(
-      <TooltipProvider>
-        <SchedulePage />
-      </TooltipProvider>,
-      { ability: ADMIN },
-    );
+    renderSchedule({ ability: ADMIN });
     await screen.findAllByText(/J00041/);
     fireEvent.click(screen.getByRole('button', { name: 'Member' }));
 
@@ -396,12 +363,7 @@ describe('a per-visit drag still warns about a double-booking (S6, F3, D21)', ()
     mockApi.patch.mockRejectedValueOnce(CONFLICT_409).mockResolvedValue({ data: {} });
     mockBoard([THREE_VISIT_JOB]);
 
-    renderWithProviders(
-      <TooltipProvider>
-        <SchedulePage />
-      </TooltipProvider>,
-      { ability: ADMIN },
-    );
+    renderSchedule({ ability: ADMIN });
     await screen.findAllByText(/J00041/);
     fireEvent.click(screen.getByRole('button', { name: 'Member' }));
 
@@ -442,12 +404,7 @@ describe('a dragged card stays where it was dropped before the refetch lands (S6
     mockApi.patch.mockReturnValue(new Promise(() => {}));
     mockBoard([THREE_VISIT_JOB]);
 
-    renderWithProviders(
-      <TooltipProvider>
-        <SchedulePage />
-      </TooltipProvider>,
-      { ability: ADMIN },
-    );
+    renderSchedule({ ability: ADMIN });
     await screen.findAllByText(/J00041/);
     fireEvent.click(screen.getByRole('button', { name: 'Member' }));
 
@@ -481,12 +438,7 @@ describe('removing a card from the board removes only THAT trip (S6, F6, D16)', 
 
   it('cancels the one visit, and leaves the job\'s other two trips on the board', async () => {
     mockBoard([THREE_VISIT_JOB]);
-    renderWithProviders(
-      <TooltipProvider>
-        <SchedulePage />
-      </TooltipProvider>,
-      { ability: ADMIN },
-    );
+    renderSchedule({ ability: ADMIN });
     await screen.findAllByText(/J00041/);
     fireEvent.click(screen.getByRole('button', { name: 'Member' }));
 
@@ -516,12 +468,7 @@ describe('removing a card from the board removes only THAT trip (S6, F6, D16)', 
       visits: [THREE_VISIT_JOB.visits[0]],
     };
     mockBoard([oneVisitJob]);
-    renderWithProviders(
-      <TooltipProvider>
-        <SchedulePage />
-      </TooltipProvider>,
-      { ability: ADMIN },
-    );
+    renderSchedule({ ability: ADMIN });
     await screen.findAllByText(/J00041/);
     fireEvent.click(screen.getByRole('button', { name: 'Member' }));
 
@@ -568,12 +515,7 @@ describe('first-booking a job from the bucket still lands it on the board (S6, F
 
   it('POSTs /assign (the only path that books visit 1) and shows the card once the job comes back', async () => {
     mockBoard([], [BUCKET_JOB]);
-    renderWithProviders(
-      <TooltipProvider>
-        <SchedulePage />
-      </TooltipProvider>,
-      { ability: ADMIN },
-    );
+    renderSchedule({ ability: ADMIN });
     await screen.findAllByText(/J00099/);
     fireEvent.click(screen.getByRole('button', { name: 'Member' }));
 
@@ -650,12 +592,7 @@ describe('an unscheduled job is a JOB in the bucket, never a finished trip (S6, 
 
   it('books NEW work when its card is dragged out, instead of rewriting the finished trip', async () => {
     mockBoard([], [FINISHED_TRIP_BUCKET_JOB]);
-    renderWithProviders(
-      <TooltipProvider>
-        <SchedulePage />
-      </TooltipProvider>,
-      { ability: ADMIN },
-    );
+    renderSchedule({ ability: ADMIN });
     await screen.findAllByText(/J00050/);
     fireEvent.click(screen.getByRole('button', { name: 'Member' }));
 
@@ -751,12 +688,7 @@ describe('the STANDARD board says which trip it is too (S6, F2, D13)', () => {
 
   async function openStandardBoard(job: Record<string, unknown>) {
     mockBoard([job]);
-    const rendered = renderWithProviders(
-      <TooltipProvider>
-        <SchedulePage />
-      </TooltipProvider>,
-      { ability: ADMIN },
-    );
+    const rendered = renderSchedule({ ability: ADMIN });
     await screen.findAllByText(/J00041/);
     return rendered;
   }

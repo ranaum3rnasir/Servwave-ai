@@ -1,0 +1,49 @@
+export type Verdict = {
+  result: 'passed' | 'failed' | 'incomplete' | 'stalled' | 'overloaded' | 'cancelled';
+  code: number;
+  reasons: string[];
+  allReasons: { failed: string[]; incomplete: string[]; overloaded: string[] };
+  counts: { filesExpected: number; filesRan: number; passed: number; failed: number; skipped: number; retried: number };
+  detail: Record<string, any>;
+};
+export type TestCiEvent = { ev: string; t?: number; file?: string; [k: string]: unknown };
+export type Policy = { floor: number; selectedFloor?: number; maxRetried?: number; skipAllowList?: Record<string, number> };
+export declare const EXIT_CODES: Readonly<Record<'passed' | 'failed' | 'incomplete' | 'stalled' | 'overloaded' | 'cancelled', number>>;
+export declare const DEFAULT_WORKERS: number;
+export declare const DEFAULT_IDLE_MS: number;
+export declare const DEFAULT_TEST_TIMEOUT_MS: number;
+export declare const DEFAULT_FILE_MARGIN_MS: number;
+export declare const DEFAULT_MAX_RETRIED: number;
+export declare const BAIL_ON_PULL_REQUEST: number;
+export declare const RETRIES: number;
+export declare function isTestFile(path: string): boolean;
+export declare function expectedFromTracked(trackedPaths: string[]): string[];
+export declare function shardSlice(files: string[], index: number, count: number): string[];
+export declare function parseShard(text: string): { index: number; count: number };
+export declare function resolveWorkers(env: Record<string, string | undefined>): { workers: number; why: string };
+export declare function buildVitestArgs(opts: { reporterPath: string; shard?: { index: number; count: number } | null; bail?: number; files?: string[]; config?: string }): string[];
+export declare function parseEvents(text: string): { events: TestCiEvent[]; badLines: number };
+export declare function evaluate(input: {
+  events: TestCiEvent[];
+  expected: string[];
+  toolExitCode: number | null;
+  args: string[];
+  policy: Policy;
+  mode?: 'full' | 'selected' | 'shard';
+  badLines?: number;
+  stalled?: { kind: string; lastHealthyFile?: string | null; inFlight?: string[] } | null;
+  cancelled?: boolean;
+}): Verdict;
+export declare function evaluateSafely(input: Parameters<typeof evaluate>[0]): Verdict;
+export declare function verdictLine(verdict: Verdict, opts?: { mode?: string; shard?: { index: number; count: number } | null; selected?: { n: number; of: number } | null; selection?: string | null }): string;
+export declare function checkWatchdog(opts: { events: TestCiEvent[]; now: number; startedAt: number; idleMs?: number; testTimeoutMs?: number; marginMs?: number; retries?: number }):
+  | null
+  | { kind: 'no-event' | 'file-overrun'; lastHealthyFile: string | null; inFlight: string[]; [k: string]: unknown };
+export declare function failedSoFar(events: TestCiEvent[]): { passed: number; lines: string[]; inFlight: string[] };
+export declare function retriedLines(verdict: Verdict): string[];
+export declare function renderSummary(opts: { verdict: Verdict; verdictLine: string; preflight?: Record<string, unknown>; stalled?: unknown; selectionNote?: string | null }): string;
+export declare const KNOWN_OPTIONS: string[];
+export declare const USAGE: string;
+export declare function parseOptions(argv: string[]): Record<string, string>;
+export declare function emptySetVerdict(expected: string[], mode: 'full' | 'selected' | 'shard'): Verdict | null;
+export declare function wrapperConfigSource(baseConfigPath: string, setupFilePath: string): string;

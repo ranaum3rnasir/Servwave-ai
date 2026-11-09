@@ -28,14 +28,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { Routes, Route } from 'react-router-dom';
 import api from '@/lib/axios';
 import * as tasksApi from '@/lib/api/tasks';
 import { useTaskDetailStore } from '@/stores/taskDetailStore';
 import { renderWithProviders } from './helpers';
 import { JobLeadTasksTab } from '@/components/tasks/JobLeadTasksTab';
 import CustomerDetailPage from '@/pages/CustomerDetailPage';
-import EstimateWorkspacePage from '@/pages/v2/estimates/EstimateWorkspacePage';
+import { renderEstimateWorkspace, serveEstimateWorkspace } from '@/__tests__/harness/estimateWorkspacePage';
 
 // ── Stubs ──────────────────────────────────────────────────────────────────────
 
@@ -554,20 +553,15 @@ describe('CustomerDetailPage — Tasks tab (FIX B)', () => {
 
 describe('EstimateWorkspacePage — Tasks section (FIX B)', () => {
   let listTasksSpy: ReturnType<typeof vi.spyOn>;
-  const mockApi = vi.mocked(api);
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url.includes('/notes')) return { data: { notes: [] } };
-      if (url.includes('/api/estimates/')) return { data: { estimate: ESTIMATE_FIXTURE } };
-      return { data: {} };
-    });
+    serveEstimateWorkspace({ estimate: ESTIMATE_FIXTURE, routes: [{ match: (url) => url.includes('/notes'), data: { notes: [] } }] });
     listTasksSpy = vi.spyOn(tasksApi, 'listTasks').mockResolvedValue(ENTITY_TASKS);
   });
 
   it('renders the Tasks section on the estimate workspace page', async () => {
-    renderWithProviders(<EstimateWorkspacePage />);
+    renderEstimateWorkspace({ ability: undefined });
 
     // Wait for page load — the estimate's fallback title (no custom name set).
     await screen.findByText('Estimate E00099');
@@ -576,7 +570,7 @@ describe('EstimateWorkspacePage — Tasks section (FIX B)', () => {
   });
 
   it('mounts JobLeadTasksTab with the estimate UUID on load (no click required)', async () => {
-    renderWithProviders(<EstimateWorkspacePage />);
+    renderEstimateWorkspace({ ability: undefined });
 
     await screen.findByText('Estimate E00099');
 

@@ -8,11 +8,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
-import { renderWithProviders } from '@/__tests__/helpers';
-import LeadFormPage from '@/pages/v2/leads/LeadFormPage';
 import { buildAbility } from '@/lib/ability';
 import { useAuthStore } from '@/stores/auth.store';
-import type { AxiosRequestConfig } from 'axios';
+import { renderLeadForm, serveLeadForm } from '@/__tests__/harness/leadFormPage';
 
 type AuthState = ReturnType<typeof useAuthStore.getState>;
 
@@ -21,7 +19,7 @@ vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
   return { ...actual, useNavigate: () => mockNavigate };
 });
-vi.mock('@/lib/api/organization', () => ({
+vi.mock('@/lib/api/shared/organization', () => ({
   useOrganization: () => ({ data: { job_type_options: [], source_options: [] } }),
   useUpdateOrganization: () => ({ mutate: vi.fn() }),
 }));
@@ -53,26 +51,19 @@ const canCreateAndAssign = buildAbility([
 
 /** Where the creator rule pre-fills the signed-in person, as the server answers it. */
 function prefillAs(slot: 'owner' | 'dispatcher') {
-  mockApi.get.mockImplementation(async (url: string, config?: AxiosRequestConfig) => {
-    if (url === '/api/leads/creator-prefill') {
-      return {
-        data: {
-          prefill: {
-            owner_id: slot === 'owner' ? CREATOR.id : null,
-            dispatcher_id: slot === 'dispatcher' ? CREATOR.id : null,
-          },
-        },
-      };
-    }
-    if (url === '/api/users/assignable') {
-      return { data: (config?.params as Record<string, unknown> | undefined)?.eligible_for === 'dispatcher' ? DISPATCHERS : OWNERS };
-    }
-    return { data: {} };
+  serveLeadForm({
+    creatorPrefill: {
+      prefill: {
+        owner_id: slot === 'owner' ? CREATOR.id : null,
+        dispatcher_id: slot === 'dispatcher' ? CREATOR.id : null,
+      },
+    },
+    assignable: (params) => (params.eligible_for === 'dispatcher' ? DISPATCHERS : OWNERS),
   });
 }
 
 function renderForm(ability: ReturnType<typeof buildAbility>, entry = '/leads/create') {
-  return renderWithProviders(<LeadFormPage />, { ability, initialEntries: [entry] });
+  return renderLeadForm({ ability, entry: entry });
 }
 
 async function fillRequiredFields(user: ReturnType<typeof userEvent.setup>) {
@@ -233,10 +224,7 @@ describe('a person with Assign people to leads', () => {
 
 describe('when the pre-fill cannot be loaded', () => {
   it.each([['without', canCreate], ['with', canCreateAndAssign]])('%s Assign people to leads, says so and does not save a lead blind', async (_label, ability) => {
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url === '/api/leads/creator-prefill') throw new Error('network down');
-      return { data: [] };
-    });
+    serveLeadForm({ creatorPrefill: () => { throw new Error('network down'); }, otherwise: [] });
     renderForm(ability);
 
     expect(await screen.findByText(/couldn't load the owner and dispatcher/i)).toBeInTheDocument();

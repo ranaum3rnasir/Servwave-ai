@@ -47,9 +47,9 @@ import { useAuthStore } from '@/stores/auth.store';
 import { useSettingsGuard } from '@/stores/settingsGuard.store';
 import { useAiCenterStore } from '@/stores/aiCenterStore';
 import { useCopilotStore } from '@/stores/copilotStore';
-import { useOrganization } from '@/lib/api/organization';
+import { useOrganization } from '@/lib/api/shared/organization';
 import { useUnreadCounts } from '@/lib/api/communication';
-import { switchOn, useMySwitches } from '@/lib/api/mySwitches';
+import { switchOn, useMySwitches } from '@/lib/api/shared/mySwitches';
 import { setOrgFormattingPrefs } from '@/lib/org-format';
 import { useFeature } from '@/lib/entitlements';
 

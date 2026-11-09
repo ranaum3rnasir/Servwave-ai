@@ -9,7 +9,7 @@ import { useAuthStore } from '@/stores/auth.store';
 import { SendInvoiceDialog } from '@/components/invoices/SendInvoiceDialog';
 import type { InvoiceLineItem } from '@/lib/api/jobs';
 import { buildAbility } from '@/lib/ability';
-import type { Organization } from '@/lib/api/organization';
+import type { Organization } from '@/lib/api/shared/organization';
 
 const mockApi = vi.mocked(api);
 
@@ -25,8 +25,8 @@ const hoisted = vi.hoisted(() => ({
   toast: vi.fn(),
 }));
 
-vi.mock('@/lib/api/organization', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/organization')>();
+vi.mock('@/lib/api/shared/organization', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/api/shared/organization')>();
   return { ...actual, useOrganization: () => ({ data: hoisted.org }) };
 });
 

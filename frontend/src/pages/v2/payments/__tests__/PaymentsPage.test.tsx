@@ -8,7 +8,7 @@ import { buildAbility } from '@/lib/ability';
 import { renderWithProviders } from '@/__tests__/helpers';
 import { catalogToggle } from '@/__tests__/support/backendSwitchCatalog';
 import type { PaymentsSummary } from '@/lib/api/paymentsPage';
-import type { StripeStatus } from '@/lib/api/organization';
+import type { StripeStatus } from '@/lib/api/shared/organization';
 
 import PaymentsPage from '../PaymentsPage';
 
@@ -97,7 +97,8 @@ async function typeDate(u: ReturnType<typeof userEvent.setup>, name: string, tex
 }
 
 beforeEach(() => {
-  vi.useFakeTimers({ toFake: ['Date'] });
+  // performance.now is faked too: the period picker judges its hand-over window by it, so a test steps the clock instead of sleeping.
+  vi.useFakeTimers({ toFake: ['Date', 'performance'] });
   vi.setSystemTime(NOW);
   mockApi.get.mockReset();
   serve();
@@ -345,7 +346,6 @@ describe('period', () => {
         fireEvent.pointerDown(heading);
         fireEvent.focusIn(document.body);
       });
-      await new Promise((r) => setTimeout(r, 120));
       expect(screen.getByRole('dialog', { name: 'Custom range' })).toBeInTheDocument();
       expect(document.getElementById('payments-period-from')).toBeInTheDocument();
     });
@@ -359,7 +359,7 @@ describe('period', () => {
       expect(screen.getByRole('combobox', { name: 'Period' })).toHaveTextContent('Last 30 days');
 
       await openCustomRange(u);
-      await new Promise((r) => setTimeout(r, 400)); // past the moment the select is still handing over
+      vi.advanceTimersByTime(400); // past the moment the select is still handing over
       await u.click(screen.getByRole('heading', { name: 'Payments' }));
       await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Custom range' })).not.toBeInTheDocument());
       expect(screen.getByRole('combobox', { name: 'Period' })).toHaveTextContent('Last 30 days');

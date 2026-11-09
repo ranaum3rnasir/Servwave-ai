@@ -14,7 +14,8 @@ import { renderWithProviders } from './helpers';
 import RolesPage from '@/pages/v2/settings/RolesPage';
 import { useSettingsGuard } from '@/stores/settingsGuard.store';
 import type { SettingsSaver } from '@/lib/settings/types';
-import type { BuiltInRoleKey, RoleSwitchSet, SwitchSet } from '@/lib/api/permissionSwitches';
+import type { BuiltInRoleKey } from '@/lib/api/permissionSwitches';
+import type { RoleSwitchSet, SwitchSet } from '@/lib/api/shared/switchTypes';
 import { FIXTURE_CATALOG, catalogSwitch, presetSet } from './support/permissionCatalogFixture';
 
 const mockApi = vi.mocked(api);

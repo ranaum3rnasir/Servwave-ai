@@ -1,4 +1,26 @@
-/// <reference types="@testing-library/jest-dom/vitest" />
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { screen, waitFor, within } from '@testing-library/react';
+import { mailboxBody, renderInbox, serveInbox, signInDispatcher } from '@/__tests__/harness/inboxPage';
+import { buildAbility } from '@/lib/ability';
+import userEvent from '@testing-library/user-event';
+import api from '@/lib/axios';
+import { useAuthStore } from '@/stores/auth.store';
+
+vi.mock('@/lib/entitlements', async (importOriginal) =>
+  (await import('@/__tests__/harness/inboxApiStub')).inboxEntitlements(await importOriginal<typeof import('@/lib/entitlements')>()));
+
+// Each test starts from the setup file's signed-in user and bare client calls: reset them here, so a test states its own user
+// and answers in its own `beforeEach` (`clearAllMocks` keeps implementations).
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(useAuthStore).mockReset();
+  vi.mocked(api.get).mockReset();
+  vi.mocked(api.post).mockReset();
+  vi.mocked(api.patch).mockReset();
+  vi.mocked(api.put).mockReset();
+  vi.mocked(api.delete).mockReset();
+});
+
 // Roles & Permissions, PRD 10, slice S10.11 - the "Sending as" line on the ROUTED Email page (/communication/inbox renders
 // this InboxPage), in the compose window and in the inline reply.
 //
@@ -6,13 +28,6 @@
 // does). Every email a person writes by hand goes out from their OWN address, so the line shows that address and the name
 // the recipient sees, in a new email and in a reply to a conversation of any mailbox, and a person with no address of
 // their own reads the address-needed sentence with Send disabled and its reason readable by a screen reader.
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, within, waitFor } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
-import { renderWithProviders } from '@/__tests__/helpers';
-import { buildAbility } from '@/lib/ability';
-import { useAuthStore } from '@/stores/auth.store';
-import api from '@/lib/axios';
 
 const ability = buildAbility([
   { action: 'read', subject: 'Communication' },
@@ -41,29 +56,13 @@ let identity: Identity = ACTIVE;
 let assignee: string | null = null;
 const posts: { url: string; body: unknown }[] = [];
 
-vi.mock('@/lib/entitlements', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/lib/entitlements')>()),
-  useFeature: () => true,
-  useEntitlementsReady: () => true,
-}));
-
-import InboxPage from '@/pages/v2/communication/InboxPage';
-
 function answerNetwork() {
-  vi.mocked(api.get).mockImplementation(async (url: string, config?: { params?: unknown }) => {
-    if (url === '/api/communication/sending-identity') return { data: identity };
-    if (url === '/api/communication/my-mailbox') return { data: { mailbox: { status: identity.status, address: identity.address } } };
-    if (url === '/api/communication/emails') return { data: { emails: [{ ...INBOUND, threadAssignedToUserId: assignee }] } };
-    if (url === '/api/communication/mailboxes') {
-      const selected = (config?.params as { selected?: string } | undefined)?.selected ?? 'mine';
-      return { data: { scope: 'attached', selected, selected_label: null, selected_unread: 0, total_unread: 0, mine: { id: 'box-mine', unread: 0 }, held: [], main: { id: 'box-main', unread: 0 }, people: null } };
-    }
-    if (url === '/api/communication/email-groups') return { data: { groups: [] } };
-    if (url === '/api/communication/forward-rules') return { data: { rules: [] } };
-    if (url === '/api/communication/team-members') {
-      return { data: { members: [{ id: 'u2', name: 'Colin Jones', email: 'colin@test.com', role: 'DISPATCHER' }] } };
-    }
-    return { data: {} };
+  serveInbox({
+    sendingIdentity: () => identity,
+    myMailbox: () => ({ mailbox: { status: identity.status, address: identity.address } }),
+    emails: () => [{ ...INBOUND, threadAssignedToUserId: assignee }],
+    mailboxes: (params) => mailboxBody(params),
+    teamMembers: [{ id: 'u2', name: 'Colin Jones', email: 'colin@test.com', role: 'DISPATCHER' }],
   });
   vi.mocked(api.post).mockImplementation(async (url: string, body: unknown) => {
     posts.push({ url, body });
@@ -76,25 +75,20 @@ beforeEach(() => {
   posts.length = 0;
   identity = ACTIVE;
   assignee = null;
-  vi.mocked(useAuthStore).mockImplementation(((selector: (s: Record<string, unknown>) => unknown) =>
-    selector({
-      user: { id: 'u1', email: 'jane@test.com', first_name: 'Jane', last_name: 'Smith', role: 'DISPATCHER', organization_id: 'org-1', org_features: ['email', 'phone'] },
-      isAuthenticated: true, isLoading: false, error: null,
-    })) as typeof useAuthStore,
-  );
+  signInDispatcher();
   answerNetwork();
 });
 
 async function openCompose() {
   const user = userEvent.setup({ pointerEventsCheck: 0 });
-  renderWithProviders(<InboxPage />, { ability, initialEntries: ['/communication/inbox'] });
+  renderInbox({ ability, entry: '/communication/inbox' });
   await user.click(await screen.findByRole('button', { name: /Compose/ }));
   return user;
 }
 
 async function openReply() {
   const user = userEvent.setup({ pointerEventsCheck: 0 });
-  renderWithProviders(<InboxPage />, { ability, initialEntries: ['/communication/inbox'] });
+  renderInbox({ ability, entry: '/communication/inbox' });
   await user.click(await screen.findByText('Quote request'));
   // Reply is in the toolbar and again under the thread: either opens the inline composer.
   await user.click((await screen.findAllByRole('button', { name: /^Reply$/ })).at(-1)!);
@@ -166,7 +160,7 @@ describe('the Email page: "Sending as" in a reply', () => {
 
 describe('the main mailbox: a conversation somebody replied first in', () => {
   async function openMailbox(query: string) {
-    renderWithProviders(<InboxPage />, { ability, initialEntries: [`/communication/inbox${query}`] });
+    renderInbox({ ability, entry: `/communication/inbox${query}` });
     return screen.findByText('Quote request');
   }
 

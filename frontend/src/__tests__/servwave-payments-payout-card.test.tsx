@@ -7,7 +7,7 @@ import { renderWithProviders } from './helpers';
 import { buildAbility } from '@/lib/ability';
 import { resetAccountScopedStores } from '@/lib/storeReset';
 import ServwavePaymentsPage from '@/pages/v2/settings/ServwavePaymentsPage';
-import type { StripeStatus } from '@/lib/api/organization';
+import type { StripeStatus } from '@/lib/api/shared/organization';
 
 const OWNER = buildAbility([{ action: 'manage_payout_account', subject: 'Organization' }]);
 const NOT_OWNER = buildAbility([{ action: 'update', subject: 'Organization' }]);
@@ -41,8 +41,8 @@ vi.mock('@/lib/entitlements', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/entitlements')>()),
   useFeature: () => true,
 }));
-vi.mock('@/lib/api/organization', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/organization')>();
+vi.mock('@/lib/api/shared/organization', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/api/shared/organization')>();
   return {
     ...actual,
     useStripeStatus: () => ({ data: hoisted.status, isLoading: false }),

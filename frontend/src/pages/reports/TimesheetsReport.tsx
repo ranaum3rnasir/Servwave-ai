@@ -13,13 +13,13 @@ import { token } from '@/design-system';
 import { findReport } from '@/lib/reports/report-catalog';
 import { ReportShell } from './ReportShell';
 import { EmployeePayrollCard } from '@/components/timeclock/EmployeePayrollCard';
-import { reachesBeyondOwn, useMySwitches } from '@/lib/api/mySwitches';
+import { reachesBeyondOwn, useMySwitches } from '@/lib/api/shared/mySwitches';
 import { usePunches, useOtReviews, useUpsertOtReview } from '@/lib/api/timeclock';
 import { formatPlace } from '@/lib/timeclock/place';
 import { buildSessions, isLate, type Session } from '@/lib/timeclock/aggregate';
 import { buildDays, buildPayroll, type WeekRow } from '@/lib/timeclock/payroll';
 import type { ReviewState } from '@/lib/timeclock/types';
-import { useOrganization } from '@/lib/api/organization';
+import { useOrganization } from '@/lib/api/shared/organization';
 
 const fmtHM = (min: number) => `${Math.floor(min / 60)}:${String(Math.round(min % 60)).padStart(2, '0')}`;
 

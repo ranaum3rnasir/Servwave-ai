@@ -10,7 +10,7 @@ import userEvent from '@testing-library/user-event';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { useLocation } from 'react-router-dom';
-import { renderWithProviders } from '@/__tests__/helpers';
+import { renderInbox } from '@/__tests__/harness/inboxPage';
 import { buildAbility } from '@/lib/ability';
 import type { MailboxList } from '@/lib/api/communication';
 
@@ -21,49 +21,34 @@ const ability = buildAbility([
 
 // One array for every render: the page seeds its own state from these, and a fresh array each render would re-seed forever.
 const NO_EMAILS: unknown[] = [];
-const NOTHING: unknown[] = [];
 type ListQuery = { selected: string; search?: string; offset?: number };
 const listCalls: ListQuery[] = [];
 const emailCalls: (string | null | undefined)[] = [];
 let answer: (query: ListQuery) => MailboxList;
 
-vi.mock('@/lib/api/communication', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/communication')>();
-  return {
-    ...actual,
-    useEmails: (_assignment: unknown, mailbox?: string | null) => {
-      emailCalls.push(mailbox);
-      return { data: NO_EMAILS };
+vi.mock('@/lib/api/communication', async (importOriginal) =>
+  (await import('@/__tests__/harness/inboxApiStub')).communicationStubs(await importOriginal<typeof import('@/lib/api/communication')>(), {
+    hooks: {
+      useEmails: (_assignment: unknown, mailbox?: string | null) => {
+        emailCalls.push(mailbox);
+        return { data: NO_EMAILS };
+      },
+      useMailboxList: (query: ListQuery) => {
+        listCalls.push(query);
+        const data = answer(query);
+        return { data, isPending: data === undefined };
+      },
     },
-    useMailboxList: (query: ListQuery) => {
-      listCalls.push(query);
-      const data = answer(query);
-      return { data, isPending: data === undefined };
-    },
-    useEmailGroups: () => ({ data: NOTHING }),
-    useForwardRules: () => ({ data: NOTHING }),
-    useTeamMembers: () => ({ data: NOTHING }),
-    useSendingIdentity: () => ({ data: undefined }),
-    useMarkEmailThreadRead: () => ({ mutate: vi.fn() }),
-    useMarkEmailThreadUnread: () => ({ mutate: vi.fn() }),
-    useSendEmail: () => ({ mutate: vi.fn(), isPending: false }),
-    useMyMailbox: () => ({ data: { mailbox: null } }),
-  };
-});
+  }));
 
-vi.mock('@/lib/entitlements', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/lib/entitlements')>()),
-  useFeature: () => true,
-}));
-
-import InboxPage from '@/pages/v2/communication/InboxPage';
+vi.mock('@/lib/entitlements', async (importOriginal) =>
+  (await import('@/__tests__/harness/inboxApiStub')).inboxEntitlements(await importOriginal<typeof import('@/lib/entitlements')>(), { ready: false }));
 
 function Where() {
   const location = useLocation();
   return <output data-testid="where">{location.pathname + location.search}</output>;
 }
-const renderPage = (entry = '/communication/inbox') =>
-  renderWithProviders(<><InboxPage /><Where /></>, { ability, initialEntries: [entry] });
+const renderPage = (entry = '/communication/inbox') => renderInbox({ ability, entry, beside: <Where /> });
 
 const empty = { selected_label: null, selected_unread: 0, main: null, people: null } as const;
 const NARROW: MailboxList = {

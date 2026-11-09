@@ -18,7 +18,7 @@ const { mutateAsync, mutate, ORG } = vi.hoisted(() => ({
   // ONE object for every render, as react-query hands back: the page re-hydrates when `org` changes.
   ORG: { data: { id: 'org-1', schedule_event_colors: {} } },
 }));
-vi.mock('@/lib/api/organization', () => ({
+vi.mock('@/lib/api/shared/organization', () => ({
   useOrganization: () => ORG,
   useUpdateOrganization: () => ({ mutateAsync, mutate, isPending: false }),
 }));

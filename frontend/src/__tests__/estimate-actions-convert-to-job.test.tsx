@@ -1,28 +1,17 @@
-/**
- * #2048 — the estimate page's Actions "Convert to job" item, mirroring the pre-existing header
- * "Create Job" button's exact gate/mutation (`convertToJob.ts`'s shared `convertToJobState`).
- * Mirrors the stub set + fixture shape of `estimate-create-job-gate.test.tsx`, the prior art for
- * mounting `EstimateWorkspacePage` around its hero buttons.
- */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
-import { renderWithProviders } from './helpers';
 import { buildAbility } from '@/lib/ability';
-import EstimateWorkspacePage from '@/pages/v2/estimates/EstimateWorkspacePage';
+import { renderEstimateWorkspace, serveEstimateWorkspace } from '@/__tests__/harness/estimateWorkspacePage';
 import { ESTIMATE_STATUS } from '@/constants/estimateStatus';
 import { CONVERT_BLOCK_REASONS, CONVERT_DEPOSIT_BLOCKED_REASON } from '@/features/estimate-workspace/lib/convertToJob';
-
-const ESTIMATE_ID = 'est-actions-convert-id';
+import { useAuthStore } from '@/stores/auth.store';
 
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');
-  return { ...actual, useParams: () => ({ id: ESTIMATE_ID }), useNavigate: () => vi.fn() };
+  return { ...actual, useParams: () => ({ id: __route.id }), useNavigate: () => vi.fn() };
 });
-
-// Heavy sub-surfaces with no bearing on the Actions menu - same stub set as
-// estimate-create-job-gate.test.tsx / estimate-copy-to-invoice.test.tsx.
 vi.mock('@/features/estimate-workspace/components/EstimateTabs', () => ({ EstimateTabs: () => null }));
 vi.mock('@/components/estimates/EstimateLineItemsEditor', () => ({
   EstimateLineItemsEditor: () => null,
@@ -41,7 +30,34 @@ vi.mock('@/components/estimates/DuplicateEstimateDialog', () => ({ DuplicateEsti
 vi.mock('@/components/estimates/WaiveDepositDialog', () => ({ WaiveDepositDialog: () => null }));
 vi.mock('@/components/estimates/RefundDepositDialog', () => ({ RefundDepositDialog: () => null }));
 
-const adminAbility = buildAbility([{ action: 'manage', subject: 'all' }]);
+const __route = vi.hoisted(() => ({ id: '' }));
+
+// Each test starts from the setup file's signed-in user and bare client calls: reset them here, so a test states its own user
+// and answers in its own `beforeEach` (`clearAllMocks` keeps implementations).
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(useAuthStore).mockReset();
+  vi.mocked(api.get).mockReset();
+  vi.mocked(api.post).mockReset();
+  vi.mocked(api.patch).mockReset();
+  vi.mocked(api.put).mockReset();
+  vi.mocked(api.delete).mockReset();
+});
+
+// The router mock reads the id this block's file used to fix.
+beforeEach(() => { __route.id = ESTIMATE_ID; });
+/**
+ * #2048 — the estimate page's Actions "Convert to job" item, mirroring the pre-existing header
+ * "Create Job" button's exact gate/mutation (`convertToJob.ts`'s shared `convertToJobState`).
+ * Mirrors the stub set + fixture shape of `estimate-create-job-gate.test.tsx`, the prior art for
+ * mounting `EstimateWorkspacePage` around its hero buttons.
+ */
+
+const ESTIMATE_ID = 'est-actions-convert-id';
+
+// Heavy sub-surfaces with no bearing on the Actions menu - same stub set as
+// estimate-create-job-gate.test.tsx / estimate-copy-to-invoice.test.tsx.
+
 const noJobAbility = buildAbility([
   { action: 'read', subject: 'Estimate' },
   { action: 'update', subject: 'Estimate' },
@@ -109,11 +125,7 @@ const WON_ESTIMATE = {
 };
 
 function setupMocks(fixture: Record<string, unknown>) {
-  vi.mocked(api.get).mockImplementation(async (url: string) => {
-    if (url.includes('/state-tax-rates')) return { data: { data: [] } };
-    if (url.includes('/api/estimates/')) return { data: { estimate: fixture } };
-    return { data: {} };
-  });
+  serveEstimateWorkspace({ estimate: fixture });
 }
 
 async function openActionsMenu(user: ReturnType<typeof userEvent.setup>) {
@@ -128,7 +140,7 @@ describe('EstimateWorkspacePage Actions - "Convert to job" item (#2048)', () => 
   it('is present for a WON, unattached estimate when the caller holds create Job', async () => {
     setupMocks(WON_ESTIMATE);
     const user = userEvent.setup({ pointerEventsCheck: 0 });
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     await openActionsMenu(user);
     const item = await screen.findByRole('menuitem', { name: /convert to job/i });
@@ -140,7 +152,7 @@ describe('EstimateWorkspacePage Actions - "Convert to job" item (#2048)', () => 
     // Was absent. A hidden item and a missing capability look identical, so it now says why.
     setupMocks({ ...WON_ESTIMATE, job_id: 'job-anchor-1', job: null });
     const user = userEvent.setup({ pointerEventsCheck: 0 });
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     await openActionsMenu(user);
     const item = await screen.findByRole('menuitem', { name: /convert to job/i });
@@ -151,7 +163,7 @@ describe('EstimateWorkspacePage Actions - "Convert to job" item (#2048)', () => 
   it('is absent without create Job, even on an otherwise-convertible estimate', async () => {
     setupMocks(WON_ESTIMATE);
     const user = userEvent.setup({ pointerEventsCheck: 0 });
-    renderWithProviders(<EstimateWorkspacePage />, { ability: noJobAbility });
+    renderEstimateWorkspace({ ability: noJobAbility });
 
     // Same-state control on the header: no "Create Job" button either - checked BEFORE opening
     // the Actions dropdown, which marks the rest of the page `aria-hidden` while it's open (a
@@ -169,7 +181,7 @@ describe('EstimateWorkspacePage Actions - "Convert to job" item (#2048)', () => 
       invoices: [{ id: 'inv-1', kind: 'DEPOSIT', status: 'SENT', total_amount: '200.00', payments: [] }],
     });
     const user = userEvent.setup({ pointerEventsCheck: 0 });
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     // The header button carries the identical reason - checked BEFORE opening the Actions
     // dropdown, which marks the rest of the page `aria-hidden` while it's open.
@@ -188,7 +200,7 @@ describe('EstimateWorkspacePage Actions - "Convert to job" item (#2048)', () => 
     setupMocks(WON_ESTIMATE);
     vi.mocked(api.post).mockResolvedValue({ data: { job: { id: 'job-actions-1' } } });
     const user = userEvent.setup({ pointerEventsCheck: 0 });
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     await openActionsMenu(user);
     await user.click(await screen.findByRole('menuitem', { name: /convert to job/i }));
@@ -202,7 +214,7 @@ describe('EstimateWorkspacePage Actions - menu copy (W3)', () => {
   it('shows a disabled "Convert to job" without a grey second line, the reason staying in the title', async () => {
     setupMocks({ ...WON_ESTIMATE, job_id: 'job-anchor-1', job: null });
     const user = userEvent.setup({ pointerEventsCheck: 0 });
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     await openActionsMenu(user);
     const item = await screen.findByRole('menuitem', { name: /convert to job/i });
@@ -213,7 +225,7 @@ describe('EstimateWorkspacePage Actions - menu copy (W3)', () => {
   it('offers "Approve" (not "Approve (Verbal)") and confirms with a short dialog', async () => {
     setupMocks({ ...WON_ESTIMATE, status: ESTIMATE_STATUS.SENT, approved_at: null });
     const user = userEvent.setup({ pointerEventsCheck: 0 });
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     await openActionsMenu(user);
     expect(screen.queryByText(/verbal/i)).not.toBeInTheDocument();

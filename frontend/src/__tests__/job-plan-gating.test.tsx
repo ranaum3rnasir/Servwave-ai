@@ -18,8 +18,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import api from '@/lib/axios';
 import { useAuthStore } from '@/stores/auth.store';
-import { renderWithProviders, ALL_JOB_ACTIONS } from './helpers';
-import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
+import { ALL_JOB_ACTIONS } from './helpers';
+import { renderJobDetail, serveJobDetail } from '@/__tests__/harness/jobDetailPage';
 import { buildAbility } from '@/lib/ability';
 
 const JOB_ID = 'j0000000-0000-0000-0000-000000000001';
@@ -103,24 +103,15 @@ const SCALE_FEATURES = [...PRO_FEATURES, 'inventory'];
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.endsWith('/scopes')) {
-      return { data: { scopes: [], billing: { total: 0, invoiced: 0, remaining: 0 } } };
-    }
-    if (url.endsWith('/line-items')) {
-      return { data: { lines: [], billing: { total: 0, invoiced: 0, remaining: 0 } } };
-    }
-    if (url.includes('/api/jobs/')) {
-      return { data: { job: BASE_JOB } };
-    }
-    return { data: {} };
+  serveJobDetail({
+    job: BASE_JOB,
   });
 });
 
 describe('JobDetailPage - a Scale module must not degrade a Pro-included one', () => {
   it('makes no /api/inventory request on a PRO org (the 402 that ejected the user)', async () => {
     mockOrgFeatures(PRO_FEATURES, 'PRO');
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+    renderJobDetail({ ability: adminAbility });
 
     // The job itself still loads - Jobs is in their plan and stays fully usable.
     expect(await screen.findByRole('tab', { name: /Overview/ })).toBeInTheDocument();
@@ -134,7 +125,7 @@ describe('JobDetailPage - a Scale module must not degrade a Pro-included one', (
 
   it('does not offer the Logistics tab on a PRO org', async () => {
     mockOrgFeatures(PRO_FEATURES, 'PRO');
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+    renderJobDetail({ ability: adminAbility });
 
     // Jobs' own tabs are untouched - this hides one module, it does not degrade the page.
     expect(await screen.findByRole('tab', { name: /Overview/ })).toBeInTheDocument();
@@ -147,7 +138,7 @@ describe('JobDetailPage - a Scale module must not degrade a Pro-included one', (
   // absence on PRO is the gate working rather than the fixture never wiring them up.
   it('still fetches inventory and offers Logistics on a SCALE org', async () => {
     mockOrgFeatures(SCALE_FEATURES, 'SCALE');
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+    renderJobDetail({ ability: adminAbility });
 
     expect(await screen.findByRole('tab', { name: /Logistics/ })).toBeInTheDocument();
     await waitFor(() =>

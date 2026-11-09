@@ -16,8 +16,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
-import { renderWithProviders, inventoryWriteAbility } from './helpers';
-import InventoryPage from '@/pages/v2/inventory/InventoryPage';
+import { inventoryWriteAbility } from './helpers';
+import { renderInventory, serveInventory } from '@/__tests__/harness/inventoryPage';
 
 const h = vi.hoisted(() => ({
   EXISTING_ID: 'bbbbbbb3-0000-4000-8000-000000000001',
@@ -48,52 +48,27 @@ const EXISTING = {
 let serverItems: Record<string, unknown>[] = [];
 
 vi.mock('@/lib/api/inventory', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/inventory')>();
-  const EMPTY: never[] = [];
-  const stable =
-    <T,>(data: T) =>
-    () => ({ data, isLoading: false, isError: false });
-  const mutation = () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false });
-  return {
-    ...actual,
-    // useInventoryItems + useUpsertItem stay REAL - they are the seam under test.
-    useBrands: stable(EMPTY),
-    useItemGroups: stable(EMPTY),
-    useCategories: stable(EMPTY),
-    useVendors: stable(EMPTY),
-    useLocations: stable(EMPTY),
-    useBranches: stable(EMPTY),
-    useJobStages: stable(EMPTY),
-    useMovements: stable(EMPTY),
-    useInventoryJobs: stable(EMPTY),
-    usePurchaseOrders: stable(EMPTY),
-    useAssets: stable({ data: EMPTY, meta: { total: 0 } }),
-    useLowStock: stable(EMPTY),
-    useTechs: stable(EMPTY),
-    useStockApprovals: stable(EMPTY),
-    useUpsertLocation: mutation,
-    useDeleteItem: mutation,
-    useRestoreItem: mutation,
-    useImportItemsCSV: mutation,
-    useTransferStock: mutation,
-    useUpsertBrand: mutation,
-    useUpsertItemGroup: mutation,
-    useUpsertCategory: mutation,
-    useDeleteBrand: mutation,
-    useDeleteItemGroup: mutation,
-    useDeleteCategory: mutation,
-    useSetQuantity: mutation,
-    useSetThresholds: mutation,
-  };
+  return (await import('@/__tests__/harness/inventoryApiStub')).inventoryApi(
+    await importOriginal<typeof import('@/lib/api/inventory')>(),
+    {
+      // useInventoryItems + useUpsertItem stay REAL - they are the seam under test.
+      real: ['useInventoryItems'],
+      reads: {
+        useItemGroups: [],
+        useInventoryJobs: [],
+        usePurchaseOrders: [],
+        useAssets: { data: [], meta: { total: 0 } },
+        useLowStock: [],
+        useTechs: [],
+        useStockApprovals: [],
+      },
+      mutations: ['useUpsertLocation', 'useDeleteItem', 'useRestoreItem', 'useImportItemsCSV', 'useTransferStock', 'useUpsertBrand', 'useUpsertItemGroup', 'useUpsertCategory', 'useDeleteBrand', 'useDeleteItemGroup', 'useDeleteCategory', 'useSetQuantity', 'useSetThresholds'],
+    },
+  );
 });
 
-vi.mock('@/lib/api/organization', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/organization')>();
-  return {
-    ...actual,
-    useOrganization: () => ({ data: { id: 'org-1' }, isLoading: false, isError: false }),
-  };
-});
+vi.mock('@/lib/api/shared/organization', async (importOriginal) =>
+  (await import('@/__tests__/harness/inventoryApiStub')).organizationApi(await importOriginal<typeof import('@/lib/api/shared/organization')>(), { id: 'org-1' }));
 
 const mockApi = vi.mocked(api);
 const NAME_PLACEHOLDER = 'e.g. Dual Run Capacitor 45/5 MFD 440V';
@@ -107,12 +82,7 @@ const inventoryAbility = () => inventoryWriteAbility();
 beforeEach(() => {
   vi.clearAllMocks();
   serverItems = [EXISTING];
-  mockApi.get.mockImplementation((url: string) => {
-    if (url.startsWith('/api/inventory/items')) {
-      return Promise.resolve({ data: { data: serverItems } });
-    }
-    return Promise.resolve({ data: { data: [] } });
-  });
+  serveInventory({ items: () => serverItems });
   mockApi.post.mockImplementation((url: string, body: Record<string, unknown>) => {
     if (url === '/api/price-book/items') {
       const created = { ...EXISTING, id: h.CREATED_ID, sku: String(body.sku), name: String(body.name) };
@@ -125,8 +95,8 @@ beforeEach(() => {
 
 describe('Stock > Items - a created item renders once, not twice', () => {
   it('shows exactly one row for the new SKU when the refetch beats the handler', async () => {
-    const { queryClient } = renderWithProviders(<InventoryPage />, {
-      initialEntries: ['/inventory'],
+    const { queryClient } = renderInventory({
+      entry: '/inventory',
       ability: inventoryAbility(),
     });
 
@@ -191,8 +161,8 @@ describe('Stock > Items - a created item renders once, not twice', () => {
   // shape (visibility toggle, category rename, PriceBookPage's edit branch), and
   // PriceBookPage's create branch never had a prepend to begin with.
   it('an edit updates the row in place - it does not add a second one', async () => {
-    const { queryClient } = renderWithProviders(<InventoryPage />, {
-      initialEntries: ['/inventory'],
+    const { queryClient } = renderInventory({
+      entry: '/inventory',
       ability: inventoryAbility(),
     });
 

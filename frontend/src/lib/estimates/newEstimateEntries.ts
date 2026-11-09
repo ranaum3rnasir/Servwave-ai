@@ -1,6 +1,6 @@
 import { quickCreateItems, quickCreateItemShows } from '@/components/layout/nav-config';
 import { useAppAbility } from '@/contexts/AbilityContext';
-import { useMySwitches } from '@/lib/api/mySwitches';
+import { useMySwitches } from '@/lib/api/shared/mySwitches';
 import type { AppAction, AppSubject } from '@/lib/ability';
 
 /**

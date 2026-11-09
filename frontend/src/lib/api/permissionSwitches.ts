@@ -1,7 +1,8 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import type { SwitchValue, SwitchSet, RoleSwitchSet } from '@/lib/api/shared/switchTypes';
+import { allPersonSwitchesKey, resetChangeLogs } from '@/lib/api/shared/queryKeys';
 import api from '@/lib/axios';
 import { toast } from '@/components/ui/use-toast';
-import { resetChangeLogs } from '@/lib/api/permissionChangeLog';
 
 /**
  * Roles & Permissions: the switch catalog, and a role's set of switch values.
@@ -9,10 +10,6 @@ import { resetChangeLogs } from '@/lib/api/permissionChangeLog';
  * Both screens that draw a switch set (the Roles page and a person's Permissions page) read the catalog from the
  * server and draw only from it. Nothing here lists a switch, a label or a help text.
  */
-
-/** A switch's value: on/off, the chosen option of a choice switch, or a list switch's marker or chosen members. */
-export type SwitchValue = boolean | string | string[];
-export type SwitchSet = Record<string, SwitchValue>;
 
 /** A list switch's "everything the company accepts" value, as the server stores it. */
 export const ALL_ACCEPTED = 'all_accepted';
@@ -68,21 +65,6 @@ export interface SwitchCatalog {
   layout: CatalogLayout;
 }
 
-/** A role's switch values, as the Roles API answers a read or a write. */
-export interface RoleSwitchSet {
-  role: string;
-  label: string;
-  type: 'system' | 'custom';
-  editable: boolean;
-  base_role: string;
-  made_from_role_key: string | null;
-  made_from_blank: boolean;
-  values: SwitchSet;
-  all_views_off: boolean;
-  /** Only on the answer to a save or a reset: how many people on the role follow the change, and how many keep their own value. */
-  reaches?: number;
-  keep_own?: number;
-}
 
 /** The role a person's set is based on: the one their switches were filled from. */
 export interface BasedOnRole {
@@ -113,22 +95,6 @@ export function useSwitchCatalog() {
   });
 }
 
-/** The company's effective accepted payment methods, as `GET /api/permission-switches/accepted-payment-methods` answers. */
-export interface AcceptedPaymentMethods {
-  /** The company ticked no method in ServWave Payments, so every method is accepted. */
-  every_method: boolean;
-  /** The methods the company accepts: the ticked ones plus Credit Card while the card processor is live, or every method. */
-  methods: string[];
-}
-
-/** The read the Allowed payment methods editor offers its checklist from (and the payment dialogs filter by). */
-export function useAcceptedPaymentMethods() {
-  return useQuery<AcceptedPaymentMethods>({
-    queryKey: ['permission-switches', 'accepted-payment-methods'],
-    queryFn: () => api.get('/api/permission-switches/accepted-payment-methods').then((r) => r.data),
-  });
-}
-
 export function useRoleSwitches(role: string) {
   return useQuery<RoleSwitchSet>({
     queryKey: ['roles', role, 'switches'],
@@ -152,8 +118,6 @@ export function refusalMessage(err: unknown, fallback: string): string {
   return fallback;
 }
 
-/** Every person's cached set: stale after a role change or an edit to a role. */
-export const allPersonSwitchesKey = ['permission-switches', 'person'] as const;
 
 export function useSaveRoleSwitches() {
   const qc = useQueryClient();

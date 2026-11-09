@@ -1,6 +1,6 @@
 import { useFeature } from '@/lib/entitlements';
 import { useAppAbility } from '@/contexts/AbilityContext';
-import { switchOn, useMySwitches } from '@/lib/api/mySwitches';
+import { switchOn, useMySwitches } from '@/lib/api/shared/mySwitches';
 
 /**
  * Which ServWave channels the signed-in person can open from a customer's details: the same predicate as the top-bar

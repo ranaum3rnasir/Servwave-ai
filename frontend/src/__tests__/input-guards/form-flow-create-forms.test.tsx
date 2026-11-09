@@ -15,18 +15,18 @@ import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
 import { renderWithProviders } from '@/__tests__/helpers';
-import LeadFormPage from '@/pages/v2/leads/LeadFormPage';
 import JobFormPage from '@/pages/v2/jobs/JobFormPage';
 import CustomerFormPage from '@/pages/v2/customers/CustomerFormPage';
 import StandaloneInvoiceFormPage from '@/pages/v2/invoices/StandaloneInvoiceFormPage';
 import { buildAbility } from '@/lib/ability';
+import { renderLeadForm, serveLeadForm } from '@/__tests__/harness/leadFormPage';
 
 const mockNavigate = vi.fn();
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
   return { ...actual, useNavigate: () => mockNavigate };
 });
-vi.mock('@/lib/api/organization', () => ({
+vi.mock('@/lib/api/shared/organization', () => ({
   useOrganization: () => ({ data: { job_type_options: [], source_options: [], billing_terms_options: [], timezone: 'America/New_York' } }),
   useUpdateOrganization: () => ({ mutate: vi.fn() }),
 }));
@@ -47,13 +47,13 @@ beforeEach(() => {
   global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
   scrollSpy = vi.fn();
   Element.prototype.scrollIntoView = scrollSpy as unknown as Element['scrollIntoView'];
-  mockApi.get.mockImplementation(async (url: string) => {
+  serveLeadForm({
     // The new-lead form shows the creator rule's pre-fill and will not save blind without it.
-    if (url === '/api/leads/creator-prefill') return { data: { prefill: { owner_id: null, dispatcher_id: null } } };
+    creatorPrefill: { prefill: { owner_id: null, dispatcher_id: null } },
     // The new-job form shows the creator rule's pre-fill (Sold By and Dispatcher) and will not save blind without it.
-    if (url === '/api/jobs/creator-prefill') return { data: { prefill: { sold_by_id: null, dispatcher_id: null } } };
-    if (url === '/api/customers/picker') return { data: { customers: [] } };
-    return { data: { data: [] } };
+    jobCreatorPrefill: { prefill: { sold_by_id: null, dispatcher_id: null } },
+    picker: [],
+    otherwise: { data: [] },
   });
 });
 
@@ -62,7 +62,7 @@ const CASES = [
     name: 'create lead',
     // A template literal on purpose: add-new-client-target.test.tsx counts the
     // single-quoted new-lead path across src/ as a navigation-target guard; a test route is not one.
-    render: () => renderWithProviders(<LeadFormPage />, { ability: adminAbility, initialEntries: [`/leads/new`] }),
+    render: () => renderLeadForm({ ability: adminAbility, entry: `/leads/new` }),
     submit: /create lead/i,
     error: 'Enter a first name or a company name',
   },

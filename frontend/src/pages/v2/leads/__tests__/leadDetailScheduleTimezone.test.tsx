@@ -13,10 +13,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen } from '@testing-library/react';
-import api from '@/lib/axios';
-import { renderWithProviders, LEAD_FIXTURE } from '@/__tests__/helpers';
-import { buildAbility } from '@/lib/ability';
-import LeadDetailPage from '../LeadDetailPage';
+import { mountLeadDetail, stubBrowser } from '@/__tests__/harness/leadDetailPage';
 
 const ORG_TZ = 'Asia/Manila'; // UTC+8, no DST
 
@@ -35,51 +32,25 @@ vi.mock('@/lib/entitlements', async (importOriginal) => ({
   useFeature: () => false,
 }));
 
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
-
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual('react-router-dom');
-  return {
-    ...actual,
-    useParams: () => ({ id: LEAD_FIXTURE.id }),
-  };
-});
+vi.mock('react-router-dom', async () => (await import('@/__tests__/harness/leadDetailRouter')).leadDetailRouter());
 
 // useScheduleTimezone reads org.timezone through this module.
-vi.mock('@/lib/api/organization', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/organization')>();
+vi.mock('@/lib/api/shared/organization', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/api/shared/organization')>();
   return {
     ...actual,
     useOrganization: () => ({ data: { id: 'org-1', timezone: ORG_TZ }, isLoading: false, isError: false }),
   };
 });
 
-const adminAbility = buildAbility([{ action: 'manage', subject: 'all' }]);
-const mockApi = vi.mocked(api);
-
-const LEAD = {
-  ...LEAD_FIXTURE,
-  scheduled_start: START_ISO,
-  scheduled_end: END_ISO,
-};
-
 beforeEach(() => {
   vi.clearAllMocks();
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.includes('/api/leads/')) return { data: { lead: LEAD } };
-    if (url.includes('/api/tags')) return { data: { tags: [] } };
-    return { data: {} };
-  });
+  stubBrowser();
 });
 
 describe('LeadDetailPage schedule rendering honours the org timezone', () => {
   it('renders Scheduled Start / End on the org clock, not the browser clock', async () => {
-    const { container } = renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    const { container } = mountLeadDetail({ lead: { scheduled_start: START_ISO, scheduled_end: END_ISO } });
 
     // Loaded signal: the Service Request paragraph only appears once the lead
     // query resolves, so waiting on it avoids racing the Scheduled fields.

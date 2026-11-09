@@ -22,7 +22,7 @@ import { renderWithProviders } from './helpers';
 import { buildAbility } from '@/lib/ability';
 import { MarkSentDialog } from '@/components/estimates/MarkSentDialog';
 import { SendEstimateDialog } from '@/components/estimates/SendEstimateDialog';
-import EstimateWorkspacePage from '@/pages/v2/estimates/EstimateWorkspacePage';
+import { renderEstimateWorkspace, serveEstimateWorkspace } from '@/__tests__/harness/estimateWorkspacePage';
 
 const ESTIMATE_ID = 'est-2010-shared';
 
@@ -31,7 +31,7 @@ vi.mock('@/lib/axios', () => ({
 }));
 
 const mockOrg = vi.fn();
-vi.mock('@/lib/api/organization', () => ({
+vi.mock('@/lib/api/shared/organization', () => ({
   useOrganization: () => mockOrg(),
 }));
 
@@ -155,23 +155,9 @@ const SENT_ESTIMATE = {
   },
 };
 
-const adminAbility = buildAbility([{ action: 'manage', subject: 'all' }]);
 
 function setupMocks(fixture: Record<string, unknown>) {
-  vi.mocked(api.get).mockImplementation(async (url: string) => {
-    if (url.includes('/state-tax-rates')) return { data: { data: [] } };
-    if (url.includes('/api/estimates/')) return { data: { estimate: fixture } };
-    if (url === '/api/organization') {
-      return {
-        data: {
-          accepted_payment_methods: ['CARD'],
-          deposit_default_type: 'PERCENTAGE',
-          deposit_default_percentage: 50,
-        },
-      };
-    }
-    return { data: {} };
-  });
+  serveEstimateWorkspace({ estimate: fixture });
 }
 
 function renderMarkSent(props: Partial<React.ComponentProps<typeof MarkSentDialog>> = {}) {
@@ -380,7 +366,7 @@ describe('#2091 callsite - EstimateWorkspacePage wires the unpaid-deposit-invoic
 
   it('an unpaid deposit invoice: Resend shows the re-priced figure, not the billed one', async () => {
     setupMocks(SENT_ESTIMATE_UNPAID_DEPOSIT);
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     const user = userEvent.setup();
     await user.click(await screen.findByRole('button', { name: /^resend$/i }));
@@ -392,7 +378,7 @@ describe('#2091 callsite - EstimateWorkspacePage wires the unpaid-deposit-invoic
 
   it('a paid deposit invoice: Resend keeps showing the figure the customer was actually billed', async () => {
     setupMocks(SENT_ESTIMATE_PAID_DEPOSIT);
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     const user = userEvent.setup();
     await user.click(await screen.findByRole('button', { name: /^resend$/i }));
@@ -406,7 +392,7 @@ describe('#2091 callsite - EstimateWorkspacePage wires the unpaid-deposit-invoic
 describe('AC5 callsite - EstimateWorkspacePage wires depositFrozen from send_config', () => {
   it('disables the Send deposit % input when the estimate has already been sent', async () => {
     setupMocks(SENT_ESTIMATE);
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     const user = userEvent.setup();
     await user.click(await screen.findByRole('button', { name: /^resend$/i }));
@@ -416,7 +402,7 @@ describe('AC5 callsite - EstimateWorkspacePage wires depositFrozen from send_con
 
   it('leaves the Send deposit % input enabled when the estimate has never been sent', async () => {
     setupMocks(DRAFT_ESTIMATE);
-    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+    renderEstimateWorkspace();
 
     const user = userEvent.setup();
     await user.click(await screen.findByRole('button', { name: /^send$/i }));
@@ -624,7 +610,7 @@ describe('Finding 1 (security round 1) - deposit editability follows update Esti
   it('a send-only role sees a read-only deposit in Mark Sent, can still mark it sent, and no PATCH fires', async () => {
     // The answer for this estimate lists send and not edit: unticking Estimates -> Edit leaves send standing.
     setupMocks({ ...DRAFT_ESTIMATE, actions: ['send'] });
-    renderWithProviders(<EstimateWorkspacePage />, { ability: sendOnlyAbility });
+    renderEstimateWorkspace({ ability: sendOnlyAbility });
 
     const user = userEvent.setup();
     await user.click(await screen.findByRole('button', { name: /^actions$/i }));

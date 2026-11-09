@@ -26,6 +26,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 import { createHmac, randomBytes, randomUUID } from 'crypto';
 import request from 'supertest';
+import { afterResponseDrained } from '../lib/after-response';
 import type { PrismaClient, Role } from '@prisma/client';
 
 const { clientPromise, fetchReceived, resendSend, queries } = vi.hoisted(() => {
@@ -92,9 +93,9 @@ suite('handing a mailbox to a person, and moving it later (real database, real r
 
   beforeAll(async () => {
     db = (await clientPromise) as PrismaClient;
-    app = (await import('../app.js')).default as never;
-    fx = switchFixture(db, async () => app);
-    // The webhook reads its secret from the environment object at request time.
+    fx = switchFixture(db, async () => (await import('../app.js')).default as never);
+
+    app = await fx.listener();    // The webhook reads its secret from the environment object at request time.
     (env as { RESEND_WEBHOOK_SECRET?: string }).RESEND_WEBHOOK_SECRET = WEBHOOK_SECRET;
   }, 120_000);
 
@@ -281,12 +282,8 @@ suite('handing a mailbox to a person, and moving it later (real database, real r
     });
     const res = await request(app).post('/api/webhooks/resend').set('Content-Type', 'application/json').set(signed(eventId, body)).send(body);
     expect(res.status).toBe(200);
-    // The webhook answers first and announces after: read the bells once the database has been quiet for a moment.
-    let seen = -1;
-    for (let waited = 0; waited < 10_000 && seen !== queries.length; waited += 250) {
-      seen = queries.length;
-      await new Promise((r) => setTimeout(r, 250));
-    }
+    // The webhook answers first and announces after: read the bells once all of that work is over (a drain that times out fails).
+    await afterResponseDrained();
     const [stored, ...rest] = await db.email.findMany({ where: { provider_message_id: { startsWith: providerId } } });
     expect(rest).toEqual([]);
     return { providerId, stored: stored! };

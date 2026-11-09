@@ -1,3 +1,35 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import api from '@/lib/axios';
+import { renderWithProviders } from '@/__tests__/helpers';
+import { abilityWithSwitches } from '@/__tests__/support/backendSwitchCatalog';
+import { useInventoryAlertStore } from '@/stores/inventory-alert.store';
+import { renderInventory, serveInventory } from '@/__tests__/harness/inventoryPage';
+import type { Item, Location } from '@/lib/api/inventory';
+import PurchaseOrdersPage from '@/pages/v2/inventory/PurchaseOrdersPage';
+import { useAuthStore } from '@/stores/auth.store';
+
+vi.mock('@/lib/inventory/csv', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/inventory/csv')>();
+  return { ...actual, downloadCSV: (csv: string, name: string) => void downloads.files.push({ csv, name }) };
+});
+vi.mock('@/lib/axios');
+
+const downloads = vi.hoisted(() => ({ files: [] as Array<{ csv: string; name: string }> }));
+
+// Each test starts from the setup file's signed-in user and bare client calls: reset them here, so a test states its own user
+// and answers in its own `beforeEach` (`clearAllMocks` keeps implementations).
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(useAuthStore).mockReset();
+  vi.mocked(api.get).mockReset();
+  vi.mocked(api.post).mockReset();
+  vi.mocked(api.patch).mockReset();
+  vi.mocked(api.put).mockReset();
+  vi.mocked(api.delete).mockReset();
+});
+
 /**
  * Roles & Permissions S07.18 - the Stock page's vendor surfaces follow View vendors.
  *
@@ -6,17 +38,6 @@
  * cell, a blank filter section or a blank column in a download. Every person is built from switch values: the ability
  * is compiled from the grants the backend catalog gives each switch (the source of truth), never from a role name.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, waitFor, within } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
-
-import api from '@/lib/axios';
-import { renderWithProviders } from '@/__tests__/helpers';
-import { abilityWithSwitches } from '@/__tests__/support/backendSwitchCatalog';
-import { useInventoryAlertStore } from '@/stores/inventory-alert.store';
-import InventoryPage from '@/pages/v2/inventory/InventoryPage';
-import PurchaseOrdersPage from '@/pages/v2/inventory/PurchaseOrdersPage';
-import type { Item, Location } from '@/lib/api/inventory';
 
 class ResizeObserverStub {
   observe() {}
@@ -24,15 +45,6 @@ class ResizeObserverStub {
   disconnect() {}
 }
 global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
-
-const downloads = vi.hoisted(() => ({ files: [] as Array<{ csv: string; name: string }> }));
-vi.mock('@/lib/inventory/csv', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/inventory/csv')>();
-  return { ...actual, downloadCSV: (csv: string, name: string) => void downloads.files.push({ csv, name }) };
-});
-
-const mockApi = vi.mocked(api);
-vi.mock('@/lib/axios');
 
 const WAREHOUSE = 'a0000000-0000-0000-0000-0000000000w1';
 const LOCATIONS: Location[] = [{ id: WAREHOUSE, name: 'Main Warehouse', type: 'warehouse', branch: 'HQ' }];
@@ -61,42 +73,38 @@ beforeEach(() => {
   requested = [];
   served = WITH_VENDOR;
   useInventoryAlertStore.setState({ pending: null, nonce: 0 });
-  mockApi.get.mockImplementation((async (url: string) => {
-    requested.push(url.split('?')[0]!);
-    if (url === '/api/permission-switches/me') return { data: { admin_box: false, values: { view_stock: true }, rules: [] } };
-    if (url.startsWith('/api/inventory/items')) return { data: { data: served } };
-    if (url.startsWith('/api/inventory/locations')) return { data: { locations: LOCATIONS } };
-    if (url.startsWith('/api/inventory/vendors')) {
-      return { data: { vendors: [{ id: VENDOR_ID, name: VENDOR_NAME, category: 'Hardware', status: 'active' }] } };
-    }
-    if (url.startsWith('/api/inventory/low-stock')) {
-      return {
-        data: {
+  serveInventory({
+    items: () => served,
+    locations: LOCATIONS,
+    vendors: [{ id: VENDOR_ID, name: VENDOR_NAME, category: 'Hardware', status: 'active' }],
+    routes: [
+      { match: (url) => url === '/api/permission-switches/me', data: { admin_box: false, values: { view_stock: true }, rules: [] } },
+      {
+        match: (url) => url.startsWith('/api/inventory/low-stock'),
+        data: () => ({
           data: [{
             itemId: ID, sku: 'HNG-1', name: 'Brass Hinge', isActive: true, trackInventory: true,
             ...(served === WITH_VENDOR ? { vendorId: VENDOR_ID, vendorName: VENDOR_NAME } : {}),
             locationId: WAREHOUSE, locationName: 'Main Warehouse', onHand: 1, min: 5, max: null,
           }],
           meta: { page: 1, limit: 100, total: 1, totalPages: 1 },
-        },
-      };
-    }
-    if (url.startsWith('/api/inventory/assets')) return { data: { data: [], meta: { total: 0 } } };
-    if (url.startsWith('/api/logistic-orders')) return { data: { data: [], page: 1, limit: 50, total: 0 } };
-    return {
-      data: {
-        data: [], meta: { page: 1, limit: 1, total: 0, totalPages: 1 }, vendors: [], categories: [], branches: [], brands: [],
-        jobStages: [], purchaseOrders: [], users: [], finishes: [], techs: [], itemGroups: [], total: 0,
+        }),
       },
-    };
-  }) as typeof mockApi.get);
+    ],
+  });
+  // What the page asked for, without the query string.
+  const baseGet = vi.mocked(api).get.getMockImplementation()!;
+  vi.mocked(api).get.mockImplementation(((url: string, ...rest: unknown[]) => {
+    requested.push(url.split('?')[0]!);
+    return (baseGet as (u: string, ...r: unknown[]) => unknown)(url, ...rest);
+  }) as typeof api.get);
 });
 
 const READ = ['View stock', 'View price book'];
 // Create price book items (used below) needs Edit price book items, so each such person holds both.
 
 function renderStock(path: string, ...extra: string[]) {
-  return renderWithProviders(<InventoryPage />, { ability: abilityWithSwitches(...READ, ...extra), initialEntries: [path] });
+  return renderInventory({ ability: abilityWithSwitches(...READ, ...extra), entry: path });
 }
 
 const columnHeader = (name: string) => screen.queryByRole('columnheader', { name: new RegExp(`^${name}`, 'i') });

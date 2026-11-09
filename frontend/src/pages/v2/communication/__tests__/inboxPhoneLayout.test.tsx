@@ -9,11 +9,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { renderWithProviders } from '@/__tests__/helpers';
+import { renderInbox, serveInbox, signInDispatcher } from '@/__tests__/harness/inboxPage';
 import { buildAbility } from '@/lib/ability';
-import { useAuthStore } from '@/stores/auth.store';
 import { MEDIA } from '@/ui-kit/lib/breakpoints';
-import api from '@/lib/axios';
 
 const ability = buildAbility([
   { action: 'read', subject: 'Communication' },
@@ -21,13 +19,8 @@ const ability = buildAbility([
   { action: 'access_inbox', subject: 'Communication' },
 ]);
 
-vi.mock('@/lib/entitlements', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/lib/entitlements')>()),
-  useFeature: () => true,
-  useEntitlementsReady: () => true,
-}));
-
-import InboxPage from '@/pages/v2/communication/InboxPage';
+vi.mock('@/lib/entitlements', async (importOriginal) =>
+  (await import('@/__tests__/harness/inboxApiStub')).inboxEntitlements(await importOriginal<typeof import('@/lib/entitlements')>()));
 
 const LONG_ADDRESS = 'system.admin.support@mail.servwave.example';
 const MAIL = {
@@ -39,23 +32,14 @@ const MAIL = {
 let heldMailboxes: { id: string; name: string; unread: number }[];
 
 function answerNetwork() {
-  vi.mocked(api.get).mockImplementation(async (url: string, config?: { params?: unknown }) => {
-    if (url === '/api/communication/mailboxes') {
-      const selected = (config?.params as { selected?: string } | undefined)?.selected ?? 'mine';
-      return {
-        data: {
-          scope: 'attached', selected, selected_label: null, selected_unread: 0, total_unread: 0,
-          mine: { id: 'box-mine', unread: 0 }, held: heldMailboxes, main: null, people: null,
-        },
-      };
-    }
-    if (url === '/api/communication/emails') return { data: { emails: [MAIL] } };
-    if (url === '/api/communication/email-groups') return { data: { groups: [] } };
-    if (url === '/api/communication/forward-rules') return { data: { rules: [] } };
-    if (url === '/api/communication/team-members') return { data: { members: [] } };
-    if (url === '/api/communication/sending-identity') return { data: { status: 'active', address: LONG_ADDRESS, name: 'Admin at Acme', sendingEnabled: true } };
-    if (url === '/api/communication/my-mailbox') return { data: { mailbox: { status: 'active', address: LONG_ADDRESS } } };
-    return { data: {} };
+  serveInbox({
+    mailboxes: (params) => ({
+      scope: 'attached', selected: (params.selected as string | undefined) ?? 'mine', selected_label: null, selected_unread: 0, total_unread: 0,
+      mine: { id: 'box-mine', unread: 0 }, held: heldMailboxes, main: null, people: null,
+    }),
+    emails: [MAIL],
+    sendingIdentity: { status: 'active', address: LONG_ADDRESS, name: 'Admin at Acme', sendingEnabled: true },
+    myMailbox: { mailbox: { status: 'active', address: LONG_ADDRESS } },
   });
 }
 
@@ -71,17 +55,12 @@ function mockWidth(width: 'phone' | 'desktop') {
 beforeEach(() => {
   vi.clearAllMocks();
   heldMailboxes = [{ id: 'box-handed', name: 'Jane Smith', unread: 0 }];
-  vi.mocked(useAuthStore).mockImplementation(((selector: (s: Record<string, unknown>) => unknown) =>
-    selector({
-      user: { id: 'u1', email: 'jane@test.com', first_name: 'Jane', last_name: 'Smith', role: 'DISPATCHER', organization_id: 'org-1', org_features: ['email', 'phone'] },
-      isAuthenticated: true, isLoading: false, error: null,
-    })) as typeof useAuthStore,
-  );
+  signInDispatcher();
   answerNetwork();
 });
 afterEach(() => mockWidth('desktop'));
 
-const render = () => renderWithProviders(<InboxPage />, { ability, initialEntries: ['/communication/inbox'] });
+const render = () => renderInbox({ ability, entry: '/communication/inbox' });
 /** The chip's text, and the chip around it. */
 const sendingAs = async () => {
   const text = await screen.findByText(new RegExp(`Sending as ${LONG_ADDRESS}`));

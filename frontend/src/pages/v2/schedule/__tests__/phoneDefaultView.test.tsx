@@ -11,14 +11,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 
-import api from '@/lib/axios';
 import { buildAbility } from '@/lib/ability';
-import { renderWithProviders } from '@/__tests__/helpers';
 
-import SchedulePage from '../SchedulePage';
+import { renderSchedule, serveSchedule } from '@/__tests__/harness/schedulePage';
 
 const ADMIN = buildAbility([{ action: 'manage', subject: 'all' }]);
-const mockApi = vi.mocked(api);
 
 class ResizeObserverStub {
   observe() {}
@@ -57,20 +54,12 @@ function setViewportWidth(width: number) {
 }
 
 function mockEmptyBoard() {
-  mockApi.get.mockImplementation((url: string) => {
-    if (url === '/api/jobs') return Promise.resolve({ data: { jobs: [] } });
-    if (url === '/api/departments') return Promise.resolve({ data: { departments: [] } });
-    if (url === '/api/leads') return Promise.resolve({ data: { leads: [] } });
-    if (url === '/api/users') return Promise.resolve({ data: { users: [] } });
-    if (url === '/api/organization') return Promise.resolve({ data: {} });
-    if (url === '/api/service-plans/scheduler-bucket') return Promise.resolve({ data: { plans: [] } });
-    return Promise.resolve({ data: {} });
-  });
+  serveSchedule({ jobs: [], bucketJobs: [] });
 }
 
 /** Render the board at `url` and wait until the first load has settled. */
 async function renderBoard(url = '/schedule') {
-  const utils = renderWithProviders(<SchedulePage />, { ability: ADMIN, initialEntries: [url] });
+  const utils = renderSchedule({ ability: ADMIN, entry: url, tooltip: false });
   await waitFor(() => expect(utils.container.querySelector('.schedule-cal .animate-spin')).toBeNull());
   return utils;
 }

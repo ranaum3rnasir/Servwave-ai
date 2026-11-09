@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 
 import api from '@/lib/axios';
-import { useOrganization } from '@/lib/api/organization';
+import { useOrganization } from '@/lib/api/shared/organization';
 import { useAppAbility } from '@/contexts/AbilityContext';
 import { extractApiError } from '@/lib/utils';
 import { PhoneInput, phoneFieldValue } from '@/ui-kit/components/form/phoneInput';

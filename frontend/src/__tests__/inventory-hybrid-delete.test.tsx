@@ -18,18 +18,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
-import { renderWithProviders, inventoryWriteAbility } from './helpers';
-import InventoryPage from '@/pages/v2/inventory/InventoryPage';
+import { inventoryWriteAbility } from './helpers';
+import { renderInventory } from '@/__tests__/harness/inventoryPage';
 
 import { toast } from '@/ui-kit/components/ui/sonner';
 
 // The routed page reports through the kit's sonner toaster, which App.tsx
 // mounts at the root and renderWithProviders does not. Spying on the call is
 // how the toast copy stays asserted without standing a toaster up per test.
-vi.mock('@/ui-kit/components/ui/sonner', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/ui-kit/components/ui/sonner')>()),
-  toast: vi.fn(),
-}));
+vi.mock('@/ui-kit/components/ui/sonner', async (importOriginal) =>
+  (await import('@/__tests__/harness/inventoryApiStub')).sonnerSpy(await importOriginal<typeof import('@/ui-kit/components/ui/sonner')>()));
 
 const mockToast = vi.mocked(toast);
 
@@ -71,31 +69,24 @@ const ACTIVE_ONLY = [ACTIVE_ITEM];
 const ACTIVE_AND_ARCHIVED = [ACTIVE_ITEM, ARCHIVED_ITEM];
 
 vi.mock('@/lib/api/inventory', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/inventory')>();
-  const EMPTY: never[] = [];
-  const stable =
-    <T,>(data: T) =>
-    () => ({ data, isLoading: false, isError: false });
   const locations = [
     { id: h.LOC_MAIN, name: 'Main Warehouse', type: 'warehouse', branch: 'HQ' },
   ];
-  return {
-    ...actual,
-    // Mirrors the real server contract: archived rows only surface once the
-    // caller passes includeArchived=true (Task 2's include_archived flag).
-    useInventoryItems: (includeArchived = false) => ({
-      data: includeArchived ? ACTIVE_AND_ARCHIVED : ACTIVE_ONLY,
-      isLoading: false,
-      isError: false,
-    }),
-    useLocations: stable(locations),
-    useVendors: stable(EMPTY),
-    useCategories: stable(EMPTY),
-    useBranches: stable(EMPTY),
-    useBrands: stable(EMPTY),
-    useJobStages: stable(EMPTY),
-    useMovements: stable(EMPTY),
-  };
+  return (await import('@/__tests__/harness/inventoryApiStub')).inventoryApi(
+    await importOriginal<typeof import('@/lib/api/inventory')>(),
+    {
+      reads: {
+        useLocations: locations,
+      },
+      custom: {
+        useInventoryItems: (includeArchived = false) => ({
+        data: includeArchived ? ACTIVE_AND_ARCHIVED : ACTIVE_ONLY,
+        isLoading: false,
+        isError: false,
+      }),
+      },
+    },
+  );
 });
 
 const mockApi = vi.mocked(api);
@@ -112,8 +103,8 @@ beforeEach(() => {
 
 describe('v2 InventoryPage - hybrid delete (Task 3)', () => {
   it('hides archived rows by default and reveals them via "Show archived"', async () => {
-    renderWithProviders(<InventoryPage />, {
-      initialEntries: ['/inventory'],
+    renderInventory({
+      entry: '/inventory',
       ability: inventoryAbility(),
     });
 
@@ -128,8 +119,8 @@ describe('v2 InventoryPage - hybrid delete (Task 3)', () => {
 
   it('deletes an unreferenced item and toasts "deleted" (mode:"deleted")', async () => {
     mockApi.delete.mockResolvedValue({ data: { mode: 'deleted', message: 'Item deleted' } });
-    renderWithProviders(<InventoryPage />, {
-      initialEntries: ['/inventory'],
+    renderInventory({
+      entry: '/inventory',
       ability: inventoryAbility(),
     });
 
@@ -150,8 +141,8 @@ describe('v2 InventoryPage - hybrid delete (Task 3)', () => {
     mockApi.delete.mockResolvedValue({
       data: { mode: 'archived', message: 'Item archived', referenceCount: 3 },
     });
-    renderWithProviders(<InventoryPage />, {
-      initialEntries: ['/inventory'],
+    renderInventory({
+      entry: '/inventory',
       ability: inventoryAbility(),
     });
 
@@ -167,8 +158,8 @@ describe('v2 InventoryPage - hybrid delete (Task 3)', () => {
 
   it('toasts a failure message and leaves the item in place if the delete request rejects', async () => {
     mockApi.delete.mockRejectedValue(new Error('network down'));
-    renderWithProviders(<InventoryPage />, {
-      initialEntries: ['/inventory'],
+    renderInventory({
+      entry: '/inventory',
       ability: inventoryAbility(),
     });
 
@@ -182,8 +173,8 @@ describe('v2 InventoryPage - hybrid delete (Task 3)', () => {
 
   it('offers "Restore item" (not "Delete item") for an archived row and restores it', async () => {
     mockApi.patch.mockResolvedValue({ data: { data: { ...ARCHIVED_ITEM, isActive: true } } });
-    renderWithProviders(<InventoryPage />, {
-      initialEntries: ['/inventory'],
+    renderInventory({
+      entry: '/inventory',
       ability: inventoryAbility(),
     });
 

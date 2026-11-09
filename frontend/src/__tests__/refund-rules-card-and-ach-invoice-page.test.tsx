@@ -10,18 +10,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import api from '@/lib/axios';
-import { renderWithProviders } from './helpers';
 import { buildAbility } from '@/lib/ability';
-import InvoiceDetailPage from '@/pages/v2/invoices/InvoiceDetailPage';
+import { renderInvoiceDetail, serveInvoiceDetail } from '@/__tests__/harness/invoiceDetailPage';
 
 const INVOICE_ID = 'inv-pay29';
-const routeId = INVOICE_ID;
-
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual('react-router-dom');
-  return { ...actual, useParams: () => ({ id: routeId }), useNavigate: () => vi.fn() };
-});
+vi.mock('react-router-dom', async () => (await import('@/__tests__/harness/invoiceDetailRouter')).invoiceDetailRouter({ navigate: true }));
 
 // Heavy sub-surfaces with no bearing on which actions are offered.
 vi.mock('@/components/crm/IconRail', () => ({ IconRail: ({ children }: { children: React.ReactNode }) => children }));
@@ -57,7 +50,6 @@ vi.mock('@/components/estimates/DuplicateEstimateDialog', () => ({ DuplicateEsti
 vi.mock('@/components/estimates/WaiveDepositDialog', () => ({ WaiveDepositDialog: () => null }));
 vi.mock('@/components/estimates/RefundDepositDialog', () => ({ RefundDepositDialog: () => null }));
 
-const mockApi = vi.mocked(api);
 
 // The payments and balance on the page are prices, so an office person holds See prices (P11).
 const officeGrants = [
@@ -137,12 +129,7 @@ function invoice(over: Record<string, unknown>) {
 }
 
 function serve(inv: Record<string, unknown>) {
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.includes('/api/invoices/')) return { data: { invoice: inv } };
-    if (url.includes('/state-tax-rates')) return { data: { data: [] } };
-    if (url === '/api/organization') return { data: { accepted_payment_methods: ['CASH'] } };
-    return { data: {} };
-  });
+  serveInvoiceDetail({ invoice: inv, stateTaxRates: { data: [] }, organization: { accepted_payment_methods: ['CASH'] } });
 }
 
 const PROCESSING_BANK = invoice({
@@ -166,7 +153,7 @@ describe('a bank payment still processing', () => {
   it('reads "Cancel payment" for a person who may refund, and opens the cancel dialog; no Refund is offered', async () => {
     serve(PROCESSING_BANK);
     const user = userEvent.setup();
-    renderWithProviders(<InvoiceDetailPage />, { ability: withRefund });
+    renderInvoiceDetail({ id: INVOICE_ID, ability: withRefund });
 
     expect(await screen.findAllByText('I02901')).not.toHaveLength(0);
     expect(screen.queryByRole('button', { name: /^Refund$/ })).not.toBeInTheDocument();
@@ -181,7 +168,7 @@ describe('a bank payment still processing', () => {
   it('offers no "Cancel payment" without the refund permission', async () => {
     serve(PROCESSING_BANK);
     const user = userEvent.setup();
-    renderWithProviders(<InvoiceDetailPage />, { ability: withoutRefund });
+    renderInvoiceDetail({ id: INVOICE_ID, ability: withoutRefund });
 
     expect(await screen.findAllByText('I02901')).not.toHaveLength(0);
     await user.click(await screen.findByRole('tab', { name: /^Payments/ }));
@@ -194,7 +181,7 @@ describe('a REFUNDED invoice', () => {
   it('is final: no Void Invoice, Refund or Credit, and no Void on its payment row (the server refuses them all)', async () => {
     serve(REFUNDED);
     const user = userEvent.setup();
-    renderWithProviders(<InvoiceDetailPage />, { ability: withRefund });
+    renderInvoiceDetail({ id: INVOICE_ID, ability: withRefund });
 
     expect(await screen.findAllByText('I02901')).not.toHaveLength(0);
     expect(screen.queryByRole('button', { name: /^Credit$/ })).not.toBeInTheDocument();
@@ -213,7 +200,7 @@ describe('a REFUNDED invoice', () => {
   it('an open invoice still offers Void Invoice to the same person (control)', async () => {
     serve(invoice({}));
     const user = userEvent.setup();
-    renderWithProviders(<InvoiceDetailPage />, { ability: withRefund });
+    renderInvoiceDetail({ id: INVOICE_ID, ability: withRefund });
 
     expect(await screen.findAllByText('I02901')).not.toHaveLength(0);
     await user.click(await screen.findByRole('button', { name: 'More actions' }));
@@ -224,7 +211,7 @@ describe('a REFUNDED invoice', () => {
   it('the same payment row on a PAID invoice still offers Void (control)', async () => {
     serve(invoice({ status: 'PAID', amount_due: '0.00', net_collected: '300.00', payments: [payment({})] }));
     const user = userEvent.setup();
-    renderWithProviders(<InvoiceDetailPage />, { ability: withRefund });
+    renderInvoiceDetail({ id: INVOICE_ID, ability: withRefund });
 
     await user.click(await screen.findByRole('tab', { name: /^Payments/ }));
     expect(await screen.findByRole('button', { name: /^Void$/ })).toBeInTheDocument();

@@ -21,7 +21,7 @@ import { useAuthStore } from "@/stores/auth.store";
 import { SignatureField } from "@/components/inventory/SignatureField";
 import type { SignatureValue } from "@/lib/inventory/signatures";
 import { formatPhone } from "@/lib/utils";
-import { useOrganization } from "@/lib/api/organization";
+import { useOrganization } from "@/lib/api/shared/organization";
 import { useStageLineDisclosure } from "./stageLineDisclosure";
 import { Button } from "@/components/ui/button";
 import {

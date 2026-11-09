@@ -11,18 +11,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import api from '@/lib/axios';
-import { renderWithProviders } from './helpers';
-import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
+import { renderJobDetail, serveJobDetail, stubBrowser } from '@/__tests__/harness/jobDetailPage';
 import { buildAbility } from '@/lib/ability';
 import { useAuthStore } from '@/stores/auth.store';
 
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 vi.mock('@/components/tasks/JobLeadTasksTab', () => ({ JobLeadTasksTab: () => null }));
 
@@ -101,13 +94,9 @@ function mount({ visitCrew }: { visitCrew: string[][] }) {
     actions: visitCrew.flat().includes(TECH_ID) ? ['schedule'] : [],
   };
 
-  vi.mocked(api).get.mockImplementation(async (url: string) => {
-    if (url === `/api/jobs/${JOB_ID}/visits`) return { data: { visits } } as never;
-    if (url.includes(`/api/jobs/${JOB_ID}`)) return { data: { job } } as never;
-    return { data: {} } as never;
-  });
+  serveJobDetail({ job, visits });
 
-  return renderWithProviders(<JobDetailPage />, { ability: technicianAbility() });
+  return renderJobDetail({ ability: technicianAbility() });
 }
 
 beforeEach(() => {

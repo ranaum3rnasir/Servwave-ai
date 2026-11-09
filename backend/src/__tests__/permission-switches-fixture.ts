@@ -8,6 +8,7 @@
    ========================================================================== */
 
 import request from 'supertest';
+import type { RequestListener, Server } from 'http';
 import { randomUUID } from 'crypto';
 import { vi } from 'vitest';
 import type { JobStatus, PrismaClient, Role } from '@prisma/client';
@@ -18,23 +19,32 @@ import type { SwitchValue } from '../lib/permissions/switches/catalog';
 import { validateSwitchSet } from '../lib/permissions/switches/validate';
 import { assertPossibleSwitchSet } from './support/switchDependants';
 import { setFirstOwner } from '../lib/users/first-owner';
+import { listenOnLoopback, closeServer } from './loopback-app';
 
 export type Person = { id: string; email: string };
 
 export function switchFixture(db: PrismaClient, loadApp: () => Promise<Parameters<typeof request>[0]>) {
   const orgs: string[] = [];
   const adminOf = new Map<string, string>();
-  let app: Parameters<typeof request>[0] | undefined;
+  let listening: Promise<Server> | undefined;
+
+  /**
+   * The one listener of this test file, on 127.0.0.1 (see loopback-app.ts for why a per-request wildcard listener is wrong).
+   * Started on first use, closed by `cleanup`. Suites that call the app directly pass this to request() too.
+   */
+  function listener(): Promise<Server> {
+    listening ??= loadApp().then((app) => listenOnLoopback(app as RequestListener));
+    return listening;
+  }
 
   /** Sign in as this person for the next calls (the auth layer caches the resolved user by token). */
   async function signedInAs(person: Person) {
-    app ??= await loadApp();
+    const server = await listener();
     (supabaseAdmin.auth.getUser as ReturnType<typeof vi.fn>).mockResolvedValue({
       data: { user: { id: person.id, email: person.email } },
       error: null,
     });
     const bearer = `Bearer switches-${person.id}`;
-    const server = app;
     return {
       get: (path: string) => request(server).get(path).set('Authorization', bearer),
       post: (path: string, body: object = {}) => request(server).post(path).set('Authorization', bearer).send(body),
@@ -371,11 +381,12 @@ export function switchFixture(db: PrismaClient, loadApp: () => Promise<Parameter
       }
       await quietly(db.organization.deleteMany({ where: { id: { in: orgs } } }));
     }
+    await closeServer(await listening?.catch(() => undefined));
     await db.$disconnect();
   }
 
   return {
-    signedInAs, newOrg, addUser, addUserMailbox, addCustomRole, setRoleSwitches, addEstimate, addInvoice, addServicePlan,
+    listener, signedInAs, newOrg, addUser, addUserMailbox, addCustomRole, setRoleSwitches, addEstimate, addInvoice, addServicePlan,
     addDepartment, addLocation, addLead, addVisit, addJob, removeCrew, cleanup,
   };
 }

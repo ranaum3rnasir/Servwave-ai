@@ -4,7 +4,7 @@ import { X } from 'lucide-react';
 
 import { useAppAbility } from '@/contexts/AbilityContext';
 import { useFeature } from '@/lib/entitlements';
-import { switchOn, useMySwitches } from '@/lib/api/mySwitches';
+import { switchOn, useMySwitches } from '@/lib/api/shared/mySwitches';
 import { useSettingsGuard } from '@/stores/settingsGuard.store';
 import { useAuthStore } from '@/stores/auth.store';
 import type { AppAction, AppSubject } from '@/lib/ability';

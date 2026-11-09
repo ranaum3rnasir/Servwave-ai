@@ -20,12 +20,12 @@ import type { ReactElement } from 'react';
 
 import api from '@/lib/axios';
 import EstimatesPage from '@/pages/v2/estimates/EstimatesPage';
-import InventoryPage from '@/pages/v2/inventory/InventoryPage';
+import { renderInventory } from '@/__tests__/harness/inventoryPage';
 import PriceBookPage from '@/pages/v2/inventory/PriceBookPage';
-import SchedulePage from '@/pages/v2/schedule/SchedulePage';
-import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
+import { scheduleElement } from '@/__tests__/harness/schedulePage';
+import { renderJobDetail, serveJobDetail } from '@/__tests__/harness/jobDetailPage';
 import JobsPage from '@/pages/v2/jobs/JobsPage';
-import LeadDetailPage from '@/pages/v2/leads/LeadDetailPage';
+import { renderLeadDetail } from '@/__tests__/harness/leadDetailPage';
 import LeadsPage from '@/pages/v2/leads/LeadsPage';
 import TasksHubPage from '@/pages/v2/tasks/TasksHubPage';
 
@@ -73,23 +73,29 @@ let requested: string[] = [];
 function serve() {
   requested = [];
   localStorage.clear();
-  mockApi.get.mockImplementation(async (url: string) => {
-    requested.push(url);
-    if (url === '/api/permission-switches/me') return { data: technicianSwitchesAnswer() };
-    if (url === '/api/jobs') return { data: { jobs: [], pagination: PAGINATION, stats: {}, users: [], departments: [], tags: [] } };
-    if (url === '/api/leads') return { data: { leads: [], pagination: PAGINATION, stats: {}, users: [] } };
-    if (url === '/api/estimates') return { data: { estimates: [], pagination: PAGINATION, stats: {}, users: [] } };
-    if (url === '/api/tasks') return { data: { tasks: [], users: [] } };
-    if (ENVELOPED.some((path) => url.startsWith(path))) {
-      return { data: { data: [], meta: { page: 1, limit: 100, total: 0, totalPages: 1 }, page: 1, limit: 100, total: 0 } };
-    }
-    if (url.endsWith('/scopes')) return { data: { scopes: [], billing: { total: 0, invoiced: 0, remaining: 0 } } };
-    if (url.endsWith('/line-items')) return { data: { lines: [], billing: { total: 0, invoiced: 0, remaining: 0 } } };
-    if (url.endsWith('/notes') || url.includes('/notes?')) return { data: { notes: [] } };
-    if (/^\/api\/jobs\/[^/]+$/.test(url)) return { data: { job: JOB } };
-    if (/^\/api\/leads\/[^/]+$/.test(url)) return { data: { lead: LEAD_FIXTURE } };
-    return { data: {} };
+  serveJobDetail({
+    jobId: RECORD_ID,
+    job: JOB,
+    routes: [
+      { match: (url) => url === '/api/permission-switches/me', data: technicianSwitchesAnswer() },
+      { match: (url) => url === '/api/jobs', data: { jobs: [], pagination: PAGINATION, stats: {}, users: [], departments: [], tags: [] } },
+      { match: (url) => url === '/api/leads', data: { leads: [], pagination: PAGINATION, stats: {}, users: [] } },
+      { match: (url) => url === '/api/estimates', data: { estimates: [], pagination: PAGINATION, stats: {}, users: [] } },
+      { match: (url) => url === '/api/tasks', data: { tasks: [], users: [] } },
+      {
+        match: (url) => ENVELOPED.some((path) => url.startsWith(path)),
+        data: { data: [], meta: { page: 1, limit: 100, total: 0, totalPages: 1 }, page: 1, limit: 100, total: 0 },
+      },
+      { match: (url) => url.endsWith('/notes') || url.includes('/notes?'), data: { notes: [] } },
+      { match: (url) => /^\/api\/leads\/[^/]+$/.test(url), data: { lead: LEAD_FIXTURE } },
+    ],
   });
+  // Every read is listed, so a refused one can be named.
+  const answer = mockApi.get.getMockImplementation()!;
+  mockApi.get.mockImplementation(((url: string, config?: unknown) => {
+    requested.push(url);
+    return answer(url, config as never);
+  }) as typeof mockApi.get);
 }
 
 /** The person's own rule list, so each REFUSED entry is proved refused for them and not just assumed. */
@@ -102,7 +108,7 @@ function refusedReads(): string[] {
 }
 
 async function settle() {
-  await new Promise((resolve) => setTimeout(resolve, 150));
+  await new Promise((resolve) => setTimeout(resolve, 50));
 }
 
 async function openEveryTab() {
@@ -140,12 +146,12 @@ const LISTS: Array<[string, string, () => ReactElement]> = [
   ['Leads', '/leads', () => <LeadsPage />],
   ['Estimates', '/estimates', () => <EstimatesPage />],
   ['Tasks', '/tasks', () => <TasksHubPage />],
-  ['Schedule', '/schedule', () => <SchedulePage />],
+  ['Schedule', '/schedule', scheduleElement],
 ];
 
 describe('a Technician-preset person on the list pages', () => {
   it.each(LISTS)('%s makes no refused read', async (_name, path, page) => {
-    renderWithProviders(page(), { initialEntries: [path], ability: technicianAbility() });
+    renderWithProviders(page(), { entry: path, ability: technicianAbility() });
     await waitFor(() => expect(requested.some((url) => url.startsWith('/api/') && url !== '/api/organization')).toBe(true));
     await settle();
 
@@ -161,7 +167,7 @@ describe('a Technician-preset person on the Inventory pages', () => {
     ['Low stock', '/inventory/low-stock'],
     ['Logistic Orders', '/inventory/logistic-orders'],
   ])('%s makes no refused read', async (_name, path) => {
-    renderWithProviders(<InventoryPage />, { initialEntries: [path], ability: technicianAbility() });
+    renderInventory({ entry: path, ability: technicianAbility() });
     await waitFor(() => expect(requested).toContain('/api/permission-switches/me'));
     await settle();
 
@@ -169,7 +175,7 @@ describe('a Technician-preset person on the Inventory pages', () => {
   });
 
   it('Price Book makes no refused read on any tab', async () => {
-    renderWithProviders(<PriceBookPage />, { initialEntries: ['/inventory/price-book'], ability: technicianAbility() });
+    renderWithProviders(<PriceBookPage />, { entry: '/inventory/price-book', ability: technicianAbility() });
     await openEveryTab();
 
     expect(refusedReads()).toEqual([]);
@@ -178,7 +184,7 @@ describe('a Technician-preset person on the Inventory pages', () => {
 
 describe('a Technician-preset person on the record pages', () => {
   it('a job makes no refused read on any tab', async () => {
-    renderWithProviders(<JobDetailPage />, { ability: technicianAbility() });
+    renderJobDetail({ ability: technicianAbility() });
     await screen.findByRole('tab', { name: /Overview/ });
     await openEveryTab();
 
@@ -186,7 +192,7 @@ describe('a Technician-preset person on the record pages', () => {
   });
 
   it('a lead makes no refused read on any tab', async () => {
-    renderWithProviders(<LeadDetailPage />, { ability: technicianAbility() });
+    renderLeadDetail({ ability: technicianAbility() });
     await screen.findByRole('tab', { name: /Overview/ });
     await openEveryTab();
 

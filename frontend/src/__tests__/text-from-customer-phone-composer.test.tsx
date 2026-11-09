@@ -17,9 +17,8 @@ import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
 import { useAuthStore } from '@/stores/auth.store';
 import { renderWithProviders, ALL_JOB_ACTIONS } from './helpers';
-import { buildAbility } from '@/lib/ability';
-import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
-import InvoiceDetailPage from '@/pages/v2/invoices/InvoiceDetailPage';
+import { renderJobDetail, serveJobDetail, stubBrowser } from '@/__tests__/harness/jobDetailPage';
+import { invoiceDetailElement } from '@/__tests__/harness/invoiceDetailPage';
 import { SmsInboxView } from '@/components/communication/phone/SmsInboxView';
 import type { MessageThread, PhoneCustomer } from '@/lib/api/communication';
 import { usePhoneCustomers } from '@/lib/api/communication';
@@ -28,16 +27,10 @@ import { catalogToggle } from './support/backendSwitchCatalog';
 vi.mock('@/components/tasks/JobLeadTasksTab', () => ({ JobLeadTasksTab: () => null }));
 vi.mock('@/lib/communication/phoneTabHandoff', () => ({ requestCall: vi.fn() }));
 
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 const mockApi = vi.mocked(api);
 // The pages draw from the person's switches, not from the ability.
-const adminAbility = buildAbility([{ action: 'manage', subject: 'all' }]);
 
 const JOB_ID = 'j0000000-0000-0000-0000-000000000001';
 const CUSTOMER_ID = 'c0000000-0000-0000-0000-000000000001';
@@ -136,36 +129,38 @@ const askedForCustomers = () =>
   asked().filter((url) => url === '/api/communication/contacts' || url === `/api/customers/${CUSTOMER_ID}`);
 
 function renderAt(path: string, switches: Switches) {
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url === '/api/permission-switches/me') return { data: meAnswer(switches) };
-    if (url === '/api/organization') return { data: { phone_connected: true, ctm_account_id: true, ctm_sms_ready: true } };
-    // What the server answers a person without View customers.
-    if (url === '/api/communication/contacts') {
-      if (!switches.view) throw { response: { status: 403, data: { error: 'Insufficient permissions' } } };
-      return { data: { contacts: [DIRECTORY_JOHN] } };
-    }
-    if (url === `/api/customers/${CUSTOMER_ID}`) {
-      if (!switches.view) throw { response: { status: 403, data: { error: 'Insufficient permissions' } } };
-      return { data: { customer: { jobs: [] } } };
-    }
-    if (url === '/api/communication/agents') return { data: { agents: [] } };
-    if (url === '/api/communication/threads') return { data: { threads: serverThreads } };
-    if (url === '/api/communication/numbers') return { data: { numbers: [SMS_NUMBER] } };
-    if (url.startsWith('/api/jobs/')) return { data: { job: JOB } };
-    if (url.startsWith('/api/invoices/')) return { data: { invoice: INVOICE } };
-    return { data: {} };
+  /** What the server answers a person without View customers. */
+  const refusedWithoutView = (answer: () => unknown) => () => {
+    if (!switches.view) throw { response: { status: 403, data: { error: 'Insufficient permissions' } } };
+    return answer();
+  };
+  serveJobDetail({
+    jobId: JOB_ID,
+    job: JOB,
+    routes: [
+      { match: (url) => url === '/api/permission-switches/me', data: meAnswer(switches) },
+      { match: (url) => url === '/api/organization', data: { phone_connected: true, ctm_account_id: true, ctm_sms_ready: true } },
+      { match: (url) => url === '/api/communication/contacts', data: refusedWithoutView(() => ({ contacts: [DIRECTORY_JOHN] })) },
+      { match: (url) => url === `/api/customers/${CUSTOMER_ID}`, data: refusedWithoutView(() => ({ customer: { jobs: [] } })) },
+      { match: (url) => url === '/api/communication/agents', data: { agents: [] } },
+      { match: (url) => url === '/api/communication/threads', data: () => ({ threads: serverThreads }) },
+      { match: (url) => url === '/api/communication/numbers', data: { numbers: [SMS_NUMBER] } },
+      { match: (url) => url.startsWith('/api/invoices/'), data: { invoice: INVOICE } },
+    ],
   });
   mockApi.post.mockResolvedValue({
     data: { message: { id: 'm1', direction: 'out', body: 'On my way', ts: '2026-07-13T10:00:00Z' }, threadId: 'srv-th-1' },
   });
-  return renderWithProviders(
-    <Routes>
-      <Route path="/jobs/:id" element={<JobDetailPage />} />
-      <Route path="/invoices/:id" element={<InvoiceDetailPage />} />
-      <Route path="/communication/text" element={<Harness />} />
-    </Routes>,
-    { initialEntries: [path], ability: adminAbility },
-  );
+  return renderJobDetail({
+    entry: path,
+    wrap: (page) => (
+      <Routes>
+        <Route path="/jobs/:id" element={page} />
+        <Route path="/invoices/:id" element={invoiceDetailElement()} />
+        <Route path="/communication/text" element={<Harness />} />
+      </Routes>
+    ),
+  });
 }
 
 /** The composer's panel, and its footer Send button (the inbox has its own Send). */

@@ -90,7 +90,7 @@ suite('Job cancel reasons: list, edits, tenancy, and independence from the estim
     });
 
     it('is refused to a person who is not signed in', async () => {
-      const server = (await import('../app.js')).default as never;
+      const server = await fx.listener();
       const request = (await import('supertest')).default;
       expect((await request(server).get('/api/job-cancel-reasons')).status).toBe(401);
     });

@@ -17,35 +17,17 @@
  * Both pages are the routed v2 ones (`pages/v2/routes/auth-public.routes.tsx`).
  */
 
-import { useEffect } from 'react';
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from './helpers';
-import PublicEstimatePage from '@/pages/v2/auth-public/PublicEstimatePage';
+import { renderPublicEstimate, servePublicEstimate, setPublicRoute } from '@/__tests__/harness/publicEstimatePage';
 import PublicInvoicePage from '@/pages/v2/auth-public/PublicInvoicePage';
 
-const route = vi.hoisted(() => ({ id: 'est-320', token: 'tok-320' }));
-
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
-  return {
-    ...actual,
-    useParams: () => ({ id: route.id }),
-    useSearchParams: () => [new URLSearchParams(`token=${route.token}`), vi.fn()],
-  };
-});
+vi.mock('react-router-dom', async () => (await import('@/__tests__/harness/publicEstimateMocks')).publicRouter());
 
 // Reports "signed" on mount, so Approve is enabled the way it is for a customer who has signed.
-vi.mock('react-signature-canvas', () => ({
-  default: function SignedCanvas(props: { onEnd?: () => void }) {
-    useEffect(() => {
-      props.onEnd?.();
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
-    return null;
-  },
-}));
+vi.mock('react-signature-canvas', async () => (await import('@/__tests__/harness/publicEstimateMocks')).signedPad());
 
 /** The card (kit `Card`) an element sits in. */
 const cardOf = (el: HTMLElement) => el.closest('[data-slot="card"]') as HTMLElement | null;
@@ -120,14 +102,7 @@ function invoiceResponse(org: Record<string, unknown> = { name: ORG.name, phone:
 
 /** GETs answer with `body`; POST/PATCH answer with a failure carrying a raw backend string. */
 function stubFetch(body: unknown) {
-  const f = vi.fn().mockImplementation((_url: string, init?: RequestInit) => {
-    if (init?.method && init.method !== 'GET') {
-      return Promise.resolve({ ok: false, json: async () => ({ error: 'internal_error_xyz' }) });
-    }
-    return Promise.resolve({ ok: true, json: async () => body });
-  });
-  vi.stubGlobal('fetch', f);
-  return f;
+  return servePublicEstimate({ page: body, write: { ok: false, body: { error: 'internal_error_xyz' } } });
 }
 
 beforeEach(() => {
@@ -139,14 +114,9 @@ afterEach(() => {
 });
 
 describe('public estimate at 320 (mobile slice 28)', () => {
-  beforeEach(() => {
-    route.id = 'est-320';
-    route.token = 'tok-320';
-  });
-
   it('a failed approval is announced beside Approve and takes focus', async () => {
     stubFetch(ESTIMATE_RESPONSE);
-    renderWithProviders(<PublicEstimatePage />);
+    renderPublicEstimate({ id: 'est-320', token: 'tok-320' });
 
     const approve = await screen.findByRole('button', { name: /approve estimate/i });
     await waitFor(() => expect(approve).toBeEnabled());
@@ -165,7 +135,7 @@ describe('public estimate at 320 (mobile slice 28)', () => {
 
   it('a failed decline is announced beside Decline and takes focus', async () => {
     stubFetch(ESTIMATE_RESPONSE);
-    renderWithProviders(<PublicEstimatePage />);
+    renderPublicEstimate({ id: 'est-320', token: 'tok-320' });
 
     const decline = await screen.findByRole('button', { name: /^decline$/i });
     await userEvent.click(decline);
@@ -181,7 +151,7 @@ describe('public estimate at 320 (mobile slice 28)', () => {
 
   it("the business's phone and email are a call link and a mail link", async () => {
     stubFetch(ESTIMATE_RESPONSE);
-    renderWithProviders(<PublicEstimatePage />);
+    renderPublicEstimate({ id: 'est-320', token: 'tok-320' });
 
     const call = await screen.findByRole('link', { name: /\(555\) 123-4567/ });
     expect(call).toHaveAttribute('href', 'tel:5551234567');
@@ -192,8 +162,7 @@ describe('public estimate at 320 (mobile slice 28)', () => {
 
 describe('public invoice at 320 (mobile slice 28)', () => {
   beforeEach(() => {
-    route.id = 'inv-320';
-    route.token = 'tok-inv-320';
+    setPublicRoute({ id: 'inv-320', token: 'tok-inv-320' });
   });
 
   it('below sm the line items are stacked, labelled rows, not a sideways table', async () => {

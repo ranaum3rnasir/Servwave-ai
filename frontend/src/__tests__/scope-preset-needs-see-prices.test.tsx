@@ -16,7 +16,7 @@ import { renderWithProviders, seesPrices } from './helpers';
 import { buildAbility } from '@/lib/ability';
 import { impossibleOnPurpose } from '@/__tests__/support/backendSwitchCatalog';
 import { EstimateScopeOfWorkCard } from '@/components/estimates/EstimateLineItemsEditor';
-import type { Scope } from '@/lib/api/jobs';
+import type { Scope } from '@/lib/api/shared/scope';
 
 const mockApi = vi.mocked(api);
 const SCOPE: Scope = { id: 'scope-a', title: 'Demo', body: 'Remove old unit.', flat_price: 100, is_taxable: true, internal_cost: null };

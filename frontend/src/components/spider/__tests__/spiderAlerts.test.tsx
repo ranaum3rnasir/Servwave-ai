@@ -350,13 +350,15 @@ describe('his panel and cards', () => {
   });
 
   it('reopens cleanly when the button is tapped again while the panel is closing', async () => {
+    // Fake clock (real time still flows): the closing animation's timer is stepped over, not slept through.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     mount(<SpiderAlertsHost />);
     const panel = await openPanel();
     fireEvent.click(within(panel).getByRole('button', { name: 'Close' }));
     fireEvent.click(await button());
     const again = screen.getByRole('dialog', { name: 'Spider Lead Watcher Notifications' });
     expect(again).toHaveAttribute('data-state', 'open');
-    await new Promise((r) => setTimeout(r, 400));
+    await act(async () => { await vi.advanceTimersByTimeAsync(400); });
     expect(screen.getByRole('dialog', { name: 'Spider Lead Watcher Notifications' })).toBeInTheDocument();
   });
 });

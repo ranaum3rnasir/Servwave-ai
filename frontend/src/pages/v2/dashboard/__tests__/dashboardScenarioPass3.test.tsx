@@ -1,21 +1,33 @@
-/// <reference types="@testing-library/jest-dom/vitest" />
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { fireEvent, screen, within } from '@testing-library/react';
+import { buildAbility } from '@/lib/ability';
+import type { DashboardResponse, DashboardTileMeta } from '@/lib/api/dashboard';
+import { serveDashboard, renderDashboard } from '@/__tests__/harness/dashboardPage';
+import api from '@/lib/axios';
+import { useAuthStore } from '@/stores/auth.store';
+
+vi.hoisted(() => {
+  vi.stubEnv('VITE_DASHBOARD_USE_MOCK', 'false');
+});
+
+// Each test starts from the setup file's signed-in user and bare client calls: reset them here, so a test states its own user
+// and answers in its own `beforeEach` (`clearAllMocks` keeps implementations).
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(useAuthStore).mockReset();
+  vi.mocked(api.get).mockReset();
+  vi.mocked(api.post).mockReset();
+  vi.mocked(api.patch).mockReset();
+  vi.mocked(api.put).mockReset();
+  vi.mocked(api.delete).mockReset();
+});
+
 /**
  * Roles & Permissions, scenario pass 3 fixes on the routed home page: every Needs Attention item can be reached, a tile
  * title breaks between words only, and a count of one reads in the singular.
  *
  * The page is the routed one (pages/v2/dashboard/DashboardPage), against the JSON shape GET /api/dashboard sends.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { fireEvent, screen, within } from '@testing-library/react';
-
-import { buildAbility } from '@/lib/ability';
-import type { DashboardResponse, DashboardTileMeta } from '@/lib/api/dashboard';
-import { renderWithProviders, serveDashboard } from '@/__tests__/helpers';
-import DashboardPage from '../DashboardPage';
-
-vi.hoisted(() => {
-  vi.stubEnv('VITE_DASHBOARD_USE_MOCK', 'false');
-});
 
 class ResizeObserverStub {
   observe() {}
@@ -42,7 +54,7 @@ function open(tiles: DashboardTileMeta[], data: Record<string, unknown>) {
     generated_at: '2026-10-13T10:00:00.000Z',
   };
   serveDashboard(body, tiles.map((t) => ({ id: t.id, visible: true })));
-  renderWithProviders(<DashboardPage />, { ability: ADMIN });
+  renderDashboard({ ability: ADMIN });
 }
 
 beforeEach(() => {

@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/ui-kit/components/ui/button';
 import { formatCurrency } from '@/lib/utils';
-import type { StripeStatus } from '@/lib/api/organization';
+import type { StripeStatus } from '@/lib/api/shared/organization';
 
 /**
  * Body of the "ServWave Payments" status card (Settings > ServWave Payments, card 1). The page owns the card

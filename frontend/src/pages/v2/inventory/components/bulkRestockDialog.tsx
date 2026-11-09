@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { PackagePlus } from 'lucide-react';
 
 import { useBulkRestock, type BulkRestockLine, type Item, type Location } from '@/lib/api/inventory';
-import { useOrganization } from '@/lib/api/organization';
+import { useOrganization } from '@/lib/api/shared/organization';
 import { extractApiError } from '@/lib/utils';
 
 import { Button } from '@/ui-kit/components/ui/button';

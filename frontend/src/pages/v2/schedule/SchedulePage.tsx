@@ -149,7 +149,7 @@ import {
 } from '@/components/schedule/dragChannels';
 import { useAssignableUsers } from '@/lib/api/users';
 import { useAssignUserPermission } from '@/lib/users/useAssignUserPermission';
-import { useOrganization } from '@/lib/api/organization';
+import { useOrganization } from '@/lib/api/shared/organization';
 import { useScheduleEventColorVars } from '@/lib/schedule/useScheduleEventColorVars';
 import { boardEventPaint } from '@/components/schedule/boardEventPaint';
 import { NeedsCrewMark } from '@/components/schedule/NeedsCrewMark';

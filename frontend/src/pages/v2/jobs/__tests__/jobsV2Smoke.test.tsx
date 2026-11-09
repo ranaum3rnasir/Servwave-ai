@@ -6,7 +6,7 @@ import { buildAbility } from '@/lib/ability';
 import { renderWithProviders, ALL_JOB_ACTIONS } from '@/__tests__/helpers';
 
 import JobsPage from '../JobsPage';
-import JobDetailPage from '../JobDetailPage';
+import { renderJobDetail, serveJobDetail, stubBrowser } from '@/__tests__/harness/jobDetailPage';
 import JobFormPage from '../JobFormPage';
 
 /**
@@ -18,13 +18,7 @@ import JobFormPage from '../JobFormPage';
  * all, with the tab set, KPI labels and permission gates the legacy pages have.
  */
 
-// floating-ui, under Radix's dropdown and popover, does `new ResizeObserver(...)`.
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');
@@ -153,13 +147,14 @@ describe('v2 JobDetailPage', () => {
       { action: 'read', subject: 'Invoice' },
       { action: 'read', subject: 'Prices' },
     ]);
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url.includes('/financials')) return { data: FINANCIALS };
-      if (url.includes('/api/jobs/')) return { data: { job: BASE_JOB } };
-      return { data: {} };
+    serveJobDetail({
+      job: BASE_JOB,
+      routes: [
+        { match: (url) => url.includes('/financials'), data: FINANCIALS },
+      ],
     });
 
-    renderWithProviders(<JobDetailPage />, { ability, initialEntries: ['/jobs/j0000000-0000-0000-0000-000000000001'] });
+    renderJobDetail({ ability, entry: '/jobs/j0000000-0000-0000-0000-000000000001' });
 
     expect(await screen.findByRole('heading', { name: /J00001/ })).toBeInTheDocument();
 
@@ -180,9 +175,10 @@ describe('v2 JobDetailPage', () => {
   });
 
   it('renders the not-found branch when the job does not resolve', async () => {
-    mockApi.get.mockResolvedValue({ data: {} });
+    // The job read answers without a job: the harness server, with its job route emptied.
+    serveJobDetail({ job: {}, routes: [{ match: (url) => url.startsWith('/api/jobs/'), data: {} }] });
 
-    renderWithProviders(<JobDetailPage />, { initialEntries: ['/jobs/j0000000-0000-0000-0000-000000000001'] });
+    renderJobDetail({ ability: undefined, entry: '/jobs/j0000000-0000-0000-0000-000000000001' });
 
     expect(await screen.findByText('Job not found')).toBeInTheDocument();
   });

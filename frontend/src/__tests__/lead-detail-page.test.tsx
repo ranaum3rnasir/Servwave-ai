@@ -3,11 +3,11 @@ import { act, screen, waitFor, within } from '@testing-library/react';
 import { useLocation } from 'react-router-dom';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
-import { renderWithProviders, LEAD_FIXTURE, NOTES_FIXTURE } from './helpers';
+import { LEAD_FIXTURE, NOTES_FIXTURE } from './helpers';
 import { catalogToggle } from './support/backendSwitchCatalog';
 import { buildAbility } from '@/lib/ability';
 import { requestCall } from '@/lib/communication/phoneTabHandoff';
-import LeadDetailPage from '@/pages/v2/leads/LeadDetailPage';
+import { renderLeadDetail, serveLeadDetail, stubBrowser } from '@/__tests__/harness/leadDetailPage';
 import { CONVERT_DEPOSIT_BLOCKED_REASON } from '@/features/estimate-workspace/lib/convertToJob';
 import { toast } from '@/ui-kit/components/ui/sonner';
 
@@ -58,17 +58,8 @@ vi.mock('@/components/communication/LeadCommunicationsTab', () => ({
 // Action buttons (Edit, Assign, Mark Lost, Create Estimate, Convert to Job …) are
 // now gated on CASL ability rather than the auth-store role (see #238). Render
 // with a full-access (admin superuser) ability so the action surface appears.
-const adminAbility = buildAbility([{ action: 'manage', subject: 'all' }]);
 
-// floating-ui (under Radix dropdown) does `new ResizeObserver(...)`; the global
-// setup mock returns a plain object and isn't constructable, so install a real
-// class stub (same pattern as sms-inbox-job-pills.test.tsx).
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 // The customer email control assigns `window.location.href` for its native mailto: fallback.
 // jsdom's real Location cannot be assigned to, so it is swapped for a plain object for this file (same swap as pages/v2/schedule/__tests__/eventEditor.test.tsx).
@@ -83,13 +74,7 @@ afterAll(() => {
 });
 
 // Mock useParams to return the lead ID
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual('react-router-dom');
-  return {
-    ...actual,
-    useParams: () => ({ id: 'e0000000-0000-0000-0000-000000000001' }),
-  };
-});
+vi.mock('react-router-dom', async () => (await import('@/__tests__/harness/leadDetailRouter')).leadDetailRouter());
 
 const mockApi = vi.mocked(api);
 
@@ -119,21 +104,11 @@ beforeEach(() => {
   window.location.href = '';
 
   // GET /api/leads/:id
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url === '/api/permission-switches/me') return { data: meAnswer() };
-    if (url.includes('/notes')) {
-      return { data: { notes: NOTES_FIXTURE } };
-    }
-    if (url.includes('/api/users')) {
-      return { data: { users: [{ id: 'u1', first_name: 'Alice', last_name: 'Sales', role: 'SALES', is_active: true, has_login: true, department: null }] } };
-    }
-    if (url.includes('/api/leads/')) {
-      return { data: { lead: LEAD_FIXTURE } };
-    }
-    if (url.includes('/api/tags')) {
-      return { data: { tags: [] } };
-    }
-    return { data: {} };
+  serveLeadDetail({
+    lead: LEAD_FIXTURE,
+    notes: NOTES_FIXTURE,
+    me: meAnswer,
+    users: [{ id: 'u1', first_name: 'Alice', last_name: 'Sales', role: 'SALES', is_active: true, has_login: true, department: null }],
   });
 });
 
@@ -154,7 +129,7 @@ beforeEach(() => {
 // signed-in ability carries the renumber grant and "L00001 - John Doe" when it does not.
 describe('v2 LeadDetailPage', () => {
   it('renders lead title with customer name', async () => {
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: /L00001\b.*John Doe/ })).toBeInTheDocument();
@@ -162,7 +137,7 @@ describe('v2 LeadDetailPage', () => {
   });
 
   it('renders customer company name', async () => {
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     // Company name renders in both the hero and the contact card.
     await waitFor(() => {
@@ -171,7 +146,7 @@ describe('v2 LeadDetailPage', () => {
   });
 
   it('renders all 4 tab triggers', async () => {
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     await waitFor(() => {
       expect(screen.getByText('Overview')).toBeInTheDocument();
@@ -185,7 +160,7 @@ describe('v2 LeadDetailPage', () => {
   });
 
   it('shows KPI strip labels', async () => {
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     await waitFor(() => {
       expect(screen.getByText('Estimated Value')).toBeInTheDocument();
@@ -195,7 +170,7 @@ describe('v2 LeadDetailPage', () => {
   });
 
   it('shows service request in Details tab', async () => {
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     await waitFor(() => {
       expect(screen.getByText('AC not cooling')).toBeInTheDocument();
@@ -203,7 +178,7 @@ describe('v2 LeadDetailPage', () => {
   });
 
   it('shows assigned user name', async () => {
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     await waitFor(() => {
       expect(screen.getByText('Test Sales')).toBeInTheDocument();
@@ -211,7 +186,7 @@ describe('v2 LeadDetailPage', () => {
   });
 
   it('shows customer phone', async () => {
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     // Phone is rendered through formatPhone().
     await waitFor(() => {
@@ -225,7 +200,7 @@ describe('v2 LeadDetailPage', () => {
     commAccess.value = true;
     contactSwitches.contact = true;
     const user = userEvent.setup();
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     // Mobile slice 50: a tapped number never dials by itself, it offers the choice first.
     await user.click(await screen.findByRole('button', { name: '(555) 123-4567' }));
@@ -245,7 +220,7 @@ describe('v2 LeadDetailPage', () => {
   // call link, a real `<a href="tel:...">`.
   it('is a plain device call link without the phone service when Copy customer phone is on', async () => {
     contactSwitches.copyPhone = true;
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     expect(await screen.findByRole('link', { name: '(555) 123-4567' })).toHaveAttribute(
       'href',
@@ -259,7 +234,7 @@ describe('v2 LeadDetailPage', () => {
   it('shows the digits only, with no device link and no dialer, with the phone service but Contact customers off', async () => {
     commAccess.value = true;
     contactSwitches.copyPhone = true;
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     await screen.findByText('(555) 123-4567');
     await waitFor(() => expect(mockApi.get).toHaveBeenCalledWith('/api/permission-switches/me'));
@@ -275,7 +250,7 @@ describe('v2 LeadDetailPage', () => {
 
   it('shows action buttons for ADMIN', async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     await openLeadActions(user);
     expect(screen.getByText('Edit')).toBeInTheDocument();
@@ -287,7 +262,7 @@ describe('v2 LeadDetailPage', () => {
 
   it('shows estimates empty state', async () => {
     const user = userEvent.setup();
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     // The Estimates tab trigger is labelled "Estimates (N)".
     const estimatesTab = await screen.findByText(/Estimates \(\d+\)/);
@@ -300,7 +275,7 @@ describe('v2 LeadDetailPage', () => {
 
   it('does not tell a viewer without Create estimates to create one, and still tells one who can', async () => {
     const user = userEvent.setup();
-    const { unmount } = renderWithProviders(<LeadDetailPage />, {
+    const { unmount } = renderLeadDetail({
       ability: buildAbility([{ action: 'read', subject: 'Lead' }]),
     });
     await user.click(await screen.findByText(/Estimates \(\d+\)/));
@@ -308,20 +283,20 @@ describe('v2 LeadDetailPage', () => {
     expect(screen.queryByText(/create one/i)).toBeNull();
     unmount();
 
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
     await user.click(await screen.findByText(/Estimates \(\d+\)/));
     expect(await screen.findByText('Create one to get started.')).toBeInTheDocument();
   });
 
   it('invites scheduling a walkthrough only to a viewer who may book one', async () => {
-    const { unmount } = renderWithProviders(<LeadDetailPage />, {
+    const { unmount } = renderLeadDetail({
       ability: buildAbility([{ action: 'read', subject: 'Lead' }]),
     });
     expect(await screen.findByText('No walkthrough scheduled yet')).toBeInTheDocument();
     expect(screen.queryByText(/click to schedule/i)).toBeNull();
     unmount();
 
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
     expect(await screen.findByText(/No walkthrough scheduled yet - click to schedule/)).toBeInTheDocument();
   });
 
@@ -331,9 +306,9 @@ describe('v2 LeadDetailPage', () => {
   // prior notes tests were dropped rather than left asserting on absent UI.
 
   it('renders not found state when lead is null', async () => {
-    mockApi.get.mockResolvedValue({ data: { lead: null } });
+    serveLeadDetail({ lead: null });
 
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     await waitFor(() => {
       expect(screen.getByText('Lead not found.')).toBeInTheDocument();
@@ -350,7 +325,7 @@ describe('v2 LeadDetailPage', () => {
 describe('v2 LeadDetailPage - Communication tab (#397 / E4)', () => {
   it('renders the Communication tab and mounts the lead comms timeline with the lead id (+ customer scope)', async () => {
     const user = userEvent.setup();
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     const commsTab = await screen.findByRole('tab', { name: /^Communication$/ });
     await user.click(commsTab);
@@ -372,7 +347,7 @@ describe('v2 LeadDetailPage - Communication tab (#397 / E4)', () => {
 
   it('hides the Communication tab when the ability lacks read Communication', async () => {
     const readOnly = buildAbility([{ action: 'read', subject: 'Lead' }]);
-    renderWithProviders(<LeadDetailPage />, { ability: readOnly });
+    renderLeadDetail({ ability: readOnly });
 
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: /L00001\b.*John Doe/ })).toBeInTheDocument();
@@ -391,16 +366,7 @@ describe('v2 LeadDetailPage - Convert to Job (bug #12)', () => {
   };
 
   function mockLeadWithApprovedEstimate() {
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url.includes('/notes')) return { data: { notes: NOTES_FIXTURE } };
-      if (url.includes('/api/leads/')) {
-        return {
-          data: { lead: { ...LEAD_FIXTURE, status: 'WON', estimates: [APPROVED_ESTIMATE] } },
-        };
-      }
-      if (url.includes('/api/tags')) return { data: { tags: [] } };
-      return { data: {} };
-    });
+    serveLeadDetail({ lead: { ...LEAD_FIXTURE, status: 'WON', estimates: [APPROVED_ESTIMATE] }, notes: NOTES_FIXTURE });
   }
 
   // #2188 slice 16 - the ONE-CLICK path. With exactly one convertible estimate the header skips
@@ -410,26 +376,12 @@ describe('v2 LeadDetailPage - Convert to Job (bug #12)', () => {
   // posting into a 400.
   it('disables the one-click Convert to job with the deposit reason, and posts nothing, when the lone convertible estimate is deposit-blocked', async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url.includes('/notes')) return { data: { notes: NOTES_FIXTURE } };
-      if (url.includes('/api/leads/')) {
-        return {
-          data: {
-            lead: {
-              ...LEAD_FIXTURE,
-              status: 'WON',
-              estimates: [
-                { ...APPROVED_ESTIMATE, invoices: [{ kind: 'DEPOSIT', status: 'SENT' }] },
-              ],
-            },
-          },
-        };
-      }
-      if (url.includes('/api/tags')) return { data: { tags: [] } };
-      return { data: {} };
+    serveLeadDetail({
+      lead: { ...LEAD_FIXTURE, status: 'WON', estimates: [{ ...APPROVED_ESTIMATE, invoices: [{ kind: 'DEPOSIT', status: 'SENT' }] }] },
+      notes: NOTES_FIXTURE,
     });
 
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     const convert = await screen.findByRole('button', { name: /Convert to job/i });
     // Shown, not hidden - the estimate is fine and the deposit is the thing to go and fix.
@@ -445,7 +397,7 @@ describe('v2 LeadDetailPage - Convert to Job (bug #12)', () => {
     mockLeadWithApprovedEstimate();
     mockApi.post.mockResolvedValue({ data: { job: { id: 'j0000000-0000-0000-0000-000000000001' } } });
 
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     // "Convert to job" menu item (gated on CASL `create Job`) opens the convert dialog.
     await openLeadActions(user);
@@ -480,20 +432,9 @@ describe('v2 LeadDetailPage - converting when the new job does not open for the 
 
   async function convertFromTheDialog(response: object) {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url.includes('/notes')) return { data: { notes: NOTES_FIXTURE } };
-      if (url.includes('/api/leads/')) return { data: { lead: { ...LEAD_FIXTURE, status: 'WON', estimates: [APPROVED_ESTIMATE] } } };
-      if (url.includes('/api/tags')) return { data: { tags: [] } };
-      return { data: {} };
-    });
+    serveLeadDetail({ lead: { ...LEAD_FIXTURE, status: 'WON', estimates: [APPROVED_ESTIMATE] }, notes: NOTES_FIXTURE });
     mockApi.post.mockResolvedValue({ data: response });
-    renderWithProviders(
-      <>
-        <LeadDetailPage />
-        <LocationProbe />
-      </>,
-      { ability: adminAbility, initialEntries: ['/leads/e0000000-0000-0000-0000-000000000001'] },
-    );
+    renderLeadDetail({ beside: <LocationProbe />, entry: '/leads/e0000000-0000-0000-0000-000000000001' });
     await openLeadActions(user);
     await user.click(screen.getByRole('menuitem', { name: /Convert to job/i }));
     const dialog = await screen.findByRole('dialog');
@@ -523,7 +464,7 @@ describe('v2 LeadDetailPage - converting when the new job does not open for the 
 describe('v2 LeadDetailPage - Assign menu item (#576)', () => {
   it('Assign menu item opens the assign popover (menu closes, panel opens)', async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
     await openLeadActions(user);
     await user.click(screen.getByRole('menuitem', { name: /Assign/i }));
     // Panel open: search input + roster row visible
@@ -537,7 +478,7 @@ describe('v2 LeadDetailPage - Assign menu item (#576)', () => {
 describe('v2 LeadDetailPage - JobLeadTasksTab receives entity UUID', () => {
   it('passes the lead UUID (route param id) not lead_number as entity.id', async () => {
     const user = userEvent.setup();
-    renderWithProviders(<LeadDetailPage />);
+    renderLeadDetail({ ability: undefined });
 
     // Wait for the page to load, then click the Tasks tab to mount JobLeadTasksTab
     const tasksTab = await screen.findByRole('tab', { name: /^Tasks$/ });
@@ -555,7 +496,7 @@ describe('v2 LeadDetailPage - JobLeadTasksTab receives entity UUID', () => {
 // PRD 3 (S03.4) - the people block names the lead's Owner and Dispatcher, and never "Assigned To".
 describe('v2 LeadDetailPage - the people block (Owner and Dispatcher)', () => {
   it('shows the Owner and, with none set, "No dispatcher", with Change on both for a viewer who may assign', async () => {
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     const people = await screen.findByTestId('lead-people');
     expect(within(people).getByText('Test Sales')).toBeInTheDocument();
@@ -567,19 +508,15 @@ describe('v2 LeadDetailPage - the people block (Owner and Dispatcher)', () => {
 
   it('names the Dispatcher the lead payload carries', async () => {
     const withDispatcher = { ...LEAD_FIXTURE, dispatcher: { id: 'd1', first_name: 'Dana', last_name: 'Dispatch' } };
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url.includes('/notes')) return { data: { notes: NOTES_FIXTURE } };
-      if (url.includes('/api/leads/')) return { data: { lead: withDispatcher } };
-      return { data: {} };
-    });
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    serveLeadDetail({ lead: withDispatcher, notes: NOTES_FIXTURE });
+    renderLeadDetail();
 
     const people = await screen.findByTestId('lead-people');
     expect(within(people).getByText('Dana Dispatch')).toBeInTheDocument();
   });
 
   it('hides Change and Clear from a viewer without Assign people to leads', async () => {
-    renderWithProviders(<LeadDetailPage />, { ability: buildAbility([{ action: 'read', subject: 'Lead' }]) });
+    renderLeadDetail({ ability: buildAbility([{ action: 'read', subject: 'Lead' }]) });
 
     const people = await screen.findByTestId('lead-people');
     expect(within(people).getByText('Test Sales')).toBeInTheDocument();
@@ -609,7 +546,7 @@ describe('v2 LeadDetailPage - action buttons gate on ability not role (#238)', (
 
   it('shows Edit (update Lead) but hides Assign when ability lacks assign Lead', async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
-    renderWithProviders(<LeadDetailPage />, { ability: salesAbility });
+    renderLeadDetail({ ability: salesAbility });
 
     await openLeadActions(user);
     expect(screen.getByText('Edit')).toBeInTheDocument();
@@ -622,7 +559,7 @@ describe('v2 LeadDetailPage - action buttons gate on ability not role (#238)', (
 
   it('hides all editor actions for a read-only ability (despite ADMIN auth role)', async () => {
     const readOnly = buildAbility([{ action: 'read', subject: 'Lead' }]);
-    renderWithProviders(<LeadDetailPage />, { ability: readOnly });
+    renderLeadDetail({ ability: readOnly });
 
     // Page still renders the lead, but no Edit/Assign/Create Estimate buttons.
     await waitFor(() => {
@@ -651,7 +588,7 @@ describe('v2 LeadDetailPage - mark_lost gates on its own capability (#238)', () 
       { action: 'read', subject: 'Lead' },
       { action: 'mark_lost', subject: 'Lead' },
     ]);
-    renderWithProviders(<LeadDetailPage />, { ability });
+    renderLeadDetail({ ability });
 
     await openLeadActions(user);
     expect(screen.getByText('Mark Lost')).toBeInTheDocument();
@@ -665,7 +602,7 @@ describe('v2 LeadDetailPage - mark_lost gates on its own capability (#238)', () 
       { action: 'read', subject: 'Lead' },
       { action: 'update', subject: 'Lead' },
     ]);
-    renderWithProviders(<LeadDetailPage />, { ability });
+    renderLeadDetail({ ability });
 
     // Edit (update Lead) renders, confirming the action surface is mounted...
     await openLeadActions(user);
@@ -686,32 +623,24 @@ describe('v2 LeadDetailPage - walkthrough recording gates on perform_walkthrough
   // Drive WalkthroughTabContent into its SCHEDULED branch so the Notes editor +
   // Finish walkthrough button render. A scheduled lead with no completed_at.
   function mockScheduledWalkthroughLead(canWriteWalkthroughNotes = false) {
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url.includes('/notes')) return { data: { notes: NOTES_FIXTURE } };
-      if (url.includes('/api/leads/')) {
-        return {
-          data: {
-            lead: {
-              ...LEAD_FIXTURE,
-              status: 'CONTACTED',
-              walkthrough_scheduled_at: '2026-03-01T15:00:00.000Z',
-              walkthrough_duration_minutes: 60,
-              walkthrough_completed_at: null,
-              walkthrough_notes: null,
-              walkthrough_performers: [
-                { user: { id: '00000000-0000-0000-0000-000000000004', first_name: 'Test', last_name: 'Tech' } },
-              ],
-              walkthrough_history: [{
-                id: 'w1', visit_seq: 1, status: 'SCHEDULED', scheduled_at: '2026-03-01T15:00:00.000Z', completed_at: null,
-                cancelled_at: null, cancelled_reason: null, created_at: '2026-02-01T12:00:00.000Z', notes: 'Saved walkthrough notes',
-                performers: [{ id: 'p1', first_name: 'Test', last_name: 'Tech' }], can_write_notes: canWriteWalkthroughNotes,
-              }],
-            },
-          },
-        };
-      }
-      if (url.includes('/api/tags')) return { data: { tags: [] } };
-      return { data: {} };
+    serveLeadDetail({
+      lead: {
+        ...LEAD_FIXTURE,
+        status: 'CONTACTED',
+        walkthrough_scheduled_at: '2026-03-01T15:00:00.000Z',
+        walkthrough_duration_minutes: 60,
+        walkthrough_completed_at: null,
+        walkthrough_notes: null,
+        walkthrough_performers: [
+          { user: { id: '00000000-0000-0000-0000-000000000004', first_name: 'Test', last_name: 'Tech' } },
+        ],
+        walkthrough_history: [{
+          id: 'w1', visit_seq: 1, status: 'SCHEDULED', scheduled_at: '2026-03-01T15:00:00.000Z', completed_at: null,
+          cancelled_at: null, cancelled_reason: null, created_at: '2026-02-01T12:00:00.000Z', notes: 'Saved walkthrough notes',
+          performers: [{ id: 'p1', first_name: 'Test', last_name: 'Tech' }], can_write_notes: canWriteWalkthroughNotes,
+        }],
+      },
+      notes: NOTES_FIXTURE,
     });
   }
 
@@ -727,7 +656,7 @@ describe('v2 LeadDetailPage - walkthrough recording gates on perform_walkthrough
     // The server lists the technician's own walkthrough as writable (can_write_notes).
     mockScheduledWalkthroughLead(true);
     mockApi.patch.mockResolvedValue({ data: {} });
-    renderWithProviders(<LeadDetailPage />, { ability: technicianAbility });
+    renderLeadDetail({ ability: technicianAbility });
 
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: /L00001\b.*John Doe/ })).toBeInTheDocument();
@@ -755,7 +684,7 @@ describe('v2 LeadDetailPage - walkthrough recording gates on perform_walkthrough
     mockScheduledWalkthroughLead(false);
     // read-only: can see the lead/tab, but cannot record or complete.
     const readOnly = buildAbility([{ action: 'read', subject: 'Lead' }]);
-    renderWithProviders(<LeadDetailPage />, { ability: readOnly });
+    renderLeadDetail({ ability: readOnly });
 
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: /L00001\b.*John Doe/ })).toBeInTheDocument();
@@ -784,16 +713,7 @@ function LocationProbe() {
 
 describe('v2 LeadDetailPage - ?tab=walkthrough deep link', () => {
   it('activates the Walkthrough tab and strips the param (replace)', async () => {
-    renderWithProviders(
-      <>
-        <LeadDetailPage />
-        <LocationProbe />
-      </>,
-      {
-        ability: adminAbility,
-        initialEntries: ['/leads/e0000000-0000-0000-0000-000000000001?tab=walkthrough'],
-      }
-    );
+    renderLeadDetail({ beside: <LocationProbe />, entry: '/leads/e0000000-0000-0000-0000-000000000001?tab=walkthrough' });
 
     // Walkthrough tab becomes the active one (not the default Overview).
     await waitFor(() => {
@@ -814,10 +734,7 @@ describe('v2 LeadDetailPage - ?tab=walkthrough deep link', () => {
   });
 
   it('ignores a non-whitelisted ?tab= value', async () => {
-    renderWithProviders(<LeadDetailPage />, {
-      ability: adminAbility,
-      initialEntries: ['/leads/e0000000-0000-0000-0000-000000000001?tab=bogus'],
-    });
+    renderLeadDetail({ entry: '/leads/e0000000-0000-0000-0000-000000000001?tab=bogus' });
 
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: /L00001\b.*John Doe/ })).toBeInTheDocument();
@@ -837,7 +754,7 @@ describe('v2 LeadDetailPage - ?tab=walkthrough deep link', () => {
 describe('v2 LeadDetailPage - status menu', () => {
   it('lists the seven lead statuses in pipeline order under their labels, with no Cancelled', async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     await user.click(await screen.findByRole('button', { name: 'Lead status: New' }));
 
@@ -858,18 +775,12 @@ describe('v2 LeadDetailPage - status menu', () => {
 // status menu never had a reason, and the page says so where the reason goes.
 describe('v2 LeadDetailPage - the Lost reason panel', () => {
   const serveLost = (fields: Record<string, unknown>) => {
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url === '/api/permission-switches/me') return { data: meAnswer() };
-      if (url.includes('/notes')) return { data: { notes: NOTES_FIXTURE } };
-      if (url.includes('/api/leads/')) return { data: { lead: { ...LEAD_FIXTURE, status: 'LOST', ...fields } } };
-      if (url.includes('/api/tags')) return { data: { tags: [] } };
-      return { data: {} };
-    });
+    serveLeadDetail({ lead: { ...LEAD_FIXTURE, status: 'LOST', ...fields }, notes: NOTES_FIXTURE, me: meAnswer });
   };
 
   it('shows the reason a lead was lost for, with the date', async () => {
     serveLost({ lost_reason: 'Went with another company', lost_at: '2026-08-12T15:00:00.000Z' });
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     expect(await screen.findByText('Went with another company')).toBeInTheDocument();
     expect(screen.queryByText('No reason recorded')).not.toBeInTheDocument();
@@ -878,14 +789,14 @@ describe('v2 LeadDetailPage - the Lost reason panel', () => {
 
   it('says "No reason recorded" for a lost lead that has none, keeping its lost date', async () => {
     serveLost({ lost_reason: null, lost_at: '2026-08-12T15:00:00.000Z' });
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     expect(await screen.findByText('No reason recorded')).toBeInTheDocument();
     expect(screen.getByText(/Lost on/)).toBeInTheDocument();
   });
 
   it('shows no reason panel on a lead that is not lost', async () => {
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     await screen.findByRole('button', { name: 'Lead status: New' });
     expect(screen.queryByText('No reason recorded')).not.toBeInTheDocument();
@@ -897,13 +808,13 @@ describe('v2 LeadDetailPage - the Lost reason panel', () => {
 // lead-number render, gated on ability.can('renumber', 'Lead').
 describe('LeadDetailPage - record number editor gating', () => {
   it('shows the edit affordance for a user with the renumber grant', async () => {
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     expect(await screen.findByRole('button', { name: /edit id/i })).toBeInTheDocument();
   });
 
   it('hides the edit affordance for a user without the renumber grant', async () => {
-    renderWithProviders(<LeadDetailPage />);
+    renderLeadDetail({ ability: undefined });
 
     await screen.findAllByText('L00001');
     expect(screen.queryByRole('button', { name: /edit id/i })).toBeNull();
@@ -914,13 +825,13 @@ describe('LeadDetailPage - record number editor gating', () => {
 // lead-number render, gated on ability.can('renumber', 'Lead').
 describe('LeadDetailPage - record number editor gating', () => {
   it('shows the edit affordance for a user with the renumber grant', async () => {
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     expect(await screen.findByRole('button', { name: /edit id/i })).toBeInTheDocument();
   });
 
   it('hides the edit affordance for a user without the renumber grant', async () => {
-    renderWithProviders(<LeadDetailPage />);
+    renderLeadDetail({ ability: undefined });
 
     await screen.findAllByText('L00001');
     expect(screen.queryByRole('button', { name: /edit id/i })).toBeNull();
@@ -973,13 +884,7 @@ const MULTI_LOCATION_LEAD = {
 
 describe("LeadDetailPage - the lead's anchored service location", () => {
   const serveLead = (lead: unknown) => {
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url.includes('/notes')) return { data: { notes: NOTES_FIXTURE } };
-      if (url.includes('/api/users')) return { data: { users: [] } };
-      if (url.includes('/api/leads/')) return { data: { lead } };
-      if (url.includes('/api/tags')) return { data: { tags: [] } };
-      return { data: {} };
-    });
+    serveLeadDetail({ lead, notes: NOTES_FIXTURE });
   };
 
   // Anchored on the panel's own testid, not on `heading.closest('div')`. The heading now shares
@@ -990,7 +895,7 @@ describe("LeadDetailPage - the lead's anchored service location", () => {
 
   it('renders exactly one address, and it is the anchored one - not the primary', async () => {
     serveLead(MULTI_LOCATION_LEAD);
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     const panel = await locationPanel();
     expect(within(panel).getByText('456 Warehouse Way, Bay 4')).toBeInTheDocument();
@@ -1001,7 +906,7 @@ describe("LeadDetailPage - the lead's anchored service location", () => {
 
   it('heads the panel in the singular', async () => {
     serveLead(MULTI_LOCATION_LEAD);
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     await locationPanel();
     expect(screen.queryByText('Service Locations')).toBeNull();
@@ -1009,7 +914,7 @@ describe("LeadDetailPage - the lead's anchored service location", () => {
 
   it('shows no Primary badge on the lead location panel', async () => {
     serveLead(MULTI_LOCATION_LEAD);
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     const panel = await locationPanel();
     expect(within(panel).queryByText('Primary')).toBeNull();
@@ -1064,20 +969,14 @@ const NO_ADDRESS_AT_ALL_LEAD = {
 
 describe('LeadDetailPage - a lead with no anchored service location', () => {
   const serveLead = (lead: unknown) => {
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url.includes('/notes')) return { data: { notes: NOTES_FIXTURE } };
-      if (url.includes('/api/users')) return { data: { users: [] } };
-      if (url.includes('/api/leads/')) return { data: { lead } };
-      if (url.includes('/api/tags')) return { data: { tags: [] } };
-      return { data: {} };
-    });
+    serveLeadDetail({ lead, notes: NOTES_FIXTURE });
   };
 
   const locationPanel = () => screen.findByTestId('lead-service-location');
 
   it('renders the legacy loose address when the lead has no anchor', async () => {
     serveLead(LEGACY_LOOSE_ADDRESS_LEAD);
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     const panel = await locationPanel();
     expect(within(panel).getByText('900 Legacy Ln, Unit 3')).toBeInTheDocument();
@@ -1093,7 +992,7 @@ describe('LeadDetailPage - a lead with no anchored service location', () => {
   // of a defect, on a record where nothing was wrong.
   it('states a legacy address without qualifying it', async () => {
     serveLead(LEGACY_LOOSE_ADDRESS_LEAD);
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     const panel = await locationPanel();
     expect(within(panel).getByText('900 Legacy Ln, Unit 3')).toBeInTheDocument();
@@ -1104,7 +1003,7 @@ describe('LeadDetailPage - a lead with no anchored service location', () => {
 
   it('still renders the panel, showing the gap, when there is no address at all', async () => {
     serveLead(NO_ADDRESS_AT_ALL_LEAD);
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     const panel = await locationPanel();
     expect(within(panel).getByText(/no service location/i)).toBeInTheDocument();
@@ -1112,7 +1011,7 @@ describe('LeadDetailPage - a lead with no anchored service location', () => {
 
   it('renders no stray separator line when the legacy address has a line1 and nothing else', async () => {
     serveLead(PARTIAL_LOOSE_ADDRESS_LEAD);
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     const panel = await locationPanel();
     expect(within(panel).getByText('900 Legacy Ln')).toBeInTheDocument();
@@ -1153,7 +1052,7 @@ describe('LeadDetailPage - a lead with no anchored service location', () => {
   // site - and the panel is a straight statement of where the work is, on both shapes alike.
   it('reads identically whether the address is joined or inline', async () => {
     serveLead(LOOSE_ADDRESS_ALSO_ON_THE_ROSTER);
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     const panel = await locationPanel();
     expect(within(panel).getByText('1 Head Office Plaza, Suite 900')).toBeInTheDocument();
@@ -1165,7 +1064,7 @@ describe('LeadDetailPage - a lead with no anchored service location', () => {
   // second, weaker path to the same change is what produced the contradiction in the first place.
   it('offers no location control on the card, for an editor or anyone else', async () => {
     serveLead(LOOSE_ADDRESS_ALSO_ON_THE_ROSTER);
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     await locationPanel();
     expect(screen.queryByRole('button', { name: /edit service location/i })).toBeNull();
@@ -1181,7 +1080,7 @@ describe('LeadDetailPage - a lead with no anchored service location', () => {
   // deprecated columns populated on this fixture until they are deleted from the schema.
   it('renders an anchored lead the same plain way', async () => {
     serveLead(MULTI_LOCATION_LEAD);
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     const panel = await locationPanel();
     expect(within(panel).getByText('456 Warehouse Way, Bay 4')).toBeInTheDocument();
@@ -1211,18 +1110,12 @@ const ESTIMATE_ON_LEAD = {
 
 describe('LeadDetailPage - a lead with estimates keeps its location readable', () => {
   const serveLead = (lead: unknown) => {
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url.includes('/notes')) return { data: { notes: NOTES_FIXTURE } };
-      if (url.includes('/api/users')) return { data: { users: [] } };
-      if (url.includes('/api/leads/')) return { data: { lead } };
-      if (url.includes('/api/tags')) return { data: { tags: [] } };
-      return { data: {} };
-    });
+    serveLeadDetail({ lead, notes: NOTES_FIXTURE });
   };
 
   it('keeps the anchored address fully readable while the location is frozen', async () => {
     serveLead({ ...MULTI_LOCATION_LEAD, estimates: [ESTIMATE_ON_LEAD] });
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     const panel = await screen.findByTestId('lead-service-location');
     expect(within(panel).getByText('456 Warehouse Way, Bay 4')).toBeInTheDocument();
@@ -1234,7 +1127,7 @@ describe('LeadDetailPage - a lead with estimates keeps its location readable', (
   // no one was offered, which is how a settled record starts reading as a broken one.
   it('does not narrate the freeze on the location card', async () => {
     serveLead({ ...MULTI_LOCATION_LEAD, estimates: [ESTIMATE_ON_LEAD] });
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     const panel = await screen.findByTestId('lead-service-location');
     expect(within(panel).queryByText(/location settled/i)).toBeNull();
@@ -1243,7 +1136,7 @@ describe('LeadDetailPage - a lead with estimates keeps its location readable', (
 
   it('keeps a legacy unanchored lead with an estimate readable too', async () => {
     serveLead({ ...LEGACY_LOOSE_ADDRESS_LEAD, estimates: [ESTIMATE_ON_LEAD] });
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     const panel = await screen.findByTestId('lead-service-location');
     expect(within(panel).getByText('900 Legacy Ln, Unit 3')).toBeInTheDocument();
@@ -1256,15 +1149,9 @@ describe('LeadDetailPage - a lead with estimates keeps its location readable', (
 describe('LeadDetailPage - estimate money the server left out', () => {
   it('draws no Estimated Value tile and no Total column, and still lists the estimate', async () => {
     const { total_amount: _omitted, ...withoutMoney } = ESTIMATE_ON_LEAD;
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url.includes('/notes')) return { data: { notes: NOTES_FIXTURE } };
-      if (url.includes('/api/users')) return { data: { users: [] } };
-      if (url.includes('/api/leads/')) return { data: { lead: { ...LEAD_FIXTURE, estimates: [withoutMoney] } } };
-      if (url.includes('/api/tags')) return { data: { tags: [] } };
-      return { data: {} };
-    });
+    serveLeadDetail({ lead: { ...LEAD_FIXTURE, estimates: [withoutMoney] }, notes: NOTES_FIXTURE });
     const user = userEvent.setup();
-    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    renderLeadDetail();
 
     await user.click(await screen.findByText(/Estimates \(1\)/));
     expect(await screen.findByText('EST-1001')).toBeInTheDocument();

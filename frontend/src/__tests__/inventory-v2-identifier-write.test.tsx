@@ -20,15 +20,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { renderWithProviders, inventoryWriteAbility } from './helpers';
-import InventoryPage from '@/pages/v2/inventory/InventoryPage';
+import { inventoryWriteAbility } from './helpers';
+import { renderInventory } from '@/__tests__/harness/inventoryPage';
 
 // The routed page reports through the kit's sonner toaster, which App.tsx
 // mounts at the root and renderWithProviders does not.
-vi.mock('@/ui-kit/components/ui/sonner', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/ui-kit/components/ui/sonner')>()),
-  toast: vi.fn(),
-}));
+vi.mock('@/ui-kit/components/ui/sonner', async (importOriginal) =>
+  (await import('@/__tests__/harness/inventoryApiStub')).sonnerSpy(await importOriginal<typeof import('@/ui-kit/components/ui/sonner')>()));
 
 const h = vi.hoisted(() => ({
   ITEM_ID: 'bbbbbbb3-0000-4000-8000-000000000001',
@@ -42,12 +40,6 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock('@/lib/api/inventory', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/inventory')>();
-  const EMPTY: never[] = [];
-  const stable =
-    <T,>(data: T) =>
-    () => ({ data, isLoading: false, isError: false });
-  const mutation = () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false });
   const items = [
     {
       id: h.ITEM_ID,
@@ -71,54 +63,32 @@ vi.mock('@/lib/api/inventory', async (importOriginal) => {
       updatedAt: '2026-07-01T00:00:00.000Z',
     },
   ];
-  return {
-    ...actual,
-    useInventoryItems: stable(items),
-    useFinishes: stable([{ id: h.FINISH_ID, name: 'Satin Chrome', code: '626', isActive: true }]),
-    useLocations: stable([{ id: h.LOC_WH, name: 'Main Warehouse', type: 'warehouse', branch: 'HQ' }]),
-    useBrands: stable(EMPTY),
-    useCategories: stable(EMPTY),
-    useVendors: stable(EMPTY),
-    useBranches: stable(EMPTY),
-    useJobStages: stable(EMPTY),
-    useMovements: stable({ data: EMPTY, meta: { total: 0 } }),
-    useLowStock: stable({ data: EMPTY, meta: { total: 0 } }),
-    useAssets: stable({ data: EMPTY, meta: { total: 0 } }),
-    useUpsertItem: () => ({
-      mutate: vi.fn(),
-      mutateAsync: h.upsertItemMutateAsync,
-      isPending: false,
-    }),
-    useUpsertLocation: mutation,
-    useUpsertVendor: mutation,
-    useUpsertCategory: mutation,
-    useUpsertBranch: mutation,
-    useUpsertBrand: mutation,
-    useUpsertFinish: mutation,
-    useDeleteItem: mutation,
-    useDeleteCategory: mutation,
-    useDeleteBrand: mutation,
-    useDeleteFinish: mutation,
-    useRestoreItem: mutation,
-    useImportItemsCSV: mutation,
-    useTransferStock: mutation,
-    useSetThresholds: mutation,
-    useSetQuantity: mutation,
-  };
+  return (await import('@/__tests__/harness/inventoryApiStub')).inventoryApi(
+    await importOriginal<typeof import('@/lib/api/inventory')>(),
+    {
+      reads: {
+        useInventoryItems: items,
+        useFinishes: [{ id: h.FINISH_ID, name: 'Satin Chrome', code: '626', isActive: true }],
+        useLocations: [{ id: h.LOC_WH, name: 'Main Warehouse', type: 'warehouse', branch: 'HQ' }],
+        useMovements: { data: [], meta: { total: 0 } },
+        useLowStock: { data: [], meta: { total: 0 } },
+        useAssets: { data: [], meta: { total: 0 } },
+      },
+      mutations: ['useUpsertLocation', 'useUpsertVendor', 'useUpsertCategory', 'useUpsertBranch', 'useUpsertBrand', 'useUpsertFinish', 'useDeleteItem', 'useDeleteCategory', 'useDeleteBrand', 'useDeleteFinish', 'useRestoreItem', 'useImportItemsCSV', 'useTransferStock', 'useSetThresholds', 'useSetQuantity'],
+      custom: {
+        useUpsertItem: () => ({
+        mutate: vi.fn(),
+        mutateAsync: h.upsertItemMutateAsync,
+        isPending: false,
+      }),
+      },
+    },
+  );
 });
 
 // AddItemDialog reads the org default inventory location.
-vi.mock('@/lib/api/organization', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/organization')>();
-  return {
-    ...actual,
-    useOrganization: () => ({
-      data: { id: 'org-1', default_inventory_location_id: h.LOC_WH },
-      isLoading: false,
-      isError: false,
-    }),
-  };
-});
+vi.mock('@/lib/api/shared/organization', async (importOriginal) =>
+  (await import('@/__tests__/harness/inventoryApiStub')).organizationApi(await importOriginal<typeof import('@/lib/api/shared/organization')>(), { id: 'org-1', default_inventory_location_id: h.LOC_WH }));
 
 const NAME_PLACEHOLDER = 'e.g. Dual Run Capacitor 45/5 MFD 440V';
 
@@ -129,8 +99,8 @@ const NAME_PLACEHOLDER = 'e.g. Dual Run Capacitor 45/5 MFD 440V';
 const inventoryAbility = () => inventoryWriteAbility();
 
 function render() {
-  return renderWithProviders(<InventoryPage />, {
-    initialEntries: ['/inventory'],
+  return renderInventory({
+    entry: '/inventory',
     ability: inventoryAbility(),
   });
 }

@@ -58,7 +58,7 @@ suite('pre-PR review fixes, builder D (real database)', () => {
   const fx = switchFixture(db, async () => (await import('../app.js')).default as never);
   let app: Parameters<typeof request>[0];
   beforeAll(async () => {
-    app = (await import('../app.js')).default as never;
+    app = await fx.listener();
     await db.$executeRawUnsafe(`
       CREATE OR REPLACE FUNCTION test_fixd_refuse_audit_row() RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN RAISE EXCEPTION 'test: the audit write fails'; END $$`);

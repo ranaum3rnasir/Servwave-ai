@@ -1,8 +1,8 @@
 import { useEffect, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/axios';
-import { mapOwnedNumber, type PhoneNumberRow } from '@/lib/api/communication';
-import { NUMBER_ASSIGNMENTS_KEY } from '@/lib/api/phoneNumbers';
+import { mapOwnedNumber, type PhoneNumberRow } from '@/lib/api/shared/ownedNumber';
+import { NUMBER_ASSIGNMENTS_KEY } from '@/lib/api/shared/queryKeys';
 
 /** POST /api/communication/numbers/sync-if-stale response. `numbers` is the
  *  org's list in the GET /numbers shape. `stillRunning` is true when the sync

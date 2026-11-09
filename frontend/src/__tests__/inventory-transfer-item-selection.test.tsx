@@ -26,8 +26,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
-import { renderWithProviders } from './helpers';
-import InventoryPage from '@/pages/v2/inventory/InventoryPage';
+import { renderInventory } from '@/__tests__/harness/inventoryPage';
 import { buildAbility } from '@/lib/ability';
 
 const h = vi.hoisted(() => ({
@@ -38,26 +37,10 @@ const h = vi.hoisted(() => ({
   ITEM_ARCHIVED: 'bbbbbbb1-0000-4000-8000-000000000003',
 }));
 
-vi.mock('@/lib/api/organization', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/organization')>();
-  return {
-    ...actual,
-    // Explicitly null: the location default must fall through to the first real
-    // location rather than silently relying on an org default that may be unset.
-    useOrganization: () => ({
-      data: { id: 'org-1', default_inventory_location_id: null },
-      isLoading: false,
-      isError: false,
-    }),
-  };
-});
+vi.mock('@/lib/api/shared/organization', async (importOriginal) =>
+  (await import('@/__tests__/harness/inventoryApiStub')).organizationApi(await importOriginal<typeof import('@/lib/api/shared/organization')>(), { id: 'org-1', default_inventory_location_id: null }));
 
 vi.mock('@/lib/api/inventory', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/inventory')>();
-  const EMPTY: never[] = [];
-  const stable =
-    <T,>(data: T) =>
-    () => ({ data, isLoading: false, isError: false });
 
   const locations = [
     { id: h.LOC_HQ, name: 'ALPHA HEADQUARTERS', type: 'warehouse', branch: 'HQ' },
@@ -115,27 +98,23 @@ vi.mock('@/lib/api/inventory', async (importOriginal) => {
   // fires and the run hangs instead of failing.
   const ACTIVE = [firstItem, targetItem];
   const WITH_ARCHIVED = [firstItem, targetItem, archivedItem];
-
-  return {
-    ...actual,
-    // Arg-aware on purpose: this is what exposes defect C. The page asks for the
-    // archived-inclusive list; a dialog that self-fetches with the default gets
-    // a different cache and cannot resolve the selected row.
-    useInventoryItems: (includeArchived = false) => ({
-      data: includeArchived ? WITH_ARCHIVED : ACTIVE,
-      isLoading: false,
-      isError: false,
-    }),
-    useLocations: stable(locations),
-    useVendors: stable(EMPTY),
-    useCategories: stable(EMPTY),
-    useBranches: stable(EMPTY),
-    useBrands: stable(EMPTY),
-    useJobStages: stable(EMPTY),
-    useMovements: stable(EMPTY),
-    usePurchaseOrders: stable(EMPTY),
-    useInventoryJobs: stable(EMPTY),
-  };
+  return (await import('@/__tests__/harness/inventoryApiStub')).inventoryApi(
+    await importOriginal<typeof import('@/lib/api/inventory')>(),
+    {
+      reads: {
+        useLocations: locations,
+        usePurchaseOrders: [],
+        useInventoryJobs: [],
+      },
+      custom: {
+        useInventoryItems: (includeArchived = false) => ({
+        data: includeArchived ? WITH_ARCHIVED : ACTIVE,
+        isLoading: false,
+        isError: false,
+      }),
+      },
+    },
+  );
 });
 
 const mockApi = vi.mocked(api);
@@ -147,8 +126,8 @@ const inventoryAbility = () =>
   ]);
 
 async function renderPage() {
-  return renderWithProviders(<InventoryPage />, {
-    initialEntries: ['/inventory'],
+  return renderInventory({
+    entry: '/inventory',
     ability: inventoryAbility(),
   });
 }

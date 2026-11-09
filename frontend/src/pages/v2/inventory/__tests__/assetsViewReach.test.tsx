@@ -9,10 +9,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-import { renderWithProviders, seedMySwitches } from '@/__tests__/helpers';
+import { seedMySwitches } from '@/__tests__/helpers';
 import { impossibleOnPurpose } from '@/__tests__/support/backendSwitchCatalog';
 import { buildAbility, type AbilityRule } from '@/lib/ability';
-import InventoryPage from '@/pages/v2/inventory/InventoryPage';
+import { renderInventory } from '@/__tests__/harness/inventoryPage';
 
 const h = vi.hoisted(() => {
   const OWN_ASSET = {
@@ -32,33 +32,21 @@ const h = vi.hoisted(() => {
 });
 
 vi.mock('@/lib/api/inventory', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/inventory')>();
-  const EMPTY: never[] = [];
-  const stable =
-    <T,>(data: T) =>
-    () => ({ data, isLoading: false, isError: false });
-  const mutation = () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false });
-  return {
-    ...actual,
-    useInventoryItems: stable(EMPTY),
-    useLocations: stable(EMPTY),
-    useVendors: stable(EMPTY),
-    useCategories: stable(EMPTY),
-    useBranches: stable(EMPTY),
-    useBrands: stable(EMPTY),
-    useJobStages: stable(EMPTY),
-    useMovements: stable(EMPTY),
-    useLowStock: stable(EMPTY),
-    usePurchaseOrders: stable(EMPTY),
-    useUpsertItem: mutation,
-    useAssets: () => ({ data: { data: h.state.rows, meta: { total: h.state.rows.length } }, isLoading: false, isError: false }),
-    useAssetEvents: () => ({ data: [], isLoading: false, isError: false }),
-    useCreateAsset: mutation,
-    useUpdateAsset: mutation,
-    useDeleteAsset: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
-    useAssetAction: mutation,
-    useUploadAssetPhoto: mutation,
-  };
+  return (await import('@/__tests__/harness/inventoryApiStub')).inventoryApi(
+    await importOriginal<typeof import('@/lib/api/inventory')>(),
+    {
+      reads: {
+        useLowStock: [],
+        usePurchaseOrders: [],
+      },
+      mutations: ['useUpsertItem', 'useCreateAsset', 'useUpdateAsset', 'useAssetAction', 'useUploadAssetPhoto'],
+      custom: {
+        useAssets: () => ({ data: { data: h.state.rows, meta: { total: h.state.rows.length } }, isLoading: false, isError: false }),
+        useAssetEvents: () => ({ data: [], isLoading: false, isError: false }),
+        useDeleteAsset: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
+      },
+    },
+  );
 });
 
 vi.mock('@/lib/api/logisticOrders', async (importOriginal) => {
@@ -82,8 +70,8 @@ const held = (...rules: AbilityRule[]) => buildAbility([{ action: 'read', subjec
 
 function renderAssets(rules: AbilityRule[], scope: 'attached' | 'team' | 'all' = 'attached', impossibleReason?: string) {
   seedMySwitches({ assets_scope: scope });
-  return renderWithProviders(<InventoryPage />, {
-    initialEntries: ['/inventory/assets'],
+  return renderInventory({
+    entry: '/inventory/assets',
     ability: impossibleReason ? impossibleOnPurpose(held(...rules), impossibleReason) : held(...rules),
   });
 }

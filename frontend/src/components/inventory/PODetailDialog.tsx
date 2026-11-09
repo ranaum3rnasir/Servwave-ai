@@ -42,10 +42,10 @@ import {
   usePOActivity,
   useVendors,
 } from "@/lib/api/inventory";
-import { useOrganization } from "@/lib/api/organization";
+import { useOrganization } from "@/lib/api/shared/organization";
 import { useAppAbility } from "@/contexts/AbilityContext";
 import { canSeePricing } from "@/lib/ability";
-import { switchOn, useMySwitches } from "@/lib/api/mySwitches";
+import { switchOn, useMySwitches } from "@/lib/api/shared/mySwitches";
 import { lineHasCost, lineUnitCost, poTotal } from "@/lib/inventory/po-money";
 import type {
   InventoryJob,

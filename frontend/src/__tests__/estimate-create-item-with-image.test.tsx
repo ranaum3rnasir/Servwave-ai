@@ -27,8 +27,8 @@
  *     line renders it from the stored column and still renders it after a reload. No session-only
  *     overlay: that is the defect being removed elsewhere in this cluster.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { act, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { renderWithProviders } from './helpers';
 import { EstimateLineItemsEditor } from '@/components/estimates/EstimateLineItemsEditor';
 import { buildAbility } from '@/lib/ability';
@@ -103,9 +103,31 @@ function pickPicture(file: File) {
 async function openCreateForm(name: string) {
   fireEvent.click(screen.getByRole('button', { name: /add item/i }));
   fireEvent.change(await screen.findByLabelText('Search the price book'), { target: { value: name } });
+  // The picker debounces its search by 300 ms: step the fake clock over it instead of waiting it out.
+  await act(async () => { await vi.advanceTimersByTimeAsync(300); });
   fireEvent.click(await screen.findByRole('button', { name: new RegExp(`Add new item: ${name}`) }));
   return screen.getByRole('dialog');
 }
+
+// jsdom loads no image, so a real `new Image()` would neither load nor error and the picture's decode
+// would sit out its whole timeout (8 s) before the "cannot rasterize" path. Stand in a decoder that fails
+// at once: the same branch a browser takes on an undecodable picture, without the wait.
+beforeEach(() => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.stubGlobal(
+    'Image',
+    class {
+      onerror: (() => void) | null = null;
+      set src(_value: string) {
+        queueMicrotask(() => this.onerror?.());
+      }
+    },
+  );
+});
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
 
 beforeEach(() => {
   vi.clearAllMocks();

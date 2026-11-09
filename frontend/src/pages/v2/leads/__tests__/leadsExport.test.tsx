@@ -46,8 +46,8 @@ vi.mock('@/lib/inventory/csv', () => ({
 // useScheduleTimezone / the page's own org lookups both read this. The org
 // zone is Manila - deliberately NOT the stubbed viewer zone above - so the two
 // clocks disagree on this instant's calendar day.
-vi.mock('@/lib/api/organization', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/organization')>();
+vi.mock('@/lib/api/shared/organization', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/api/shared/organization')>();
   return {
     ...actual,
     useOrganization: () => ({

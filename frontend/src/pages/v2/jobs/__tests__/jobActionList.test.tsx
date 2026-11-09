@@ -1,36 +1,37 @@
-/**
- * Roles & Permissions, PRD 4, S04.13 - the job page draws a control only for an action in the list the server sends
- * on the job (`job.actions`). The person's browser-side ability is deliberately generous in the cases below, so a
- * control that shows or hides can only be following the list, never a role name or the ability.
- */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-
-import api from '@/lib/axios';
 import { buildAbility } from '@/lib/ability';
 import { useAuthStore } from '@/stores/auth.store';
-import { renderWithProviders, ALL_JOB_ACTIONS } from '@/__tests__/helpers';
+import { ALL_JOB_ACTIONS } from '@/__tests__/helpers';
+import { JOB_ID, renderJobDetail, serveJobDetail, stubBrowser } from '@/__tests__/harness/jobDetailPage';
+import api from '@/lib/axios';
 
-import JobDetailPage from '../JobDetailPage';
-
-const JOB_ID = 'j0000000-0000-0000-0000-000000000001';
-
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 vi.mock('@/components/tasks/JobLeadTasksTab', () => ({ JobLeadTasksTab: () => null }));
+
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');
   return { ...actual, useParams: () => ({ id: JOB_ID }), useNavigate: () => vi.fn() };
 });
 
-const mockApi = vi.mocked(api);
+// Each test starts from the setup file's signed-in user and bare client calls: reset them here, so a test states its own user
+// and answers in its own `beforeEach` (`clearAllMocks` keeps implementations).
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(useAuthStore).mockReset();
+  vi.mocked(api.get).mockReset();
+  vi.mocked(api.post).mockReset();
+  vi.mocked(api.patch).mockReset();
+  vi.mocked(api.put).mockReset();
+  vi.mocked(api.delete).mockReset();
+});
+
+stubBrowser();
+
 const everything = buildAbility([{ action: 'manage', subject: 'all' }]);
+
 // "Nothing" about acting on the job: the person still sees prices (P11), a separate question from what they may change.
 const nothing = buildAbility([{ action: 'read', subject: 'Prices' }]);
 
@@ -99,26 +100,20 @@ function mountWith(actions: string[], opts: { ability?: ReturnType<typeof buildA
     } as never),
   );
   const job = { ...JOB, actions };
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.includes('/visits')) return { data: { visits: [VISIT] } };
-    if (url.includes('/financials')) return { data: { final_invoice: null, invoices: [], payments: [] } };
-    if (url.includes('/line-items')) {
-      return { data: { lines: [{ id: 'li-1', name: 'Rooftop unit', description: 'Rooftop unit', quantity: 1, unit_price: 4200, line_total: 4200, discount_amount: 0, is_taxable: false, sort_order: 0 }], billing: { subtotal: 4200, discount_amount: 0, tax_rate: 0, tax_amount: 0, total: 4200 } } };
-    }
-    if (url.includes('/notes')) {
-      return { data: { notes: [{ id: 'n-1', content: 'Gate code is 4321', created_at: '2026-08-02T00:00:00.000Z', creator: { id: 'u-x', first_name: 'Ola', last_name: 'Office' } }] } };
-    }
-    if (url.includes('/api/attachments/')) {
-      return { data: { attachments: [{ id: 'a-1', file_name: 'roof.jpg', file_url: 'https://files.test/roof.jpg', file_type: 'image/jpeg', display_name: 'roof.jpg' }] } };
-    }
-    if (url.includes('/communications')) return { data: { items: [] } };
-    if (url.includes(`/api/jobs/${JOB_ID}`)) return { data: { job } };
-    return { data: {} };
+  serveJobDetail({
+    jobId: JOB_ID,
+    job,
+    visits: [VISIT],
+    lines: [{ id: 'li-1', name: 'Rooftop unit', description: 'Rooftop unit', quantity: 1, unit_price: 4200, line_total: 4200, discount_amount: 0, is_taxable: false, sort_order: 0 }],
+    billing: { subtotal: 4200, discount_amount: 0, tax_rate: 0, tax_amount: 0, total: 4200 },
+    routes: [
+      { match: (url) => url.includes('/financials'), data: { final_invoice: null, invoices: [], payments: [] } },
+      { match: (url) => url.includes('/notes'), data: { notes: [{ id: 'n-1', content: 'Gate code is 4321', created_at: '2026-08-02T00:00:00.000Z', creator: { id: 'u-x', first_name: 'Ola', last_name: 'Office' } }] } },
+      { match: (url) => url.includes('/api/attachments/'), data: { attachments: [{ id: 'a-1', file_name: 'roof.jpg', file_url: 'https://files.test/roof.jpg', file_type: 'image/jpeg', display_name: 'roof.jpg' }] } },
+      { match: (url) => url.includes('/communications'), data: { items: [] } },
+    ],
   });
-  return renderWithProviders(<JobDetailPage />, {
-    ability: opts.ability ?? everything,
-    initialEntries: [`/jobs/${JOB_ID}`],
-  });
+  return renderJobDetail({ ability: opts.ability ?? everything, entry: `/jobs/${JOB_ID}` });
 }
 
 async function openActionsMenu() {

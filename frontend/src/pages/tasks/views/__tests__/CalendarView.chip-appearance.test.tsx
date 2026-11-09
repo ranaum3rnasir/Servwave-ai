@@ -74,7 +74,7 @@ const { ORG_TZ } = vi.hoisted(() => ({ ORG_TZ: 'America/New_York' }));
 // query. This file renders CalendarView bare, with no QueryClientProvider, so pin the org
 // the same way every other dependency here is pinned. The real schedule-tz conversions stay
 // live - only the source of the zone is stubbed.
-vi.mock('@/lib/api/organization', () => ({
+vi.mock('@/lib/api/shared/organization', () => ({
   useOrganization: () => ({ data: { timezone: ORG_TZ } }),
 }));
 

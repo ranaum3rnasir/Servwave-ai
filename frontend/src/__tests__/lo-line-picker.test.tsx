@@ -53,8 +53,8 @@ vi.mock('@/lib/api/inventory', async (importOriginal) => {
   return { ...actual, useLocations: () => ({ data: locations, isLoading: false, isError: false }) };
 });
 
-vi.mock('@/lib/api/organization', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/organization')>();
+vi.mock('@/lib/api/shared/organization', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/api/shared/organization')>();
   return {
     ...actual,
     useOrganization: () => ({

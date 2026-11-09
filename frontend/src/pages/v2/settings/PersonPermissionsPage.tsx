@@ -3,19 +3,9 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft } from 'lucide-react';
 
 import { useUsers } from '@/lib/api/users';
-import {
-  basedOnValues,
-  changedSwitches,
-  differingSwitches,
-  emailPageClosed,
-  sameValue,
-  usePersonSwitches,
-  useResetPersonSwitches,
-  useSavePersonSwitches,
-  useAcceptedPaymentMethods,
-  useSwitchCatalog,
-  type SwitchSet,
-} from '@/lib/api/permissionSwitches';
+import { basedOnValues, changedSwitches, differingSwitches, emailPageClosed, sameValue, usePersonSwitches, useResetPersonSwitches, useSavePersonSwitches, useSwitchCatalog } from '@/lib/api/permissionSwitches';
+import { useAcceptedPaymentMethods } from '@/lib/api/recordablePaymentMethods';
+import { type SwitchSet } from '@/lib/api/shared/switchTypes';
 import { changeCountLabel } from '@/lib/permissionChangeCount';
 import { useFeature } from '@/lib/entitlements';
 import { useAppAbility } from '@/contexts/AbilityContext';

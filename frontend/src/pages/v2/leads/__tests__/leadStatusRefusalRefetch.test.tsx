@@ -1,22 +1,13 @@
-/**
- * #2756. The lead page's copy of the lead can be stale (changed in another tab or by another person), and the app's
- * query client keeps it fresh for 5 minutes without refetching on focus. When the server refuses a status change
- * because of that - from the status menu, Mark Lost or Reopen - the page must re-read the lead so it shows the
- * server's current lead, instead of offering the same refused choice again.
- */
-import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
-import type { ReactNode } from 'react';
-import { render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { useAuthStore } from '@/stores/auth.store';
+import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { MemoryRouter } from 'react-router-dom';
 import api from '@/lib/axios';
+import { buildAbility } from '@/lib/ability';
 import { LEAD_FIXTURE, NOTES_FIXTURE } from '@/__tests__/helpers';
 import { DESKTOP, emulateDevice } from '@/__tests__/support/deviceShape';
-import { AbilityProvider } from '@/contexts/AbilityContext';
-import { TooltipProvider as KitTooltipProvider } from '@/ui-kit/components/ui/tooltip';
-import { buildAbility } from '@/lib/ability';
-import LeadDetailPage from '../LeadDetailPage';
+import { renderLeadDetail, serveLeadDetail } from '@/__tests__/harness/leadDetailPage';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 vi.mock('@/components/tasks/JobLeadTasksTab', () => ({ JobLeadTasksTab: () => null }));
 vi.mock('@/components/communication/LeadCommunicationsTab', () => ({ LeadCommunicationsTab: () => null }));
@@ -25,11 +16,35 @@ vi.mock('@/lib/entitlements', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/entitlements')>()),
   useFeature: () => false,
 }));
-const toastError = vi.hoisted(() => vi.fn());
+vi.mock('react-router-dom', async () => {
+  const actual = await vi.importActual('react-router-dom');
+  return { ...actual, useParams: () => ({ id: LEAD_FIXTURE.id }), useNavigate: () => vi.fn() };
+});
 vi.mock('@/ui-kit/components/ui/sonner', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/ui-kit/components/ui/sonner')>()),
   toast: { error: toastError, success: vi.fn() },
 }));
+
+const toastError = vi.hoisted(() => vi.fn());
+
+// Each test starts from the setup file's signed-in user and bare client calls: reset them here, so a test states its own user
+// and answers in its own `beforeEach` (`clearAllMocks` keeps implementations).
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(useAuthStore).mockReset();
+  vi.mocked(api.get).mockReset();
+  vi.mocked(api.post).mockReset();
+  vi.mocked(api.patch).mockReset();
+  vi.mocked(api.put).mockReset();
+  vi.mocked(api.delete).mockReset();
+});
+
+/**
+ * #2756. The lead page's copy of the lead can be stale (changed in another tab or by another person), and the app's
+ * query client keeps it fresh for 5 minutes without refetching on focus. When the server refuses a status change
+ * because of that - from the status menu, Mark Lost or Reopen - the page must re-read the lead so it shows the
+ * server's current lead, instead of offering the same refused choice again.
+ */
 
 class ResizeObserverStub {
   observe() {}
@@ -37,11 +52,6 @@ class ResizeObserverStub {
   disconnect() {}
 }
 global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
-
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual('react-router-dom');
-  return { ...actual, useParams: () => ({ id: LEAD_FIXTURE.id }), useNavigate: () => vi.fn() };
-});
 
 const mockApi = vi.mocked(api);
 const LEAD_URL = `/api/leads/${LEAD_FIXTURE.id}`;
@@ -65,15 +75,17 @@ const CURRENT_OPTIONS = STALE_OPTIONS.map((o) =>
 let leadGets = 0;
 function serveLead() {
   leadGets = 0;
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.includes('/notes')) return { data: { notes: NOTES_FIXTURE } };
-    if (url === LEAD_URL) {
-      leadGets += 1;
-      const status_options = leadGets === 1 ? STALE_OPTIONS : CURRENT_OPTIONS;
-      return { data: { lead: { ...LEAD_FIXTURE, status: 'CONTACTED', estimates: [], status_options } } };
-    }
-    if (url.includes('/api/tags')) return { data: { tags: [] } };
-    return { data: {} };
+  serveLeadDetail({
+    lead: LEAD_FIXTURE,
+    notes: NOTES_FIXTURE,
+    routes: [{
+      match: (url) => url === LEAD_URL,
+      data: () => {
+        leadGets += 1;
+        const status_options = leadGets === 1 ? STALE_OPTIONS : CURRENT_OPTIONS;
+        return { lead: { ...LEAD_FIXTURE, status: 'CONTACTED', estimates: [], status_options } };
+      },
+    }],
   });
   mockApi.patch.mockRejectedValue({ response: { status: 409, data: { error: NO_WALKTHROUGH_BOOKED } } });
 }
@@ -92,16 +104,7 @@ function renderLikeTheApp() {
     { action: 'mark_lost', subject: 'Lead' },
     { action: 'reopen', subject: 'Lead' },
   ]);
-  const Wrapper = ({ children }: { children: ReactNode }) => (
-    <AbilityProvider ability={ability}>
-      <QueryClientProvider client={queryClient}>
-        <KitTooltipProvider delayDuration={320}>
-          <MemoryRouter>{children}</MemoryRouter>
-        </KitTooltipProvider>
-      </QueryClientProvider>
-    </AbilityProvider>
-  );
-  render(<LeadDetailPage />, { wrapper: Wrapper });
+  renderLeadDetail({ ability, wrap: (page) => <QueryClientProvider client={queryClient}>{page}</QueryClientProvider> });
 }
 
 async function pickRefusedStatus() {
@@ -130,14 +133,13 @@ describe('a refused (409) lead status change re-reads the lead', () => {
     serveLead();
     const user = await pickRefusedStatus();
 
-    // Let any refetch land, then open the menu again.
-    await new Promise((r) => setTimeout(r, 300));
+    // The refusal re-reads the lead (the second read is the one holding the locked option); then open the menu again.
+    await vi.waitFor(() => expect(leadGets).toBe(2));
     await user.click(await screen.findByRole('button', { name: /lead status: contacted/i }));
     const item = await screen.findByRole('menuitem', { name: /walkthrough scheduled/i });
     expect(item).toHaveAttribute('aria-disabled', 'true');
 
     await user.click(item);
-    await new Promise((r) => setTimeout(r, 300));
     expect(mockApi.patch).toHaveBeenCalledTimes(1);
     expect(toastError).toHaveBeenCalledTimes(1);
   });
@@ -146,14 +148,16 @@ describe('a refused (409) lead status change re-reads the lead', () => {
 /** The lead the page loads first, then the lead the server holds now (changed elsewhere in between). */
 function serveChangedLead(loaded: Record<string, unknown>, now: Record<string, unknown>) {
   leadGets = 0;
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.includes('/notes')) return { data: { notes: NOTES_FIXTURE } };
-    if (url === LEAD_URL) {
-      leadGets += 1;
-      return { data: { lead: { ...LEAD_FIXTURE, estimates: [], ...(leadGets === 1 ? loaded : now) } } };
-    }
-    if (url.includes('/api/tags')) return { data: { tags: [] } };
-    return { data: {} };
+  serveLeadDetail({
+    lead: LEAD_FIXTURE,
+    notes: NOTES_FIXTURE,
+    routes: [{
+      match: (url) => url === LEAD_URL,
+      data: () => {
+        leadGets += 1;
+        return { lead: { ...LEAD_FIXTURE, estimates: [], ...(leadGets === 1 ? loaded : now) } };
+      },
+    }],
   });
 }
 

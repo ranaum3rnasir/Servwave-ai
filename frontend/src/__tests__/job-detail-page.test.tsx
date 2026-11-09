@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, waitFor, fireEvent, within } from '@testing-library/react';
+import { screen, waitFor, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
-import { renderWithProviders, ALL_JOB_ACTIONS } from './helpers';
-import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
+import { ALL_JOB_ACTIONS } from './helpers';
+import { renderJobDetail, serveJobDetail, stubBrowser } from '@/__tests__/harness/jobDetailPage';
 import { buildAbility } from '@/lib/ability';
 
 // Capture the entity prop passed to JobLeadTasksTab to assert UUID correctness
@@ -15,15 +15,7 @@ vi.mock('@/components/tasks/JobLeadTasksTab', () => ({
   },
 }));
 
-// floating-ui (under Radix dropdown) does `new ResizeObserver(...)`; the global
-// setup mock returns a plain object and isn't constructable, so install a real
-// class stub (same pattern as lead-detail-page.test.tsx).
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 const mockNavigate = vi.fn();
 vi.mock('react-router-dom', async () => {
@@ -83,11 +75,8 @@ const BASE_JOB = {
 
 function mockJob(overrides: Partial<typeof BASE_JOB> = {}) {
   const job = { ...BASE_JOB, ...overrides };
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.includes('/api/jobs/')) {
-      return { data: { job } };
-    }
-    return { data: {} };
+  serveJobDetail({
+    job,
   });
 }
 
@@ -125,7 +114,7 @@ describe('JobDetailPage — schedule action (bug #44, #583 consolidated menu)', 
 
     // Task 8 (Spec A): getAvailableActions is ability-driven now, not role-string-driven —
     // an explicit ability is required or every action-gated control disappears.
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+    renderJobDetail({ ability: adminAbility });
 
     await userEvent.click(await screen.findByRole('button', { name: /actions/i }));
     expect(await screen.findByRole('menuitem', { name: /Schedule Job/ })).toBeInTheDocument();
@@ -141,7 +130,7 @@ describe('JobDetailPage — schedule action (bug #44, #583 consolidated menu)', 
       ],
     });
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+    renderJobDetail({ ability: adminAbility });
 
     await userEvent.click(await screen.findByRole('button', { name: /actions/i }));
     expect(await screen.findByRole('menuitem', { name: /Reschedule/ })).toBeInTheDocument();
@@ -161,7 +150,7 @@ describe('JobDetailPage — schedule action (bug #44, #583 consolidated menu)', 
       ],
     });
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+    renderJobDetail({ ability: adminAbility });
 
     await userEvent.click(await screen.findByRole('button', { name: /actions/i }));
     await userEvent.click(await screen.findByRole('menuitem', { name: /Reschedule/ }));
@@ -184,7 +173,7 @@ describe('JobDetailPage — schedule action (bug #44, #583 consolidated menu)', 
   it('opens the assign/reschedule dialog when the Schedule KPI card is clicked (#583 AC4)', async () => {
     mockJob({ status: 'UNSCHEDULED', scheduled_start: null });
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+    renderJobDetail({ ability: adminAbility });
 
     await userEvent.click(await screen.findByRole('button', { name: /reschedule job/i }));
     // The KPI card triggers 'schedule' mode, not 'assign' - the dialog's copy matches
@@ -197,7 +186,7 @@ describe('JobDetailPage — Create Invoice paths (SERV10X-38 Task 6c: always the
   it('estimate-less job: clicking "Create Invoice" opens CreateJobInvoiceDialog and does NOT POST', async () => {
     mockJob({ estimate: null });
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+    renderJobDetail({ ability: adminAbility });
 
     const btn = await screen.findByRole('button', { name: /Create Invoice/ });
     fireEvent.click(btn);
@@ -222,7 +211,7 @@ describe('JobDetailPage — Create Invoice paths (SERV10X-38 Task 6c: always the
       } as unknown as typeof BASE_JOB['estimate'],
     });
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+    renderJobDetail({ ability: adminAbility });
 
     const btn = await screen.findByRole('button', { name: /Create Invoice/ });
     fireEvent.click(btn);
@@ -238,7 +227,7 @@ describe('JobDetailPage — JobLeadTasksTab receives entity UUID', () => {
   it('passes job.id (UUID) not job_number as entity.id', async () => {
     const { user } = { user: (await import('@testing-library/user-event')).default.setup() };
     mockJob();
-    renderWithProviders(<JobDetailPage />);
+    renderJobDetail({ ability: undefined });
 
     // Wait for the page to load, then click the Tasks tab to mount JobLeadTasksTab
     const tasksTab = await screen.findByRole('tab', { name: /Tasks/ });
@@ -286,23 +275,18 @@ describe('JobDetailPage — Items tab: Scope of Work + Internal Costs (Batch 3)'
 
   function mockJobWithItems(overrides: Partial<typeof BASE_JOB> = {}) {
     const job = { ...BASE_JOB, ...overrides };
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url.endsWith('/scopes')) {
-        return { data: { scopes: [SCOPE], billing: { total: 550, invoiced: 0, remaining: 550 } } };
-      }
-      if (url.endsWith('/line-items')) {
-        return { data: { lines: [LINE], billing: { total: 550, invoiced: 0, remaining: 550 } } };
-      }
-      if (url.includes('/api/jobs/')) {
-        return { data: { job } };
-      }
-      return { data: {} };
+    serveJobDetail({
+      job,
+      routes: [
+        { match: (url) => url.endsWith('/scopes'), data: { scopes: [SCOPE], billing: { total: 550, invoiced: 0, remaining: 550 } } },
+        { match: (url) => url.endsWith('/line-items'), data: { lines: [LINE], billing: { total: 550, invoiced: 0, remaining: 550 } } },
+      ],
     });
   }
 
   it('fetches GET /jobs/:id/scopes and renders the scope block as a sibling of LineItemsEditor', async () => {
     mockJobWithItems();
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+    renderJobDetail({ ability: adminAbility });
 
     const user = userEvent.setup();
     await user.click(await screen.findByRole('tab', { name: /Items/i }));
@@ -332,7 +316,7 @@ describe('JobDetailPage — Items tab: Scope of Work + Internal Costs (Batch 3)'
 
     async function openItemsTab(created_by_id: string, actions: string[]) {
       mockJobWithItems({ created_by_id, actions } as never);
-      renderWithProviders(<JobDetailPage />, { ability: technicianAbility });
+      renderJobDetail({ ability: technicianAbility });
       await userEvent.setup().click(await screen.findByRole('tab', { name: /Items/i }));
       await screen.findByText('Compressor swap');
     }
@@ -355,7 +339,7 @@ describe('JobDetailPage — Items tab: Scope of Work + Internal Costs (Batch 3)'
 
   it('renders InternalCostsCard after LineItemsEditor when the ability can read Invoice', async () => {
     mockJobWithItems();
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+    renderJobDetail({ ability: adminAbility });
 
     const user = userEvent.setup();
     await user.click(await screen.findByRole('tab', { name: /Items/i }));
@@ -368,7 +352,7 @@ describe('JobDetailPage — Items tab: Scope of Work + Internal Costs (Batch 3)'
     mockJobWithItems();
     // Edit job line items needs View jobs.
     const restrictedAbility = buildAbility([{ action: 'manage_lines', subject: 'Job' }, { action: 'read', subject: 'Job' }]);
-    renderWithProviders(<JobDetailPage />, { ability: restrictedAbility });
+    renderJobDetail({ ability: restrictedAbility });
 
     const user = userEvent.setup();
     await user.click(await screen.findByRole('tab', { name: /Items/i }));
@@ -402,29 +386,20 @@ describe('JobDetailPage — Items tab: editable tax + discount (job-owns-tax-dis
 
   function mockEditableJob(billingOverrides: Record<string, unknown> = {}) {
     const job = { ...BASE_JOB };
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url.endsWith('/scopes')) {
-        return { data: { scopes: [], billing: { total: 1000, invoiced: 0, remaining: 1000 } } };
-      }
-      if (url.endsWith('/line-items')) {
-        return {
-          data: {
-            lines: [LINE],
-            billing: {
-              subtotal: 1000, discount_amount: 0, tax_rate: 0, tax_amount: 0, total: 1000,
-              invoiced: 0, remaining: 1000, over_billed: 0,
-              ...billingOverrides,
-            },
-          },
-        };
-      }
-      if (url === '/api/state-tax-rates') {
-        return { data: TAX_RATES };
-      }
-      if (url.includes('/api/jobs/')) {
-        return { data: { job } };
-      }
-      return { data: {} };
+    serveJobDetail({
+      job,
+      routes: [
+        { match: (url) => url.endsWith('/scopes'), data: { scopes: [], billing: { total: 1000, invoiced: 0, remaining: 1000 } } },
+        { match: (url) => url.endsWith('/line-items'), data: {
+                    lines: [LINE],
+                    billing: {
+                      subtotal: 1000, discount_amount: 0, tax_rate: 0, tax_amount: 0, total: 1000,
+                      invoiced: 0, remaining: 1000, over_billed: 0,
+                      ...billingOverrides,
+                    },
+                  } },
+        { match: (url) => url === '/api/state-tax-rates', data: TAX_RATES },
+      ],
     });
     mockApi.patch.mockResolvedValue({ data: { job } });
   }
@@ -448,7 +423,7 @@ describe('JobDetailPage — Items tab: editable tax + discount (job-owns-tax-dis
    */
   it('offers no editable tax or discount control on the Items tab, even to an admin', async () => {
     mockEditableJob();
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+    renderJobDetail({ ability: adminAbility });
 
     const user = userEvent.setup();
     await user.click(await screen.findByRole('tab', { name: /Items/i }));
@@ -495,17 +470,11 @@ describe('JobDetailPage — inventory stock semantics (Inventory P1)', () => {
     overrides: Partial<typeof BASE_JOB> = {},
   ) {
     const job = { ...BASE_JOB, ...overrides };
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url.endsWith('/scopes')) {
-        return { data: { scopes: [], billing: { total: 0, invoiced: 0, remaining: 0 } } };
-      }
-      if (url.endsWith('/line-items')) {
-        return { data: { lines, billing: { total: 50, invoiced: 0, remaining: 50 } } };
-      }
-      if (url.includes('/api/jobs/')) {
-        return { data: { job } };
-      }
-      return { data: {} };
+    serveJobDetail({
+      job,
+      routes: [
+        { match: (url) => url.endsWith('/line-items'), data: { lines, billing: { total: 50, invoiced: 0, remaining: 50 } } },
+      ],
     });
   }
 
@@ -513,7 +482,7 @@ describe('JobDetailPage — inventory stock semantics (Inventory P1)', () => {
     mockJobWithStockLines([UNSYNCED_LINE, SYNCED_LINE], { status: 'IN_PROGRESS' });
     mockApi.post.mockResolvedValue({ data: {} });
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+    renderJobDetail({ ability: adminAbility });
 
     const user = userEvent.setup();
     // #718 consolidated the header actions into the Actions menu; Complete job was pulled
@@ -535,7 +504,7 @@ describe('JobDetailPage — inventory stock semantics (Inventory P1)', () => {
   it('CancelJobDialog announces how many synced lines will be returned to stock (QA-413 copy)', async () => {
     mockJobWithStockLines([SYNCED_LINE, SYNCED_LINE_B, UNSYNCED_LINE], { status: 'UNSCHEDULED' });
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+    renderJobDetail({ ability: adminAbility });
 
     const user = userEvent.setup();
     // #718: the three-dot "More actions" trigger became the consolidated "Actions" menu.
@@ -550,7 +519,7 @@ describe('JobDetailPage — inventory stock semantics (Inventory P1)', () => {
   it('job delete confirm gains the return sentence only when synced lines exist', async () => {
     mockJobWithStockLines([SYNCED_LINE], { status: 'UNSCHEDULED' });
 
-    const first = renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+    const first = renderJobDetail({ ability: adminAbility });
     const user = userEvent.setup();
     // #718: the three-dot "More actions" trigger became the consolidated "Actions" menu.
     await user.click(await first.findByRole('button', { name: 'Actions' }));
@@ -569,7 +538,7 @@ describe('JobDetailPage — inventory stock semantics (Inventory P1)', () => {
 
     // Control: no synced lines ⇒ no stock sentence in the confirm dialog.
     mockJobWithStockLines([UNSYNCED_LINE], { status: 'UNSCHEDULED' });
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+    renderJobDetail({ ability: adminAbility });
     await user.click(await screen.findByRole('button', { name: 'Actions' }));
     await user.click(await screen.findByRole('menuitem', { name: 'Delete' }));
 
@@ -589,14 +558,11 @@ describe('JobDetailPage — Payment Received node disables once fully paid off (
     financials: Record<string, unknown>,
   ) {
     const job = { ...BASE_JOB, ...jobOverrides };
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url.endsWith('/financials')) {
-        return { data: financials };
-      }
-      if (url.includes('/api/jobs/')) {
-        return { data: { job } };
-      }
-      return { data: {} };
+    serveJobDetail({
+      job,
+      routes: [
+        { match: (url) => url.endsWith('/financials'), data: financials },
+      ],
     });
   }
 
@@ -617,7 +583,7 @@ describe('JobDetailPage — Payment Received node disables once fully paid off (
       },
     );
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+    renderJobDetail({ ability: adminAbility });
 
     // Wait for the bar to render with the loaded financials before asserting absence.
     await screen.findByText('Payment Received');
@@ -644,7 +610,7 @@ describe('JobDetailPage — Payment Received node disables once fully paid off (
       },
     );
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+    renderJobDetail({ ability: adminAbility });
 
     const btn = await screen.findByRole('button', { name: /payment received/i });
     await userEvent.click(btn);
@@ -671,19 +637,16 @@ describe('JobDetailPage — Payment Received node disables once fully paid off (
       payments: [],
       payment_received: { offered: true, reason: null },
     };
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url === '/api/permission-switches/accepted-payment-methods') {
-        return { data: { every_method: false, methods: ['CHECK', 'CASH', 'ZELLE'] } };
-      }
-      if (url === '/api/permission-switches/me') {
-        return { data: { admin_box: false, values: { allowed_payment_methods: ['ZELLE', 'VENMO', 'CHECK'] }, rules: [] } };
-      }
-      if (url.endsWith('/financials')) return { data: financials };
-      if (url.includes('/api/jobs/')) return { data: { job } };
-      return { data: {} };
+    serveJobDetail({
+      job,
+      routes: [
+        { match: (url) => url === '/api/permission-switches/accepted-payment-methods', data: { every_method: false, methods: ['CHECK', 'CASH', 'ZELLE'] } },
+        { match: (url) => url === '/api/permission-switches/me', data: { admin_box: false, values: { allowed_payment_methods: ['ZELLE', 'VENMO', 'CHECK'] }, rules: [] } },
+        { match: (url) => url.endsWith('/financials'), data: financials },
+      ],
     });
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+    renderJobDetail({ ability: adminAbility });
 
     await userEvent.click(await screen.findByRole('button', { name: /payment received/i }));
     await userEvent.click(await screen.findByRole('combobox', { name: /payment method/i }));
@@ -700,7 +663,7 @@ describe('JobDetailPage - Estimates tab lists attached estimates (SRVW-96)', () 
       estimate: null,
       linked_estimates: [{ id: 'e1', estimate_number: 'J00001-1', total_amount: 425, status: 'WON' }],
     });
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+    renderJobDetail({ ability: adminAbility });
 
     const user = userEvent.setup();
     await user.click(await screen.findByRole('tab', { name: /Estimates/i }));
@@ -713,7 +676,7 @@ describe('JobDetailPage - Estimates tab lists attached estimates (SRVW-96)', () 
 
   it('empty state still renders when both provenance and linked estimates are empty', async () => {
     mockJob({ estimate: null, linked_estimates: [] });
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+    renderJobDetail({ ability: adminAbility });
 
     const user = userEvent.setup();
     await user.click(await screen.findByRole('tab', { name: /Estimates/i }));
@@ -731,14 +694,11 @@ describe('JobDetailPage - masthead absorbs a linked estimate deposit exactly onc
     financials: Record<string, unknown>,
   ) {
     const job = { ...BASE_JOB, ...jobOverrides };
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url.endsWith('/financials')) {
-        return { data: financials };
-      }
-      if (url.includes('/api/jobs/')) {
-        return { data: { job } };
-      }
-      return { data: {} };
+    serveJobDetail({
+      job,
+      routes: [
+        { match: (url) => url.endsWith('/financials'), data: financials },
+      ],
     });
   }
 
@@ -762,7 +722,7 @@ describe('JobDetailPage - masthead absorbs a linked estimate deposit exactly onc
       },
     );
 
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+    renderJobDetail({ ability: adminAbility });
 
     expect(await screen.findByText('Deposit $600.00')).toBeInTheDocument();
     expect(await screen.findByText('$400.00')).toBeInTheDocument();
@@ -775,14 +735,14 @@ describe('JobDetailPage - masthead absorbs a linked estimate deposit exactly onc
 describe('JobDetailPage - record number editor gating', () => {
   it('shows the edit affordance for a user with the renumber grant', async () => {
     mockJob({ status: 'UNSCHEDULED' });
-    renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+    renderJobDetail({ ability: adminAbility });
 
     expect(await screen.findByRole('button', { name: /edit id/i })).toBeInTheDocument();
   });
 
   it('hides the edit affordance when the server lists no renumber for the user', async () => {
     mockJob({ status: 'UNSCHEDULED', actions: [] });
-    renderWithProviders(<JobDetailPage />);
+    renderJobDetail({ ability: undefined });
 
     await screen.findAllByText('J00001');
     expect(screen.queryByRole('button', { name: /edit id/i })).toBeNull();

@@ -1,38 +1,25 @@
-/**
- * Roles & Permissions, PRD 4, S04.14 - the job page's Items tab edits lines and scopes only when the server lists
- * `edit_line_items` on the job, and draws no discount control for the Technician preset values. The person's
- * browser-side ability is deliberately the opposite of the list in the cases below, so what shows or hides can only be
- * following the list: not the ability, not who created or sold the job, and not a role name.
- */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-
-import api from '@/lib/axios';
 import { buildAbility } from '@/lib/ability';
 import { useAuthStore } from '@/stores/auth.store';
-import { renderWithProviders, ALL_JOB_ACTIONS } from '@/__tests__/helpers';
+import { ALL_JOB_ACTIONS } from '@/__tests__/helpers';
+import { JOB_ID, renderJobDetail, serveJobDetail, stubBrowser } from '@/__tests__/harness/jobDetailPage';
+import api from '@/lib/axios';
 
-import JobDetailPage from '../JobDetailPage';
-
-const JOB_ID = 'j0000000-0000-0000-0000-000000000001';
 const ME = 'u-me';
 
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 vi.mock('@/components/tasks/JobLeadTasksTab', () => ({ JobLeadTasksTab: () => null }));
+
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');
   return { ...actual, useParams: () => ({ id: JOB_ID }), useNavigate: () => vi.fn() };
 });
 
-const mockApi = vi.mocked(api);
 const everything = buildAbility([{ action: 'manage', subject: 'all' }]);
+
 // "Nothing" about editing: the person still sees prices (P11), which is a separate question from what they may change.
 const nothing = buildAbility([{ action: 'read', subject: 'Prices' }]);
 
@@ -104,20 +91,19 @@ function mountWith(actions: string[], ability: ReturnType<typeof buildAbility>) 
     } as never),
   );
   const job = { ...JOB, actions };
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.includes('/visits')) return { data: { visits: [VISIT] } };
-    if (url.includes('/financials')) return { data: { final_invoice: null, invoices: [], payments: [] } };
-    if (url.includes('/line-items')) {
-      return { data: { lines: [{ id: 'li-1', name: 'Rooftop unit', description: 'Rooftop unit', quantity: 1, unit_price: 4200, line_total: 4200, discount_amount: 0, is_taxable: false, sort_order: 0 }], billing: { subtotal: 4200, discount_amount: 0, tax_rate: 0, tax_amount: 0, total: 4200 } } };
-    }
-    if (url.includes('/scopes')) return { data: { scopes: [] } };
-    if (url.includes('/notes')) return { data: { notes: [] } };
-    if (url.includes('/api/attachments/')) return { data: { attachments: [] } };
-    if (url.includes('/communications')) return { data: { items: [] } };
-    if (url.includes(`/api/jobs/${JOB_ID}`)) return { data: { job } };
-    return { data: {} };
+  serveJobDetail({
+    job,
+    visits: [VISIT],
+    routes: [
+      { match: (url) => url.includes('/financials'), data: { final_invoice: null, invoices: [], payments: [] } },
+      { match: (url) => url.includes('/line-items'), data: { lines: [{ id: 'li-1', name: 'Rooftop unit', description: 'Rooftop unit', quantity: 1, unit_price: 4200, line_total: 4200, discount_amount: 0, is_taxable: false, sort_order: 0 }], billing: { subtotal: 4200, discount_amount: 0, tax_rate: 0, tax_amount: 0, total: 4200 } } },
+      { match: (url) => url.includes('/scopes'), data: { scopes: [] } },
+      { match: (url) => url.includes('/notes'), data: { notes: [] } },
+      { match: (url) => url.includes('/api/attachments/'), data: { attachments: [] } },
+      { match: (url) => url.includes('/communications'), data: { items: [] } },
+    ],
   });
-  return renderWithProviders(<JobDetailPage />, { ability, initialEntries: [`/jobs/${JOB_ID}`] });
+  return renderJobDetail({ ability, entry: `/jobs/${JOB_ID}` });
 }
 
 async function openItemsTab() {
@@ -135,8 +121,16 @@ function discountControls() {
   ];
 }
 
+// Each test starts from the setup file's signed-in user and bare client calls: reset them here, so a test states its own user
+// and answers in its own `beforeEach` (`clearAllMocks` keeps implementations).
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(useAuthStore).mockReset();
+  vi.mocked(api.get).mockReset();
+  vi.mocked(api.post).mockReset();
+  vi.mocked(api.patch).mockReset();
+  vi.mocked(api.put).mockReset();
+  vi.mocked(api.delete).mockReset();
 });
 
 describe('job page - the Items tab follows the server list', () => {

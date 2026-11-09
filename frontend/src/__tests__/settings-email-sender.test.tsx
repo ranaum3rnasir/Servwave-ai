@@ -38,7 +38,7 @@ function mockSender(over: Partial<{ localPart: string; custom: boolean }> = {}) 
   });
 }
 
-function signIn(features: string[] = ['email']) {
+function signIn(features: string[] = ['email'], isAdmin = false) {
   vi.mocked(useAuthStore).mockImplementation((selector: (s: Record<string, unknown>) => unknown) =>
     selector({
       user: {
@@ -47,6 +47,7 @@ function signIn(features: string[] = ['email']) {
         first_name: 'Test',
         last_name: 'Holder',
         role: 'ADMIN',
+        is_admin: isAdmin,
         org_features: features,
       },
       isAuthenticated: true,
@@ -282,16 +283,27 @@ describe('EmailSenderPage - who sees it', () => {
   });
 
   it('is what the routed /settings/email-sender address draws for a person who is not an Admin: nothing, and no read', async () => {
-    renderWithProviders(
-      <Suspense fallback={null}>
-        <Routes>{settingsV2Routes()}</Routes>
-      </Suspense>,
-      { initialEntries: ['/settings/email-sender'], ability: nonHolderAbility },
-    );
+    const routed = (ability: typeof holderAbility) =>
+      renderWithProviders(
+        <Suspense fallback={null}>
+          <Routes>{settingsV2Routes()}</Routes>
+        </Suspense>,
+        { initialEntries: ['/settings/email-sender'], ability },
+      );
 
-    // Setting up the company is the Admin flag's alone (36b, M17): the route renders nothing for anyone else.
+    // First the same address for an Admin, which DOES draw the page: this loads the route's lazy page, so what
+    // follows is judged against a page that would appear at once (no timer to wait out a cold chunk).
+    signIn(['email'], true);
+    const admin = routed(holderAbility);
+    expect(await screen.findByLabelText('Company part')).toBeInTheDocument();
+    admin.unmount();
+
+    // Setting up the company is the Admin flag's alone (36b, M17): the route renders nothing for anyone else,
+    // even a person whose rules hold the old Company settings update.
+    signIn(['email'], false);
+    mockApi.get.mockClear();
+    routed(holderAbility);
     await screen.findByRole('navigation', { name: 'Settings' });
-    await new Promise((resolve) => setTimeout(resolve, 150));
     expect(screen.queryByLabelText('Company part')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^save$/i })).not.toBeInTheDocument();
     expect(mockApi.get).not.toHaveBeenCalledWith('/api/organization/email-sender');

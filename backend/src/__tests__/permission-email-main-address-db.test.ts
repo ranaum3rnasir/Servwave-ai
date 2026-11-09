@@ -29,6 +29,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 import { createHmac, randomBytes, randomUUID } from 'crypto';
 import request from 'supertest';
+import { afterResponseDrained } from '../lib/after-response';
 import type { PrismaClient, Role } from '@prisma/client';
 
 const { clientPromise, fetchReceived, emitSpy, publishEmailsSpy, queries } = vi.hoisted(() => {
@@ -93,9 +94,9 @@ suite('mail to the main address and who it rings (real database, real webhook an
 
   beforeAll(async () => {
     db = (await clientPromise) as PrismaClient;
-    app = (await import('../app.js')).default as never;
-    fx = switchFixture(db, async () => app);
-    // The webhook reads its secret from the environment object at request time.
+    fx = switchFixture(db, async () => (await import('../app.js')).default as never);
+
+    app = await fx.listener();    // The webhook reads its secret from the environment object at request time.
     (env as { RESEND_WEBHOOK_SECRET?: string }).RESEND_WEBHOOK_SECRET = WEBHOOK_SECRET;
   }, 120_000);
 
@@ -250,16 +251,9 @@ suite('mail to the main address and who it rings (real database, real webhook an
     return { res, eventId, providerId };
   }
 
-  /**
-   * The webhook answers first and announces after (the acknowledge-then-announce order), so a case reads the bells only once the
-   * announce has finished: the database has been quiet for a moment.
-   */
+  /** The webhook answers first and announces after: a case reads the bells once ALL of that work (tracked in lib/after-response.ts) is over. A drain that times out fails the case. */
   async function settle() {
-    let seen = -1;
-    for (let waited = 0; waited < 10_000 && seen !== queries.length; waited += 250) {
-      seen = queries.length;
-      await new Promise((r) => setTimeout(r, 250));
-    }
+    await afterResponseDrained();
   }
 
   /** The mail from the customer's known address to the company address. */

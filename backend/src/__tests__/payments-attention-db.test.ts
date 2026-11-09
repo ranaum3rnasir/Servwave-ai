@@ -795,7 +795,7 @@ suite('Needs attention API (real database)', () => {
     });
 
     it('is resolved with "Evidence submitted" after a signed dispute update moves it to UNDER_REVIEW', async () => {
-      const app = (await import('../app.js')).default as unknown as Parameters<typeof request>[0];
+      const app = await fx.listener();
       vi.mocked(getStripeForOrg).mockReturnValue({
         stripe: {
           checkout: { sessions: { list: vi.fn().mockResolvedValue({ data: [], has_more: false }) } },

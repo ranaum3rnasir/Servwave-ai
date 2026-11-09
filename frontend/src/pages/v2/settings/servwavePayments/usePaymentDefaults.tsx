@@ -9,7 +9,7 @@ import {
   type DepositPolicy,
   type OrgFormValues,
   type PaymentMethod,
-} from '@/lib/api/organization';
+} from '@/lib/api/shared/organization';
 import { PAYMENT_METHOD_LABELS, PAYMENT_METHOD_ORDER } from '@/lib/payment-methods';
 import { NewTabLink } from '@/components/ui/new-tab-link';
 import { Badge } from '@/ui-kit/components/ui/badge';

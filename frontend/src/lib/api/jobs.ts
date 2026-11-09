@@ -16,9 +16,10 @@
  *
  * Routes verified against backend/src/routes/job.routes.ts.
  */
+import type { Scope } from '@/lib/api/shared/scope';
 import { useQuery } from '@tanstack/react-query';
 import api from '@/lib/axios';
-import { switchOn, useMySwitches } from '@/lib/api/mySwitches';
+import { switchOn, useMySwitches } from '@/lib/api/shared/mySwitches';
 import type { PaymentState } from '@/types/entities';
 
 /** POST /api/jobs/:id/reopen — reopen a Done or Cancelled job (Reopen Done jobs); it goes back to In Progress. */
@@ -369,27 +370,6 @@ export function reorderJobLines(
 }
 
 // ─── Scope-of-work CRUD (Batch 3) ─────────────────────────────────────────────
-
-/**
- * A flat-priced, non-line-item scope-of-work block (`backend/src/lib/scopes.ts` `ScopeOfWork`).
- * Job.scopes and Invoice.scopes share this exact JSONB shape — defined once here (Job needs the
- * richer `listJobScopes`) and imported into `@/lib/api/invoices` rather than duplicated, so the
- * two never silently drift.
- */
-export interface Scope {
-  id: string;
-  title: string;
-  body: string;
-  flat_price: number | null;
-  is_taxable: boolean;
-  /** Margin data — absent from the response entirely (not null) when the caller can't `read Invoice` (see `stripScopeCost`). */
-  internal_cost?: number | null;
-  /** #2053 slice 1 — estimate-only, same doc as InvoiceLineItem's identical pair above. */
-  is_optional?: boolean;
-  is_selected?: boolean;
-  /** The rep's recommendation: same doc as `InvoiceLineItem.rep_selected` above. */
-  rep_selected?: boolean | null;
-}
 
 /** Body for POST /api/jobs/:id/scopes — add a scope-of-work block. */
 export interface AddJobScopePayload {

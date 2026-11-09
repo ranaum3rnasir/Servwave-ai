@@ -64,7 +64,7 @@ suite('permission switches (real database)', () => {
     });
 
     it('is refused to someone who is not signed in', async () => {
-      const app = (await import('../app.js')).default as never;
+      const app = await fx.listener();
       const request = (await import('supertest')).default;
       expect((await request(app).get('/api/permission-switches/catalog')).status).toBe(401);
     });

@@ -69,19 +69,8 @@ import {
   type PriceBookSelection,
 } from '@/components/jobs/items/PriceBookPicker';
 import { catalogItemCostPayload, catalogItemSellPrice } from '@/lib/catalog/itemPresentation';
-import {
-  addInvoiceLine,
-  updateInvoiceLine,
-  deleteInvoiceLine,
-  reorderInvoiceLines,
-  addInvoiceScope,
-  updateInvoiceScope,
-  deleteInvoiceScope,
-  reorderInvoiceScopes,
-  type AddLineItemPayload,
-  type UpdateLineItemPayload,
-  type Scope,
-} from '@/lib/api/invoices';
+import { addInvoiceLine, updateInvoiceLine, deleteInvoiceLine, reorderInvoiceLines, addInvoiceScope, updateInvoiceScope, deleteInvoiceScope, reorderInvoiceScopes, type AddLineItemPayload, type UpdateLineItemPayload } from '@/lib/api/invoices';
+import { type Scope } from '@/lib/api/shared/scope';
 import type { InvoiceLineItem } from '@/lib/api/jobs';
 import { useAppAbility } from '@/contexts/AbilityContext';
 import { canSeePricing as canSeePricingAbility } from '@/lib/ability';

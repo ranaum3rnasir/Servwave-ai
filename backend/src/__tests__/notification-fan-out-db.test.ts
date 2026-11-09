@@ -574,7 +574,7 @@ suite('Complete job and Reopen on a pool of one connection (real database)', () 
       // The person's one live invite, as an admin's invitation makes it.
       const inviteToken = await issueInviteToken(invitee);
       vi.mocked(supabaseAdmin.auth.admin.createUser).mockResolvedValue({ data: { user: { id: randomUUID() } }, error: null } as never);
-      const app = (await import('../app.js')).default as never;
+      const app = await fx.listener();
       const invite = await settledQueries(() => request(app).post('/api/auth/accept-invite').send({ token: inviteToken, password: 'sup3rsecret99', accepted_terms: true }));
 
       const { sendAccountNotices } = await import('../lib/payments-notifications.js');

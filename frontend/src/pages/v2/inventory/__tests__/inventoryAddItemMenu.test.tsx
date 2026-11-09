@@ -1,3 +1,28 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { screen, within, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import api from '@/lib/axios';
+import { buildAbility } from '@/lib/ability';
+import { renderInventory, serveInventory } from '@/__tests__/harness/inventoryPage';
+import type { Item, Location, Category } from '@/lib/api/inventory';
+import { impossibleOnPurpose } from '@/__tests__/support/backendSwitchCatalog';
+import { useInventoryAlertStore } from '@/stores/inventory-alert.store';
+import { useAuthStore } from '@/stores/auth.store';
+
+vi.mock('@/lib/axios');
+
+// Each test starts from the setup file's signed-in user and bare client calls: reset them here, so a test states its own user
+// and answers in its own `beforeEach` (`clearAllMocks` keeps implementations).
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(useAuthStore).mockReset();
+  vi.mocked(api.get).mockReset();
+  vi.mocked(api.post).mockReset();
+  vi.mocked(api.patch).mockReset();
+  vi.mocked(api.put).mockReset();
+  vi.mocked(api.delete).mockReset();
+});
+
 // Visits-and-task-categories slice 17 - "Add category" inside the Items screen's
 // "Add Item" button. The primary part of the button still adds an item; its menu
 // offers "Add item", "Add category" and "Manage categories", which open the
@@ -7,19 +32,6 @@
 //
 // Harness mirrors stockAbilityGate.test.tsx (the page rendered through the real
 // query hooks over a mocked axios).
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, within, waitFor } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
-
-import api from '@/lib/axios';
-import { buildAbility } from '@/lib/ability';
-import { renderWithProviders } from '@/__tests__/helpers';
-import { impossibleOnPurpose } from '@/__tests__/support/backendSwitchCatalog';
-import { useInventoryAlertStore } from '@/stores/inventory-alert.store';
-
-import InventoryPage from '@/pages/v2/inventory/InventoryPage';
-
-import type { Category, Item, Location } from '@/lib/api/inventory';
 
 class ResizeObserverStub {
   observe() {}
@@ -29,7 +41,6 @@ class ResizeObserverStub {
 global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
 
 const mockApi = vi.mocked(api);
-vi.mock('@/lib/axios');
 
 const WAREHOUSE = 'a0000000-0000-0000-0000-0000000000w1';
 
@@ -60,21 +71,7 @@ const ITEMS: Item[] = [
 ];
 
 function installGetMock(categories: Category[] = CATEGORIES) {
-  mockApi.get.mockImplementation(async (url: string) => {
-    if (url.startsWith('/api/inventory/items')) return { data: { data: ITEMS } };
-    if (url.startsWith('/api/inventory/locations')) return { data: { locations: LOCATIONS } };
-    if (url.startsWith('/api/inventory/categories')) return { data: { categories } };
-    if (url.startsWith('/api/inventory/assets')) return { data: { data: [], meta: { total: 0 } } };
-    if (url.startsWith('/api/logistic-orders')) return { data: { data: [], page: 1, limit: 50, total: 0 } };
-    return {
-      data: {
-        data: [], meta: { page: 1, limit: 1, total: 0, totalPages: 1 },
-        locations: [], vendors: [], categories: [], branches: [], brands: [],
-        stages: [], assets: [], total: 0, jobStages: [], purchaseOrders: [],
-        users: [], finishes: [], techs: [], itemGroups: [],
-      },
-    };
-  });
+  serveInventory({ items: ITEMS, locations: LOCATIONS, categories });
 }
 
 beforeEach(() => {
@@ -95,7 +92,7 @@ const priceBookAbility = (...actions: Array<'create' | 'update' | 'delete'>) =>
   buildAbility([...READS, ...actions.map((action) => ({ action, subject: 'PriceBook' as const }))]);
 
 function renderItems(ability = priceBookAbility('create', 'update', 'delete')) {
-  return renderWithProviders(<InventoryPage />, { ability, initialEntries: ['/inventory'] });
+  return renderInventory({ ability, entry: '/inventory' });
 }
 
 async function openAddMenu() {
@@ -318,4 +315,3 @@ describe('Items "Add Item" split button - permissions (the category routes enfor
     },
   );
 });
-

@@ -13,6 +13,7 @@ import { fetchReceivedEmail, persistInboundEmail, type InboundMessage } from '..
 import { eventRecipients, planInboundMail, type InboundRoute } from '../lib/mailbox/inbound-router';
 import { orgEmailFeatureOn } from '../lib/communication/emailFeature';
 import { bringOverReceivedAttachments } from '../lib/inbound-attachments';
+import { trackAfterResponse } from '../lib/after-response';
 import { alertEmailReply } from '../services/notifications/emailReplyAlerts';
 import { publishEmailsChanged } from '../services/notifications/realtimePublish';
 import { applySpiderEmailEvent } from '../services/spider/emailEvents';
@@ -477,14 +478,17 @@ export async function processResendEvent(
     // Resend would retry, and the retry would be deduped by the idempotency
     // claim that already committed - costing the customer's message to save
     // a bell entry. Wrong trade, so it is caught and logged.
-    for (const inbound of inboundToAnnounce) {
-      await announceInboundEmail(inbound).catch((err) =>
-        logger.error(`[resend-webhook] failed to announce inbound email on thread ${inbound.threadId}:`, err));
-    }
+    // Tracked so a test can wait for the real end of this work (lib/after-response.ts); the handler still awaits it as before.
+    await trackAfterResponse((async () => {
+      for (const inbound of inboundToAnnounce) {
+        await announceInboundEmail(inbound).catch((err) =>
+          logger.error(`[resend-webhook] failed to announce inbound email on thread ${inbound.threadId}:`, err));
+      }
 
-    // Then the files: the message is stored and showing, and each file joins it as it arrives. Never throws; a file that cannot be
-    // brought over now is retried by the sweep (lib/inbound-attachments.ts).
-    if (withAttachments.length > 0) await bringOverReceivedAttachments(withAttachments);
+      // Then the files: the message is stored and showing, and each file joins it as it arrives. Never throws; a file that cannot be
+      // brought over now is retried by the sweep (lib/inbound-attachments.ts).
+      if (withAttachments.length > 0) await bringOverReceivedAttachments(withAttachments);
+    })());
   } catch (err) {
     if (err instanceof DuplicateResendEventError) {
       res.json({ received: true, duplicate: true });

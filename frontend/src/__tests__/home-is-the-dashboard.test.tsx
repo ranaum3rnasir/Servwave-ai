@@ -9,10 +9,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Suspense } from 'react';
 import { screen } from '@testing-library/react';
 import { Outlet, Routes, Route, useLocation } from 'react-router-dom';
-import api from '@/lib/axios';
 import { buildAbility } from '@/lib/ability';
 import { dashboardV2Routes } from '@/pages/v2/routes/dashboard.routes';
 import { renderWithProviders } from './helpers';
+import { serveDashboard } from '@/__tests__/harness/dashboardPage';
 
 vi.mock('@/components/ProtectedRoute', () => ({ default: () => <Outlet /> }));
 vi.mock('@/pages/v2/V2AppLayout', () => ({ default: () => <Outlet /> }));
@@ -24,7 +24,6 @@ class ResizeObserverStub {
 }
 global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
 
-const mockApi = vi.mocked(api);
 
 function Where() {
   return <div data-testid="where">{useLocation().pathname}</div>;
@@ -33,10 +32,9 @@ function Where() {
 beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
-  mockApi.get.mockImplementation((url: string) =>
-    url === '/api/permission-switches/me'
-      ? Promise.resolve({ data: { admin_box: false, values: {}, rules: [] } })
-      : Promise.resolve({ data: {} }));
+  serveDashboard({}, undefined, undefined, {
+    routes: [{ match: (url) => url === '/api/permission-switches/me', data: { admin_box: false, values: {}, rules: [] } }],
+  });
 });
 
 describe('the home address', () => {

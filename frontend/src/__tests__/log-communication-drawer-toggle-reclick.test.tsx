@@ -26,7 +26,7 @@ vi.mock('@/lib/axios', () => ({
   },
 }));
 
-vi.mock('@/lib/api/organization', () => ({
+vi.mock('@/lib/api/shared/organization', () => ({
   useOrganization: () => ({
     data: { id: 'org-1', timezone: 'America/New_York' },
     isLoading: false,

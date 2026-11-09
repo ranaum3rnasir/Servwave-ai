@@ -17,9 +17,9 @@ import { renderWithProviders, LEAD_FIXTURE, ALL_JOB_ACTIONS } from '@/__tests__/
 import { expectCustomerPageStale, seedCustomerPage } from '@/__tests__/support/customerPageCache';
 import { ESTIMATE_STATUS } from '@/constants/estimateStatus';
 import JobFormPage from '@/pages/v2/jobs/JobFormPage';
-import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
-import LeadDetailPage from '@/pages/v2/leads/LeadDetailPage';
-import EstimateWorkspacePage from '@/pages/v2/estimates/EstimateWorkspacePage';
+import { renderJobDetail, serveJobDetail, stubBrowser } from '@/__tests__/harness/jobDetailPage';
+import { renderLeadDetail, serveLeadDetail } from '@/__tests__/harness/leadDetailPage';
+import { renderEstimateWorkspace, serveEstimateWorkspace } from '@/__tests__/harness/estimateWorkspacePage';
 
 /** Each page reads its own `:id`; the test sets it before rendering. */
 const route = vi.hoisted(() => ({ id: '' }));
@@ -28,8 +28,8 @@ vi.mock('react-router-dom', async () => ({
   useParams: () => ({ id: route.id }),
   useNavigate: () => vi.fn(),
 }));
-vi.mock('@/lib/api/organization', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/lib/api/organization')>()),
+vi.mock('@/lib/api/shared/organization', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/api/shared/organization')>()),
   useOrganization: () => ({ data: { job_type_options: [], source_options: [], timezone: 'America/New_York' } }),
 }));
 vi.mock('@/lib/entitlements', async (importOriginal) => ({
@@ -50,12 +50,7 @@ vi.mock('@/features/estimate-workspace/components/SignatureCard', () => ({ Signa
 vi.mock('@/features/estimate-workspace/components/NotesCard', () => ({ NotesCard: () => null }));
 vi.mock('@/features/estimate-workspace/components/HistoryPanel', () => ({ HistoryPanel: () => null }));
 
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+stubBrowser();
 
 const ADMIN = buildAbility([{ action: 'manage', subject: 'all' }]);
 const post = vi.mocked(api.post);
@@ -115,27 +110,22 @@ describe('the job form', () => {
 
 describe('the job page', () => {
   function mockJob(jobId: string) {
-    get.mockImplementation(async (url: string) =>
-      url === `/api/jobs/${jobId}`
-        ? {
-            data: {
-              job: {
-                id: jobId, job_number: 'J00001', status: 'SCHEDULED',
-                customer: { id: 'cust-1', first_name: 'Pat', last_name: 'Sample', company_name: null },
-                assignees: [], invoices: [], linked_estimates: [], tags: [], actions: ALL_JOB_ACTIONS,
-                created_at: '2026-09-01T00:00:00.000Z', updated_at: '2026-09-01T00:00:00.000Z',
-              },
-            },
-          }
-        : { data: {} },
-    );
+    serveJobDetail({
+      jobId,
+      job: {
+        id: jobId, job_number: 'J00001', status: 'SCHEDULED',
+        customer: { id: 'cust-1', first_name: 'Pat', last_name: 'Sample', company_name: null },
+        assignees: [], invoices: [], linked_estimates: [], tags: [], actions: ALL_JOB_ACTIONS,
+        created_at: '2026-09-01T00:00:00.000Z', updated_at: '2026-09-01T00:00:00.000Z',
+      },
+    });
   }
 
   it('"Duplicate Job" marks the customer page stale', async () => {
     route.id = 'j-dup-1';
     mockJob('j-dup-1');
     const user = userEvent.setup({ pointerEventsCheck: 0 });
-    const { queryClient } = renderWithProviders(<JobDetailPage />, { ability: ADMIN });
+    const { queryClient } = renderJobDetail({ ability: ADMIN });
     seedCustomerPage(queryClient);
 
     await user.click(await screen.findByRole('button', { name: /actions/i }));
@@ -151,7 +141,7 @@ describe('the job page', () => {
     mockJob('j-del-1');
     vi.mocked(api.delete).mockResolvedValue({ data: {} });
     const user = userEvent.setup({ pointerEventsCheck: 0 });
-    const { queryClient } = renderWithProviders(<JobDetailPage />, { ability: ADMIN });
+    const { queryClient } = renderJobDetail({ ability: ADMIN });
     seedCustomerPage(queryClient);
 
     await user.click(await screen.findByRole('button', { name: /actions/i }));
@@ -172,13 +162,9 @@ describe('the lead page', () => {
       id: 'es-1', estimate_number: 'E00001', status: 'WON', total_amount: '1500.00',
       created_at: '2026-02-01T00:00:00.000Z',
     };
-    get.mockImplementation(async (url: string) => {
-      if (url.includes('/notes')) return { data: { notes: [] } };
-      if (url.includes('/api/leads/')) return { data: { lead: { ...LEAD_FIXTURE, status: 'WON', estimates: [estimate] } } };
-      return { data: {} };
-    });
+    serveLeadDetail({ lead: { ...LEAD_FIXTURE, status: 'WON', estimates: [estimate] } });
     const user = userEvent.setup({ pointerEventsCheck: 0 });
-    const { queryClient } = renderWithProviders(<LeadDetailPage />, { ability: ADMIN });
+    const { queryClient } = renderLeadDetail({ ability: ADMIN });
     seedCustomerPage(queryClient);
 
     await user.click(await screen.findByRole('button', { name: /Convert to job/i }));
@@ -194,14 +180,10 @@ describe('the lead page', () => {
 describe('the lead page status menu', () => {
   it('setting Lost through its reason dialog marks the customer page stale', async () => {
     route.id = LEAD_FIXTURE.id;
-    get.mockImplementation(async (url: string) => {
-      if (url.includes('/notes')) return { data: { notes: [] } };
-      if (url.includes('/api/leads/')) return { data: { lead: { ...LEAD_FIXTURE, status: 'CONTACTED' } } };
-      return { data: {} };
-    });
+    serveLeadDetail({ lead: { ...LEAD_FIXTURE, status: 'CONTACTED' } });
     post.mockResolvedValue({ data: {} });
     const user = userEvent.setup({ pointerEventsCheck: 0 });
-    const { queryClient } = renderWithProviders(<LeadDetailPage />, { ability: ADMIN });
+    const { queryClient } = renderLeadDetail({ ability: ADMIN });
     seedCustomerPage(queryClient);
 
     await user.click(await screen.findByRole('button', { name: 'Lead status: Contacted' }));
@@ -237,13 +219,9 @@ describe('the estimate page', () => {
       creator: { id: 'user-1', first_name: 'Ada', last_name: 'Admin' },
       line_items: [], scopes: [], job: null, job_id: null, invoices: [],
     };
-    get.mockImplementation(async (url: string) => {
-      if (url.includes('/state-tax-rates')) return { data: { data: [] } };
-      if (url.includes('/api/estimates/')) return { data: { estimate } };
-      return { data: {} };
-    });
+    serveEstimateWorkspace({ estimate });
     const user = userEvent.setup({ pointerEventsCheck: 0 });
-    const { queryClient } = renderWithProviders(<EstimateWorkspacePage />, { ability: ADMIN });
+    const { queryClient } = renderEstimateWorkspace({ ability: ADMIN });
     seedCustomerPage(queryClient);
 
     const header = (await screen.findAllByRole('button', { name: /Create Job/i }))[0]!;
