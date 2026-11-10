@@ -262,7 +262,8 @@ describe('a staff text thread belongs to the person it is keyed to', () => {
     mockAuthAs('technician');
     await request(app).get('/api/communication/threads/a1000000-0000-4000-8000-000000000001').set(authHeader('technician'));
     // The detail `where` pins the row id too, so the fixture has to BE that thread.
-    const where = capturedWhere(mockPrisma.messageThread.findFirst as Mock);
+    // The route's own read is the last: before it, the read scope looks up the conversation's number (#3021).
+    const where = capturedWhere(mockPrisma.messageThread.findFirst as Mock, (mockPrisma.messageThread.findFirst as Mock).mock.calls.length - 1);
     expect(matchesWhere(parent('a1000000-0000-4000-8000-000000000001', [MY_STAFF_TEXT]), where)).toBe(true);
     expect(matchesWhere(parent('a1000000-0000-4000-8000-000000000001', [SOMEONE_ELSES_STAFF_TEXT]), where)).toBe(false);
   });
@@ -361,7 +362,8 @@ describe('detail routes are scoped, not just the lists', () => {
   it('GET /communication/threads/:id', async () => {
     mockAuthAs('technician');
     await request(app).get('/api/communication/threads/a1000000-0000-4000-8000-000000000001').set(authHeader('technician'));
-    const where = capturedWhere(mockPrisma.messageThread.findFirst as Mock);
+    // The route's own read is the last: before it, the read scope looks up the conversation's number (#3021).
+    const where = capturedWhere(mockPrisma.messageThread.findFirst as Mock, (mockPrisma.messageThread.findFirst as Mock).mock.calls.length - 1);
     expect(matchesWhere(parent('a1000000-0000-4000-8000-000000000001', [ON_OTHER_JOB]), where)).toBe(false);
     expect(matchesWhere(parent('a1000000-0000-4000-8000-000000000001', [ON_MY_JOB]), where)).toBe(true);
   });

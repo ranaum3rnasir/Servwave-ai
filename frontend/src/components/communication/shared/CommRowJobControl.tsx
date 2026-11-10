@@ -7,8 +7,9 @@
  *          the channel has a per-row reassign seam (call | sms | email) AND
  *          the row is a PLATFORM record, not a hand-logged one.
  *
- * Gated on  → the pill opens CommJobMenu: unattributed rows attach to one of the
- * customer's open jobs or leads (a call, a text and an email alike); attributed rows move elsewhere or detach.
+ * Gated on  → a text's or a call's pill opens "Attach to a lead or job" (AttachMenu, #3024): the leads and jobs of every
+ * customer carrying its number. An email's pill opens CommJobMenu: the customer's open jobs or leads, or a search.
+ * Attributed rows move elsewhere or detach.
  * PATCHes commit server-first (the shared mutation hooks refetch every comm
  * surface — hub + job/customer/lead tabs); success/failure toasts mirror the
  * call-drawer copy.
@@ -29,14 +30,14 @@ import { useReassignCallJob, useReassignCallLead } from '@/lib/api/callJob';
 import {
   useReassignEmailJob,
   useReassignEmailLead,
-  useReassignSmsJob,
-  useReassignSmsLead,
   type ConversationLinkResult,
 } from '@/lib/api/communication';
 import type { CommItem } from '@/lib/api/jobCommunications';
 import { JobBadge } from './atoms';
+import { AttachMenu } from './AttachMenu';
 import { CommJobMenu, type AttachPick } from './CommJobMenu';
 import { useAttachTargets } from './useAttachTargets';
+import { useRetieText } from './useRetieText';
 
 interface CommRowJobControlProps {
   item: CommItem;
@@ -64,13 +65,13 @@ export function CommRowJobControl({ item, customerId, currentJobId }: CommRowJob
     // were probably wrong for the same reason.
     !item.manuallyLogged;
 
-  // Scoped to undefined unless the menu can actually render, so static rows
-  // never fetch a target list they will not show.
-  const targets = useAttachTargets(canManage ? customerId : undefined);
+  // A text or a call opens "Attach to a lead or job" (#3024), which reads its own targets when it opens. An email keeps the
+  // customer-seeded menu: it has no number, so there are no customers carrying one. Scoped to undefined unless that menu can
+  // actually render, so static rows and text and call rows never fetch a target list they will not show.
+  const targets = useAttachTargets(canManage && item.channel === 'email' ? customerId : undefined);
   const reassignCall = useReassignCallJob();
   const reassignCallLead = useReassignCallLead();
-  const reassignSms = useReassignSmsJob();
-  const reassignSmsLead = useReassignSmsLead();
+  const retieText = useRetieText();
   const reassignEmail = useReassignEmailJob();
   const reassignEmailLead = useReassignEmailLead();
 
@@ -94,7 +95,7 @@ export function CommRowJobControl({ item, customerId, currentJobId }: CommRowJob
 
   // "Move to" lists the OTHER targets; the currently attached one is not one.
   const menuJobs = targets.jobs.filter((j) => j.id !== item.jobId);
-  // Jobs and leads are targets for a call, a text and an email alike (Attach conversations to jobs and leads).
+  // Jobs and leads are targets for an email too (Attach conversations to jobs and leads).
   const menuLeads = targets.leads;
 
   // A change that took the row out of the person's reach (a detach of a conversation they could read only through
@@ -111,21 +112,15 @@ export function CommRowJobControl({ item, customerId, currentJobId }: CommRowJob
   const failed = () => toast({ title: "Couldn't update the link - try again", variant: 'destructive' });
 
   /**
-   * A text and an email keep their job and their lead separately, so "No job or lead" clears each end the row has,
+   * An email keeps its job and its lead separately, so "No job or lead" clears each end the row has,
    * the lead first (a row on a job is always reachable through it, so the lead step never strands it). The chain stops
    * as soon as a step reports that the row left the person's reach: there is nothing more they may change.
    */
   async function detachSeparateEnds() {
-    const ends =
-      item.channel === 'sms'
-        ? {
-            clearLead: () => reassignSmsLead.mutateAsync({ messageId: item.id, leadId: null }),
-            clearJob: () => reassignSms.mutateAsync({ messageId: item.id, jobId: null }),
-          }
-        : {
-            clearLead: () => reassignEmailLead.mutateAsync({ emailId: item.id, leadId: null }),
-            clearJob: () => reassignEmail.mutateAsync({ emailId: item.id, jobId: null }),
-          };
+    const ends = {
+      clearLead: () => reassignEmailLead.mutateAsync({ emailId: item.id, leadId: null }),
+      clearJob: () => reassignEmail.mutateAsync({ emailId: item.id, jobId: null }),
+    };
     try {
       let result: ConversationLinkResult | undefined;
       if (item.leadId) {
@@ -152,10 +147,34 @@ export function CommRowJobControl({ item, customerId, currentJobId }: CommRowJob
       else if (target.kind === 'lead') reassignEmailLead.mutate({ emailId: item.id, leadId: target.id }, options);
       else reassignEmail.mutate({ emailId: item.id, jobId: target.id }, options);
     } else {
-      if (!target) void detachSeparateEnds();
-      else if (target.kind === 'lead') reassignSmsLead.mutate({ messageId: item.id, leadId: target.id }, options);
-      else reassignSms.mutate({ messageId: item.id, jobId: target.id }, options);
+      retieText(item, target).then((result) => done(target, result), failed);
     }
+  }
+
+  const pill = (
+    <button
+      type="button"
+      title={
+        item.jobLabel
+          ? `Attached to ${item.jobLabel} - click to move or detach`
+          : 'Not attached - click to attach to a job or lead'
+      }
+      className="rounded-pill transition hover:opacity-80"
+    >
+      <JobBadge job={item.jobLabel} />
+    </button>
+  );
+
+  if (item.channel === 'sms' || item.channel === 'call') {
+    return (
+      <AttachMenu
+        target={{ kind: item.channel, id: item.id }}
+        current={{ jobId: item.jobId, leadId: item.leadId }}
+        onPick={pick}
+      >
+        {pill}
+      </AttachMenu>
+    );
   }
 
   return (
@@ -169,17 +188,7 @@ export function CommRowJobControl({ item, customerId, currentJobId }: CommRowJob
       needsMoreInput={targets.needsMoreInput}
       loading={targets.loading}
     >
-      <button
-        type="button"
-        title={
-          item.jobLabel
-            ? `Attached to ${item.jobLabel} - click to move or detach`
-            : 'Not attached - click to attach to a job or lead'
-        }
-        className="rounded-pill transition hover:opacity-80"
-      >
-        <JobBadge job={item.jobLabel} />
-      </button>
+      {pill}
     </CommJobMenu>
   );
 }

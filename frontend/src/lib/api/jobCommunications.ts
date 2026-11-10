@@ -147,11 +147,13 @@ export function useJobCommunications(jobId?: string) {
 }
 
 /**
- * GET /api/leads/:id/communications — the lead's timeline: STRICTLY rows
- * attributed to this lead by lead_id, mirroring useJobCommunications' job_id
- * scoping exactly (full job-parity ruling, 2026-07-22 — no customer-history
- * union). A row with lead_id null won't surface here even if it belongs to
- * the same customer, same as an un-job-tagged row on a job's timeline.
+ * GET /api/leads/:id/communications — the lead's timeline: rows attributed to
+ * this lead by lead_id, mirroring useJobCommunications' job_id scoping exactly
+ * (full job-parity ruling, 2026-07-22 — no customer-history union). A call or
+ * email with lead_id null won't surface here even if it belongs to the same
+ * customer, same as an un-job-tagged row on a job's timeline. Texts are the
+ * exception on both (#3022): the server adds every text with the numbers the
+ * record's card shows, from its creation until it closes.
  */
 export function useLeadCommunications(leadId?: string) {
   return useQuery({

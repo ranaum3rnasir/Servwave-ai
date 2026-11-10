@@ -63,6 +63,8 @@ export interface CtmSmsPrecheckParams {
   /** The sending user, for per-user caller-ID resolution. Omitted for system
    *  sends (automations) → resolution starts at the org default. */
   userId?: string;
+  /** The number of the conversation the text continues (#3019): the text leaves from it when it is still usable. */
+  conversationNumberE164?: string;
 }
 
 export interface CtmSmsSendParams extends CtmSmsPrecheckParams {
@@ -165,6 +167,7 @@ async function runGates(
         orgId: params.orgId,
         userId: params.userId,
         requireSms: true,
+        ...(params.conversationNumberE164 ? { conversationNumberE164: params.conversationNumberE164 } : {}),
       });
   // No usable from-number, or no resolvable destination — either way there is
   // no number to text with/to.

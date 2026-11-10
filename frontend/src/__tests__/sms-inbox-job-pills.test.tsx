@@ -1,8 +1,9 @@
 // Communication ↔ Jobs — Variant A job pills on the SMS center.
 //
-// Contract under test (locked design):
-//   • Every message bubble in a CUSTOMER thread carries a job pill — the
-//     tagged job number (ocean) or the muted "no job" pill.
+// Contract under test (locked design; #3024 replaced the pill with grey text):
+//   • Every message bubble in a CUSTOMER thread carries its lead or job as grey
+//     text — the job number, the lead number, or "No lead or job" — then
+//     "Change" for a person with Attach (#3024).
 //   • The per-customer Unrouted tray lists inbound messages with no jobId
 //     and shows their count.
 //   • TEAM and GROUP threads (MessageThread.kind 'team' / 'group') NEVER show
@@ -10,9 +11,9 @@
 //     kind === 'customer' (incl. kind-less vendor threads) gets job UI.
 //   • The right-rail "Jobs · navigation" list renders job_number · service
 //     location — never raw UUIDs.
-//   • One-click reassign PATCHes /api/communication/sms/:id/job and commits
-//     the pill only after the server confirms; a failed PATCH leaves the
-//     pill untouched and surfaces an error toast.
+//   • Change opens "Attach to a lead or job" (#3024); a pick PATCHes
+//     /api/communication/sms/:id/job and commits the grey text only after the
+//     server confirms; a failed PATCH leaves it untouched and surfaces an error toast.
 //
 // The communication seam is real-API only (#229 dropped the mock mode), so the
 // reassign flow exercises the actual axios calls — the directory endpoints are
@@ -168,22 +169,31 @@ beforeEach(() => {
     if (url === '/api/communication/threads') return { data: { threads: [] } };
     if (url === `/api/customers/${CUSTOMER_ID}`)
       return { data: { customer: { jobs: CUSTOMER_JOBS_FIXTURE } } };
+    // #3024: what "Attach to a lead or job" offers for a text (the server leaves the cancelled job out).
+    if (/^\/api\/communication\/sms\/[^/]+\/attach-targets$/.test(url))
+      return {
+        data: {
+          rule: 'carriers',
+          groups: [{ customer: { id: CUSTOMER_ID, name: 'Pat Morgan' }, jobs: [{ id: OPEN_JOB_UUID, number: 'J00042', location: '665 Fifth Ave' }], leads: [] }],
+        },
+      };
     return { data: {} };
   });
   mockApi.patch.mockResolvedValue({ data: { message: {} } });
 });
 
 describe('SmsInboxView — Variant A job pills', () => {
-  it('renders the job pill and the muted "no job" pill under customer-thread bubbles', async () => {
+  it('shows each text\'s job as grey text, and "No lead or job" under an untied one', async () => {
     renderWithProviders(
       <SmsInboxView threads={[freshThread(CUSTOMER_THREAD)]} setThreads={vi.fn()} onToast={vi.fn()} />,
       { ability: attacher },
     );
 
-    // Tagged outbound message → ocean job pill with the human job number.
+    // Tagged outbound message → its job number.
     expect((await screen.findAllByText('J00041')).length).toBeGreaterThan(0);
-    // Untagged inbound message → muted "no job" pill (badge it, don't hide it).
-    expect(screen.getByText('no job')).toBeInTheDocument();
+    // Untagged inbound message → "No lead or job" (say it, don't hide it).
+    expect(screen.getByText('No lead or job')).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: 'Change' })).toHaveLength(2);
   });
 
   it('shows the Unrouted tray with the count of inbound no-job messages', async () => {
@@ -210,8 +220,9 @@ describe('SmsInboxView — Variant A job pills', () => {
     await screen.findByText('Internal team thread');
     // The team thread's messages render…
     expect(screen.getByText('On site at Equinox, reader swapped.')).toBeInTheDocument();
-    // …but the internal lane is walled off: no pills, no tray.
-    expect(screen.queryByText('no job')).not.toBeInTheDocument();
+    // …but the internal lane is walled off: no lead or job text, no Change, no tray.
+    expect(screen.queryByText('No lead or job')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Change' })).not.toBeInTheDocument();
     expect(screen.queryByText('J00041')).not.toBeInTheDocument();
     expect(screen.queryByText('Unrouted')).not.toBeInTheDocument();
   });
@@ -224,7 +235,8 @@ describe('SmsInboxView — Variant A job pills', () => {
     // The group conversation renders…
     expect(await screen.findByText('Van 3 is loaded for tomorrow.')).toBeInTheDocument();
     // …but internal lanes (team AND group) get no job attribution UI at all.
-    expect(screen.queryByText('no job')).not.toBeInTheDocument();
+    expect(screen.queryByText('No lead or job')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Change' })).not.toBeInTheDocument();
     expect(screen.queryByText('Unrouted')).not.toBeInTheDocument();
     expect(screen.queryByText('Assign')).not.toBeInTheDocument();
     expect(screen.queryByText('Jobs · navigation')).not.toBeInTheDocument();
@@ -253,7 +265,7 @@ describe('SmsInboxView — right-rail job navigation', () => {
 });
 
 describe('SmsInboxView — one-click reassign', () => {
-  it('PATCHes /api/communication/sms/:id/job with { job_id } and updates the pill on success', async () => {
+  it('Change, then a job: PATCHes /api/communication/sms/:id/job with { job_id } and updates the grey text on success', async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     const onToast = vi.fn();
     const { queryClient } = renderWithProviders(
@@ -262,14 +274,12 @@ describe('SmsInboxView — one-click reassign', () => {
     );
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
 
-    // Open the assign menu from the untagged inbound's "no job" pill.
-    const noJobPill = await screen.findByTitle('No job - click to assign');
-    await user.click(noJobPill);
+    // Open "Attach to a lead or job" from the untagged inbound's Change (the second text).
+    await user.click((await screen.findAllByRole('button', { name: 'Change' }))[1]!);
 
-    // The menu lists OPEN (non-cancelled) jobs only, as number · location.
+    // The menu lists what the server offers, as number · location.
     const menuItem = await screen.findByRole('menuitem', { name: /J00042/ });
     expect(menuItem).toHaveTextContent('J00042 · 665 Fifth Ave');
-    expect(screen.queryByRole('menuitem', { name: /J00017/ })).not.toBeInTheDocument();
     await user.click(menuItem);
 
     await waitFor(() =>
@@ -277,10 +287,11 @@ describe('SmsInboxView — one-click reassign', () => {
         job_id: OPEN_JOB_UUID,
       }),
     );
-    // The pill commits once the server confirms.
-    expect(await screen.findByTitle('Tagged to J00042 - click to reassign')).toBeInTheDocument();
-    expect(screen.queryByText('no job')).not.toBeInTheDocument();
-    expect(onToast).toHaveBeenCalledWith('Tagged to J00042');
+    // The grey text commits once the server confirms.
+    // (J00042 is also on the right rail's job navigation, so the text's grey text makes it two.)
+    await waitFor(() => expect(screen.getAllByText('J00042', { selector: 'span' })).toHaveLength(2));
+    expect(screen.queryByText('No lead or job')).not.toBeInTheDocument();
+    expect(onToast).toHaveBeenCalledWith('Attached to J00042');
 
     // Cross-surface sync: the job tab + customer roll-up caches refetch too
     // (prefix invalidation — matches every ['job-communications', jobId]).
@@ -290,14 +301,13 @@ describe('SmsInboxView — one-click reassign', () => {
     });
   });
 
-  it('keeps the pill untouched and surfaces an error toast when the PATCH fails', async () => {
+  it('keeps the grey text untouched and surfaces an error toast when the PATCH fails', async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     const onToast = vi.fn();
     mockApi.patch.mockRejectedValue(new Error('500'));
     renderWithProviders(<Harness initial={[freshThread(CUSTOMER_THREAD)]} onToast={onToast} />, { ability: attacher });
 
-    const noJobPill = await screen.findByTitle('No job - click to assign');
-    await user.click(noJobPill);
+    await user.click((await screen.findAllByRole('button', { name: 'Change' }))[1]!);
     await user.click(await screen.findByRole('menuitem', { name: /J00042/ }));
 
     await waitFor(() => expect(mockApi.patch).toHaveBeenCalled());
@@ -305,9 +315,8 @@ describe('SmsInboxView — one-click reassign', () => {
     await waitFor(() =>
       expect(onToast).toHaveBeenCalledWith(expect.stringMatching(/couldn.t|try again/i)),
     );
-    expect(screen.getByText('no job')).toBeInTheDocument();
-    expect(screen.queryByTitle('Tagged to J00042 - click to reassign')).not.toBeInTheDocument();
-    expect(onToast).not.toHaveBeenCalledWith('Tagged to J00042');
+    expect(screen.getByText('No lead or job')).toBeInTheDocument();
+    expect(onToast).not.toHaveBeenCalledWith('Attached to J00042');
   });
 });
 
@@ -315,7 +324,7 @@ describe('SmsInboxView — Attach conversations to jobs and leads', () => {
   it.each([
     ['no switches at all', buildAbility([{ action: 'read', subject: 'Communication' }])],
     ['Edit communication records alone', editorOnly],
-  ])('with %s: the pills stay, but no pill opens a menu and the Unrouted tray is gone', async (_label, ability) => {
+  ])('with %s: the grey text stays, but there is no Change and the Unrouted tray is gone', async (_label, ability) => {
     renderWithProviders(
       <SmsInboxView threads={[freshThread(CUSTOMER_THREAD)]} setThreads={vi.fn()} onToast={vi.fn()} />,
       { ability },
@@ -323,11 +332,10 @@ describe('SmsInboxView — Attach conversations to jobs and leads', () => {
 
     // Where the texts are filed is still shown.
     expect((await screen.findAllByText('J00041')).length).toBeGreaterThan(0);
-    expect(screen.getByText('no job')).toBeInTheDocument();
+    expect(screen.getByText('No lead or job')).toBeInTheDocument();
     await screen.findByText('Jobs · navigation');
     // Nothing to click to change it, and no tray whose only purpose is to assign.
-    expect(screen.queryByTitle('No job - click to assign')).not.toBeInTheDocument();
-    expect(screen.queryByTitle(/click to reassign/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Change' })).not.toBeInTheDocument();
     expect(screen.queryByText('Unrouted')).not.toBeInTheDocument();
     expect(screen.queryByText('Assign')).not.toBeInTheDocument();
   });
@@ -339,8 +347,8 @@ describe('SmsInboxView — Attach conversations to jobs and leads', () => {
     renderWithProviders(<Harness initial={[freshThread(CUSTOMER_THREAD)]} onToast={onToast} />, { ability: attacher });
 
     // The outbound text is tagged; take its job off.
-    await user.click((await screen.findAllByTitle('Tagged to J00041 - click to reassign'))[0]!);
-    await user.click(await screen.findByRole('menuitem', { name: 'No job' }));
+    await user.click((await screen.findAllByRole('button', { name: 'Change' }))[0]!);
+    await user.click(await screen.findByRole('menuitem', { name: 'No lead or job' }));
 
     await waitFor(() => expect(mockApi.patch).toHaveBeenCalledWith('/api/communication/sms/mt1/job', { job_id: null }));
     await waitFor(() => expect(screen.queryByText('Confirmed: Thu 8:00 AM, vault corridor re-key.')).not.toBeInTheDocument());

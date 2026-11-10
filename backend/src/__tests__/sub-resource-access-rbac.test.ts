@@ -33,6 +33,7 @@ const mockPrisma = prisma as unknown as {
   manualCommunicationLog: { findMany: ReturnType<typeof vi.fn> };
   estimate: { findMany: ReturnType<typeof vi.fn> };
   payment: { findMany: ReturnType<typeof vi.fn> };
+  recordContactEntry: { findMany: ReturnType<typeof vi.fn> };
 };
 
 const LEAD_ID = LEAD_FIXTURE.id;
@@ -205,6 +206,8 @@ describe('GET /api/jobs/:id/communications — per-row RBAC', () => {
     mockPrisma.estimate.findMany.mockResolvedValue([]);
     // And the payments received on the record's invoices (S08.10).
     mockPrisma.payment.findMany.mockResolvedValue([]);
+    // And the job's own numbers on its card, whose texts the tab lists (#3022).
+    mockPrisma.recordContactEntry.findMany.mockResolvedValue([]);
   });
 
   it('SALES requesting comms on a job they do NOT own → 403 (aggregator never queried)', async () => {
@@ -254,8 +257,12 @@ describe('GET /api/jobs/:id/communications — per-row RBAC', () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty('items');
-    // ADMIN scope is {} → no extra row probe.
-    expect(mockPrisma.job.findFirst).not.toHaveBeenCalled();
+    // ADMIN scope is {} → no extra row probe (canAccessRow's probe selects the id alone; the tab's own reads of the job's
+    // dates and card for its texts, #3022, are not probes).
+    const probes = mockPrisma.job.findFirst.mock.calls.filter(
+      ([args]) => args?.select && Object.keys(args.select).length === 1 && args.select.id === true,
+    );
+    expect(probes).toEqual([]);
   });
 
   it('still 404s an unknown job id (own-check runs only after the row loads)', async () => {

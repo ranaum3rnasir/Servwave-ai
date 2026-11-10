@@ -92,6 +92,8 @@ beforeEach(() => {
   p.vendor.findFirst.mockResolvedValue(null);
   p.vendorContact.findFirst.mockResolvedValue(null);
   p.messageThread.findFirst.mockResolvedValue(null);
+  // #3019: the lookup for a conversation from before pairs also lists the customer's ones holding an unsent reply.
+  p.messageThread.findMany.mockResolvedValue([]);
   p.messageThread.create.mockResolvedValue({ id: 'th-1' });
   p.messageThread.update.mockResolvedValue({ id: 'th-1' });
   p.message.findFirst.mockResolvedValue(null);

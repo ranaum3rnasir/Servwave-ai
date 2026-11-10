@@ -596,8 +596,12 @@ describe('getCustomerCommunications (lib)', () => {
     expect(db.email.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.objectContaining({ customer_id: CUSTOMER_ID, organization_id: ALPHA_ORG_ID }) })
     );
+    // #3021: a conversation from before pairs is the customer's by its link; one keyed by its pair, by the numbers the customer
+    // carries (none handed in here).
     expect(db.message.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: expect.objectContaining({ organization_id: ALPHA_ORG_ID, thread: { customer_id: CUSTOMER_ID } }) })
+      expect.objectContaining({
+        where: expect.objectContaining({ organization_id: ALPHA_ORG_ID, thread: { OR: [{ other_party_e164: null, customer_id: CUSTOMER_ID }] } }),
+      })
     );
     expect(db.whatsAppMessage.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.objectContaining({ organization_id: ALPHA_ORG_ID, chat: { customer_id: CUSTOMER_ID } }) })
@@ -1008,8 +1012,9 @@ describe('GET /api/customers/:id/communications', () => {
     expect(res.body.items).toHaveLength(4);
     expect(res.body.items.map((i: CommItem) => i.channel)).toEqual(['email', 'call', 'sms', 'whatsapp']);
     // customer linkage wiring: sms via thread, whatsapp via chat
+    // #3021: plus the conversations on the numbers the customer carries (the database answers none here).
     expect(prisma.message.findMany as Mock).toHaveBeenCalledWith(
-      expect.objectContaining({ where: expect.objectContaining({ thread: { customer_id: CUSTOMER_ID } }) })
+      expect.objectContaining({ where: expect.objectContaining({ thread: { OR: [{ other_party_e164: null, customer_id: CUSTOMER_ID }] } }) })
     );
     expect(prisma.whatsAppMessage.findMany as Mock).toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.objectContaining({ chat: { customer_id: CUSTOMER_ID } }) })

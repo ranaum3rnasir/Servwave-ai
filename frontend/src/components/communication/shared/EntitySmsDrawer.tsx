@@ -23,6 +23,7 @@ import { useMessageThread, useMarkThreadRead, deliveryNote, outboundBubbleClass 
 import { EmptyState } from '@/components/ui/empty-state';
 import { Sheet, SheetContent, SheetTitle, SheetDescription } from '@/components/ui/sheet';
 import { useScheduleTimezone, formatInstant } from '@/lib/schedule-tz';
+import { ConversationCustomersHeading } from '@/components/communication/shared/ConversationCustomers';
 
 interface EntitySmsDrawerProps {
   threadId?: string;
@@ -60,12 +61,21 @@ export function EntitySmsDrawer({ threadId, customerName, onClose }: EntitySmsDr
         </SheetDescription>
         {/* Header */}
         <div className="flex items-center justify-between border-b border-border px-4 py-3 pr-12">
-          <div className="min-w-0">
-            <SheetTitle className="truncate text-sm font-semibold">
-              {customerName ?? 'Conversation'}
-            </SheetTitle>
-            <p className="text-[11px] text-text-secondary">SMS conversation</p>
-          </div>
+          {/* #3021: a conversation on a number customers carry has the inbox's header: the number, the customers it is
+              on, and our number. */}
+          {thread?.pair && thread.pair.customers.length > 0 ? (
+            <>
+              <SheetTitle className="sr-only">{customerName ?? 'Conversation'}</SheetTitle>
+              <ConversationCustomersHeading pair={thread.pair} />
+            </>
+          ) : (
+            <div className="min-w-0">
+              <SheetTitle className="truncate text-sm font-semibold">
+                {customerName ?? 'Conversation'}
+              </SheetTitle>
+              <p className="text-[11px] text-text-secondary">SMS conversation</p>
+            </div>
+          )}
         </div>
 
         {/* Body */}

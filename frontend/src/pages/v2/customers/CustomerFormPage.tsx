@@ -532,13 +532,18 @@ export default function CustomerFormPage() {
     return customerId;
   };
 
-  /** Route a 409 `duplicate` to the dialog instead of the inline error block. */
+  /**
+   * Route a 409 `duplicate` to the dialog instead of the inline error block. Any other answer (a number refused after
+   * Create anyway) closes the dialog, so the inline error block shows it.
+   */
   const handleSubmitError = (err: unknown, data: CustomerFormData) => {
     const dup = getDuplicate(err);
     if (dup) {
       setDupExisting(dup);
       setPendingData(data);
       setDupMatched(computeMatchedFields(data, dup));
+    } else {
+      clearDupState();
     }
   };
 

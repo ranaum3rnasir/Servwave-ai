@@ -529,7 +529,7 @@ describe('recordOutboundSms — CTM delivery seam', () => {
   // Spec C disturbs it twice (this recorder and the executor above it). This pins the
   // three rows it writes in full, so a change to the staff arm that quietly alters the
   // customer arm cannot pass.
-  it('writes the SAME thread, message and timeline rows it always has - the customer arm is untouched', async () => {
+  it('writes the SAME message and timeline rows it always has; the customer\'s conversation is the pair of numbers (#3019)', async () => {
     p.messageThread.findFirst.mockResolvedValue(null);
     p.messageThread.create.mockResolvedValue({ id: THREAD_ID });
     p.message.create.mockResolvedValue({ id: MSG_ID });
@@ -543,14 +543,23 @@ describe('recordOutboundSms — CTM delivery seam', () => {
       body: 'Automated reminder',
     });
 
-    // The thread is looked up and created exactly as before - no kind, customer_care.
-    expect(p.messageThread.findFirst).toHaveBeenCalledWith({
-      where: { customer_id: CUSTOMER_FIXTURE.id, channel: 'sms', organization_id: ORG_ID },
-    });
+    // #3019: the conversation is the customer's number plus ours (none here: the mocked company has no number to name),
+    // else the customer's conversation from before pairs, else a new one - no kind, customer_care.
+    expect(p.messageThread.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ organization_id: ORG_ID, other_party_e164: '+15551234567', our_number_e164: null }) }),
+    );
+    expect(p.messageThread.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ organization_id: ORG_ID, channel: 'sms', other_party_e164: null, customer_id: CUSTOMER_FIXTURE.id }),
+    }));
     expect(p.messageThread.create.mock.calls[0][0].data).toEqual({
       channel: 'sms',
       campaign_type: 'customer_care',
       customer_id: CUSTOMER_FIXTURE.id,
+      lead_id: null,
+      vendor_id: null,
+      title: null,
+      other_party_e164: '+15551234567',
+      our_number_e164: null,
       organization_id: ORG_ID,
     });
     expect(p.messageThread.create.mock.calls[0][0].data).not.toHaveProperty('kind');

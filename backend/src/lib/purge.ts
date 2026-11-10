@@ -1,6 +1,7 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from './prisma';
 import { reservePurgedAddresses } from './mailbox/register';
+import { numbersCarriedByOthers } from './comms-identity';
 
 /**
  * Entity-redesign §10 — force-purge cascade.
@@ -200,6 +201,62 @@ async function purgeSubtreeChildren(tx: Tx, orgId: string, ids: SubtreeIds): Pro
   await tx.lead.deleteMany({ where: { id: ID_IN(leadIds), organization_id: orgId } });
 }
 
+// ─── Conversations another customer, lead or job shares (#3019) ───
+
+/**
+ * A text conversation is a pair of numbers, not a customer's (#3019), so the one filed on the customer being deleted can
+ * hold texts sent from another customer's page when the two share a phone. Ran (2026-11-05): such a conversation is KEPT
+ * with its texts and detached from the deleted customer; it is deleted only when nobody else carries the number.
+ *
+ * The conversations looked at are the ones the purge below would delete: filed on the customer or on one of its leads.
+ * A conversation's number is its pair's; one from before pairs (the split script has not keyed it) has the numbers its
+ * texts store (#3014). Kept, it is filed on nobody (and on none of the customer's leads) and titled by its number, the way
+ * every conversation filed on nobody is; its texts and read markers stay as they are. Whether anyone else carries a number
+ * is one query for all the customer's conversations (`numbersCarriedByOthers`, the fixed order's carriers).
+ */
+async function keepSharedConversations(tx: Tx, orgId: string, customerId: string, leadIds: string[]): Promise<void> {
+  const threads = await tx.messageThread.findMany({
+    where: {
+      organization_id: orgId,
+      channel: 'sms',
+      vendor_id: null,
+      user_id: null,
+      // A customer's or an unknown number's conversation; staff, vendor and group conversations are not pairs.
+      AND: [{ OR: [{ kind: null }, { kind: 'customer' }] }, { OR: [{ customer_id: customerId }, { lead_id: ID_IN(leadIds) }] }],
+    },
+    select: { id: true, customer_id: true, lead_id: true, title: true, other_party_e164: true },
+  });
+  if (threads.length === 0) return;
+
+  // Each conversation's numbers, latest first: its pair's, else the ones its texts store.
+  const unkeyed = threads.filter((t) => !t.other_party_e164).map((t) => t.id);
+  const stored = unkeyed.length
+    ? await tx.message.groupBy({
+      by: ['thread_id', 'other_party_e164'],
+      where: { organization_id: orgId, thread_id: ID_IN(unkeyed), other_party_e164: { not: null } },
+      _max: { ts: true },
+    })
+    : [];
+  const numbersOf = new Map<string, string[]>(threads.map((t) => [t.id, t.other_party_e164 ? [t.other_party_e164] : []]));
+  for (const row of [...stored].sort((a, b) => (b._max.ts?.getTime() ?? 0) - (a._max.ts?.getTime() ?? 0))) {
+    numbersOf.get(row.thread_id)!.push(row.other_party_e164!);
+  }
+
+  const carried = await numbersCarriedByOthers(tx, orgId, [...new Set([...numbersOf.values()].flat())], customerId);
+  for (const t of threads) {
+    const shared = numbersOf.get(t.id)!.find((n) => carried.has(n));
+    if (!shared) continue;
+    const detachCustomer = t.customer_id === customerId;
+    await tx.messageThread.update({
+      where: { id: t.id },
+      data: {
+        ...(detachCustomer && { customer_id: null, title: t.title ?? shared }),
+        ...(t.lead_id && leadIds.includes(t.lead_id) && { lead_id: null }),
+      },
+    });
+  }
+}
+
 // ─── Customer subtree purge ─────────────────────────────
 
 /**
@@ -230,6 +287,9 @@ export async function purgeCustomerSubtree(tx: Tx, customerId: string, orgId: st
     select: { id: true },
   });
   const invoiceIds = invoices.map((i) => i.id);
+
+  // Before anything is deleted: a conversation whose number someone else still carries is kept and detached (#3019).
+  await keepSharedConversations(tx, orgId, customerId, leadIds);
 
   // Shared children + spine.
   await purgeSubtreeChildren(tx, orgId, { leadIds, estimateIds, jobIds, invoiceIds });

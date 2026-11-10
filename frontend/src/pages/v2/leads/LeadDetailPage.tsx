@@ -1050,6 +1050,7 @@ export default function LeadDetailPage() {
                   customerId={customer.id}
                   customerName={customerLabel}
                   customerPhone={customer.phone ?? undefined}
+                  contactEntries={lead.contact_entries as RecordContactEntry[] | undefined}
                   customerEmail={customer.email ?? undefined}
                   initialMessage={spiderDraft}
                   onSent={

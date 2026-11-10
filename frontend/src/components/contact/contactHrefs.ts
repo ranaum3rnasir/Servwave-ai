@@ -41,6 +41,11 @@ export function smsHref(phone: string): string {
  */
 export interface CustomerTextAccess {
   viewCustomers: boolean;
+  /**
+   * Text on the number a job's own page shows for its customer (#3017): the composer opens addressed to that number with
+   * the job attached, whoever taps it, so the server texts the job's number and files the text on the job (#3016).
+   */
+  anchorOnJob?: boolean;
 }
 
 /** The query value that marks the number as a customer's, so the composer draws it under the copy rule. */
@@ -55,7 +60,7 @@ export const CUSTOMER_PHONE_OWNER = 'customer';
  * may not has no directory to find the customer in, so the composer is opened addressed to the number the person
  * tapped instead, carrying the name and the job the number was tapped from (and the lead, only when tapped on the
  * lead's own page, `textCarriesLead`): the text is filed on that record, and the number is drawn under the copy
- * rule (`owner`).
+ * rule (`owner`). Tapped on a job's own page for the job's number (`anchorOnJob`), it goes that way for everyone.
  */
 export function textPath(phone: string, context?: DialerEntityContext | null, customer?: CustomerTextAccess): string {
   const number = phone.trim();
@@ -63,7 +68,8 @@ export function textPath(phone: string, context?: DialerEntityContext | null, cu
     if (context?.customerId) return `/communication/text?customerId=${encodeURIComponent(context.customerId)}`;
     return `/communication/text?to=${encodeURIComponent(number)}`;
   }
-  if (customer.viewCustomers && context?.customerId) {
+  const anchoredOnJob = Boolean(customer.anchorOnJob && context?.jobId);
+  if (customer.viewCustomers && context?.customerId && !anchoredOnJob) {
     // Tapped on the lead's own page (`textCarriesLead`, set there and nowhere else): the lead rides along, so the
     // first reply on that customer's conversation is filed on the lead (SPEC-4 §6.8; the inbox drops it after that
     // reply or on any change of conversation). A record that merely has a lead (an estimate, a payment's customer)
@@ -71,7 +77,21 @@ export function textPath(phone: string, context?: DialerEntityContext | null, cu
     const lead = context.textCarriesLead && context.leadId ? `&leadId=${encodeURIComponent(context.leadId)}` : '';
     return `/communication/text?customerId=${encodeURIComponent(context.customerId)}${lead}`;
   }
-  const params = new URLSearchParams({ to: number, owner: CUSTOMER_PHONE_OWNER });
+  return numberTextPath(number, context);
+}
+
+/**
+ * The composer addressed to a customer's number as tapped, carrying the name and the record it was tapped from: the job
+ * always, the lead only from the lead's own page (`textCarriesLead`, SPEC-4 §6.8). The text is sent naming that number
+ * with the record, so the server checks the number is the record's or its customer's and files the text on the record
+ * (#3016, #3018).
+ *
+ * A lead's or job's card uses it for every number but the customer's primary as it stands (#3018): the record's own
+ * number, a number the record changed one of the customer's to, the customer's own number under it, and the customer's
+ * other phones. Going by the customer would text the record's number for the primary instead of the number tapped.
+ */
+export function numberTextPath(phone: string, context?: DialerEntityContext | null): string {
+  const params = new URLSearchParams({ to: phone.trim(), owner: CUSTOMER_PHONE_OWNER });
   if (context?.customerName) params.set('name', context.customerName);
   if (context?.jobId) params.set('jobId', context.jobId);
   // The lead rides along only from the lead's own page, as above (SPEC-4 §6.8); the job always does.

@@ -147,7 +147,7 @@ describe('Call on a phone opens a same-tab sheet', () => {
       job_id: 'job-1',
       customer_id: 'cust-1',
     });
-    expect(await within(sheet()).findByText(/Your phone will ring first - this call will be logged to J00042/)).toBeInTheDocument();
+    expect(await within(sheet()).findByText(/Your phone will ring first\. It will be logged to J00042\./)).toBeInTheDocument();
     expect(ensureDevice).not.toHaveBeenCalled();
     expect(openSpy).not.toHaveBeenCalled();
   });
@@ -186,7 +186,7 @@ describe('a call in progress collapses to a call bar that survives navigation', 
     act(() => requestCall('5551234567', CONTEXT));
     await screen.findByRole('dialog', { name: 'Dialer' });
     await userEvent.click(within(sheet()).getByRole('button', { name: 'Call' }));
-    await within(sheet()).findByText(/Your phone will ring first - this call will be logged/);
+    await within(sheet()).findByText(/Your phone will ring first\. It will be logged/);
   }
 
   it('Minimise turns the sheet into a call bar with the number; the call is not dropped', async () => {
@@ -215,7 +215,7 @@ describe('a call in progress collapses to a call bar that survives navigation', 
 
     await userEvent.click(within(bar()).getByRole('button', { name: 'Open call' }));
     // The very same call: the placed message, not a fresh empty dialer.
-    expect(await within(sheet()).findByText(/Your phone will ring first - this call will be logged to J00042/)).toBeInTheDocument();
+    expect(await within(sheet()).findByText(/Your phone will ring first\. It will be logged to J00042\./)).toBeInTheDocument();
     expect(callPosts()).toHaveLength(1);
   });
 
@@ -236,7 +236,7 @@ describe('a call in progress collapses to a call bar that survives navigation', 
 
     act(() => requestCall('5559998888', { customerId: 'cust-2' }));
 
-    expect(await within(sheet()).findByText(/Your phone will ring first - this call will be logged to J00042/)).toBeInTheDocument();
+    expect(await within(sheet()).findByText(/Your phone will ring first\. It will be logged to J00042\./)).toBeInTheDocument();
     expect(callPosts()).toHaveLength(1);
   });
 

@@ -20,6 +20,7 @@ import { CtmApiError, getCall as ctmGetCall, getCallTranscription as ctmGetCallT
 import { summaryOf, transcriptOf, transcriptTurnsOf, unwrapActivity, TranscriptTurn } from '../lib/ctm/ingest';
 import { resolveOutboundNumber } from '../lib/communication/resolveOutboundNumber';
 import { buildBridgeLegs, maskLongDigitRuns, type BridgeLegs, type BridgeLegsRefusal } from '../lib/communication/bridgeLegs';
+import { attachTargets, callTieRule, tieAllowed } from '../lib/communication/attachTargets';
 import { reconsiderLeadLeftBehind, recordLeadContactOnLink, recordLeadOutboundContact } from '../services/lead-contact.service';
 
 // Short-lived playback URLs on the private recordings bucket (plan §4/§10:
@@ -1064,6 +1065,36 @@ export async function createCall(req: Request, res: Response) {
   }
 }
 
+/** #3024: which customers' leads and jobs this call may be tied to by the person (lib/communication/attachTargets.ts). */
+function callTieRuleForReq(req: Request, call: { direction: string; from_number: string; to_number: string }) {
+  return callTieRule(prisma, req.user!.organization_id, call);
+}
+
+/**
+ * #3024: what "Attach to a lead or job" offers for this call: the leads and jobs of every customer carrying its number that the
+ * person can open, grouped by customer (`rule: 'carriers'`), or `rule: 'any'` when no customer carries it (the screen then
+ * searches every lead and job, as before). A call the person cannot read is 404.
+ */
+export async function callAttachTargets(req: Request, res: Response) {
+  try {
+    const [call] = await prisma.callSession.findMany({
+      where: { id: req.params.id as string, ...tenantWhere(req), ...(await callReadWhereForReq(req)) },
+      select: { direction: true, from_number: true, to_number: true },
+      take: 1,
+    });
+    if (!call) {
+      res.status(404).json({ error: 'Call not found' });
+      return;
+    }
+    res.json(await attachTargets(prisma, req.user!.organization_id, await callTieRuleForReq(req, call), {
+      job: await scopeWhereForReq(req, 'Job'), lead: await scopeWhereForReq(req, 'Lead'),
+    }));
+  } catch (err) {
+    logger.error('Failed to read attach targets for a call:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
 /**
  * What a detach answers when the call it just changed is no longer one the person may read (it was reachable only
  * through the job or lead it was taken off). The change is done; the row is simply no longer theirs to see, so the
@@ -1078,9 +1109,8 @@ export const reassignCallJobSchema = z.object({
 });
 
 // Mirrors the SMS one-click reassign (comm-threads.controller.ts): tenant-scoped
-// job resolve → atomic updateMany → refetch. Extra rule for calls: a
-// customer-linked call may only attach to that customer's jobs; unknown-caller
-// calls (customer_id null) accept any org job.
+// job resolve → atomic updateMany → refetch. The job must be one the call's
+// number allows (#3024, callTieRule).
 //
 // A call is "about" one thing, and a job and its originating lead are two ends of
 // that same thing - so one attach stamps the whole customer/job/lead triple and
@@ -1130,21 +1160,19 @@ export async function reassignCallJob(req: Request, res: Response) {
         select: {
           id: true,
           job_number: true,
+          customer_id: true,
           estimate: { select: { lead_id: true } },
         },
       });
-      if (!job) {
+      // #3024 (Ran, 2026-11-06, ruling 1): when some customer carries the call's number, only the jobs of those carriers the
+      // person can open; when none does, any job, as before (callTieRule). Another is indistinguishable from a nonexistent one.
+      if (!job || !tieAllowed(await callTieRuleForReq(req, call), job.customer_id)) {
         res.status(404).json({ error: 'Job not found' });
         return;
       }
-      // job/lead ONLY, and deliberately unconstrained by call.customer_id in
-      // BOTH directions. There is no phone matching behind a job or a lead, so
-      // the customer the ingest resolved has no claim on which anchor is valid:
-      //  - it is not written here (that would be a guess from one click), and
-      //  - it does not gate the pick (the picker searches the whole org, so a
-      //    same-customer guard would offer results it then 404s).
-      // The two stay independent - the call still shows whoever the phone
-      // matched, while the anchor is whatever a human chose.
+      // job/lead ONLY: the customer the ingest resolved (call.customer_id) is neither written here (that would be a guess from
+      // one click) nor the gate (the gate is the call's number, above). The two stay independent - the call still shows
+      // whoever the phone matched, while the anchor is whatever a human chose.
       data = {
         job_id: job.id,
         job_label: job.job_number,
@@ -1243,9 +1271,10 @@ export async function reassignCallLead(req: Request, res: Response) {
       // resolve in reassignCallJob, and what keeps the refetch below non-empty.
       const lead = await prisma.lead.findUnique({
         where: { id: req.body.lead_id, ...tenantWhere(req), ...(await scopeWhereForReq(req, 'Lead')) },
-        select: { id: true },
+        select: { id: true, customer_id: true },
       });
-      if (!lead) {
+      // #3024: the lead mirror of reassignCallJob's rule (callTieRule).
+      if (!lead || !tieAllowed(await callTieRuleForReq(req, call), lead.customer_id)) {
         res.status(404).json({ error: 'Lead not found' });
         return;
       }
@@ -1270,7 +1299,7 @@ export async function reassignCallLead(req: Request, res: Response) {
         select: { id: true, job_number: true },
       });
       before = call;
-      // lead/job ONLY, unconstrained by call.customer_id - see reassignCallJob.
+      // lead/job ONLY, call.customer_id neither written nor the gate - see reassignCallJob.
       data = {
         lead_id: lead.id,
         job_id: job?.id ?? null,

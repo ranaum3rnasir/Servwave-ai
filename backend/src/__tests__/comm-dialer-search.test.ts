@@ -16,6 +16,7 @@ import { prisma } from '../lib/prisma';
 import { clearTokenCache } from '../middleware/authenticate';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 import { ALPHA_ORG_ID, TEST_USERS, mockAuthAs, authHeader, attachedJobWhere } from './helpers';
+import { numberBelongsTo, noNumberMatches } from './support/phone-match';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 const p = prisma as any;
@@ -55,6 +56,7 @@ beforeEach(() => {
   p.job.findMany.mockResolvedValue([]);
   // matchByPhone lookups — unmatched unless a test overrides.
   p.customer.findFirst.mockResolvedValue(null);
+  noNumberMatches(p);
   p.lead.findFirst.mockResolvedValue(null);
   p.vendor.findFirst.mockResolvedValue(null);
   p.vendorContact.findFirst.mockResolvedValue(null);
@@ -147,12 +149,7 @@ describe('GET /api/communication/dialer-search', () => {
 
   it('resolves identity for a phone-shaped query and searches by phone clauses', async () => {
     mockAuthAs('dispatcher');
-    p.customer.findFirst.mockResolvedValue({
-      id: CUSTOMER_ROW.id,
-      first_name: 'ZZ-TEST',
-      last_name: 'CTM',
-      company_name: null,
-    });
+    numberBelongsTo(p, { id: CUSTOMER_ROW.id, first_name: 'ZZ-TEST', last_name: 'CTM', company_name: null });
     p.customer.findMany.mockResolvedValue([CUSTOMER_ROW]);
 
     const res = await request(app)

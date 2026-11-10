@@ -595,6 +595,8 @@ export default function CustomerDetailPage() {
                         extension={customer.secondary_phone_ext}
                         name={displayName}
                         context={{ customerId: customer.id, customerName: displayName }}
+                        // #3018: Text on the Secondary texts the Secondary, not the customer's primary.
+                        extraNumber
                       />
                       <p className="text-muted-foreground text-xs">Secondary</p>
                     </div>

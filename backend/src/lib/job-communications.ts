@@ -43,6 +43,8 @@ interface CommDb {
   // The payments received on the record's invoices and deposits (S08.10): same rule as the estimate decisions above.
   payment: { findMany(args: any): Promise<any[]> };
   lostReasonOption: { findMany(args: any): Promise<any[]> };
+  // The customers a text on a lead's or job's tab may be named after (`TextNaming`): only asked when the caller hands it in.
+  customer?: { findMany(args: any): Promise<any[]> };
 }
 
 /**
@@ -187,7 +189,7 @@ const CALL_INCLUDE = {
   agent: AGENT_SELECT,
 };
 const MESSAGE_INCLUDE = {
-  thread: { select: { title: true, customer: CUSTOMER_SELECT } },
+  thread: { select: { title: true, other_party_e164: true, customer: CUSTOMER_SELECT } },
   lead: LEAD_SELECT,
 };
 const EMAIL_INCLUDE = { customer: CUSTOMER_SELECT, lead: LEAD_SELECT };
@@ -729,20 +731,81 @@ function collapseMailboxCopies(rows: any[], readMailboxIds: readonly string[]): 
   return out;
 }
 
+/**
+ * The `where` for the texts of a job's or a lead's tab: those tied to the record (`tie`) and, when the caller worked them out
+ * (#3022, `recordTextWindow`), the texts the record's numbers bring onto it. Both halves sit in the organization and
+ * under the person's row filter for texts. AND-nested: the row filter is itself an `{ OR }`, which a spread beside this
+ * `OR` would overwrite.
+ */
+function tabTextsWhere(
+  tie: CommVisibility,
+  args: { organizationId: string; visibility: CommVisibility | ChannelVisibility; windowTexts?: CommVisibility },
+): CommVisibility {
+  const { organizationId, visibility, windowTexts } = args;
+  const reach = visibilityFor(visibility, 'messages');
+  if (!windowTexts) return { ...tie, organization_id: organizationId, ...reach };
+  return { organization_id: organizationId, AND: [{ OR: [tie, windowTexts] }, reach] };
+}
+
+/**
+ * Who a text on a lead's or job's tab may be named after (#3021 ruling: a name only for a customer the person can open).
+ * `recordCustomerId` is the record's own customer; `customerScope` is the person's row scope on customers ({} for every
+ * customer), the same one View customers and the record's reach give.
+ */
+export type TextNaming = { recordCustomerId: string; customerScope: CommVisibility };
+
+/**
+ * A text on a lead's or job's tab is named after the customer its conversation is filed on. On a shared number that can be
+ * another customer than the record's, one the person cannot open (#3022 lists the record's untied texts wherever they are
+ * filed). Such a row is named after the record's own customer when the person can open that customer, and after nobody
+ * otherwise. A row filed on the record's own customer keeps its name, as the record's other rows do (the record brings its
+ * customer's name). One read of customers, and none when every row is filed on the record's customer or on nobody.
+ */
+async function textsNamedFor(db: CommDb, organizationId: string, messages: any[], naming?: TextNaming): Promise<any[]> {
+  if (!naming || Object.keys(naming.customerScope).length === 0) return messages;
+  const filedElsewhere = new Set<string>();
+  for (const row of messages) {
+    const filedOn = row.thread?.customer?.id;
+    if (filedOn && filedOn !== naming.recordCustomerId) filedElsewhere.add(filedOn);
+  }
+  if (filedElsewhere.size === 0) return messages;
+  const opened = db.customer
+    ? await db.customer.findMany({
+      where: {
+        AND: [{ id: { in: [...filedElsewhere, naming.recordCustomerId] }, organization_id: organizationId }, naming.customerScope],
+      },
+      select: { id: true, first_name: true, last_name: true, company_name: true },
+    })
+    : [];
+  const openById = new Map(opened.map((customer) => [customer.id as string, customer]));
+  const recordCustomer = openById.get(naming.recordCustomerId) ?? null;
+  return messages.map((row) => {
+    const filedOn = row.thread?.customer?.id;
+    if (!filedOn || filedOn === naming.recordCustomerId || openById.has(filedOn)) return row;
+    return { ...row, thread: { ...row.thread, customer: recordCustomer, title: null } };
+  });
+}
+
 // ─── Public API ─────────────────────────────────────────────────────────────
 
 export async function getJobCommunications(
   db: CommDb,
-  args: { jobId: string; organizationId: string; visibility?: CommVisibility | ChannelVisibility; withCallSummary?: boolean; tied?: TiedConversations }
+  args: {
+    jobId: string; organizationId: string; visibility?: CommVisibility | ChannelVisibility; withCallSummary?: boolean; tied?: TiedConversations;
+    /** The texts the job's numbers bring onto its tab (#3022, `recordTextWindow`); without it, the tied texts only. */
+    windowTexts?: CommVisibility;
+    /** Who its texts may be named after (`textsNamedFor`); without it, the customer each conversation is filed on. */
+    naming?: TextNaming;
+  }
 ): Promise<CommItem[]> {
-  const { jobId, organizationId, visibility = {}, withCallSummary = true, tied } = args;
+  const { jobId, organizationId, visibility = {}, withCallSummary = true, tied, windowTexts, naming } = args;
   const [calls, messages, emails, whatsapps, manuals, ...entryLists] = await Promise.all([
     db.callSession.findMany({
       where: { job_id: jobId, organization_id: organizationId, ...visibilityFor(visibility, 'calls') },
       include: CALL_INCLUDE,
     }),
     db.message.findMany({
-      where: { job_id: jobId, organization_id: organizationId, ...visibilityFor(visibility, 'messages') },
+      where: tabTextsWhere({ job_id: jobId }, { organizationId, visibility, windowTexts }),
       include: MESSAGE_INCLUDE,
     }),
     tabEmails(db, { job_id: jobId }, { organizationId, visibility, tied }),
@@ -765,7 +828,8 @@ export async function getJobCommunications(
     paymentEntries(db, { organizationId, tie: PAYMENT_TIES.job(jobId), visibility }),
   ]);
 
-  return unionAscending(calls, messages, emails, whatsapps, manuals, withCallSummary, entryLists.flat(), tied);
+  const texts = await textsNamedFor(db, organizationId, messages, naming);
+  return unionAscending(calls, texts, emails, whatsapps, manuals, withCallSummary, entryLists.flat(), tied);
 }
 
 export async function getCustomerCommunications(
@@ -774,16 +838,33 @@ export async function getCustomerCommunications(
     customerId: string; organizationId: string; visibility?: CommVisibility | ChannelVisibility; withCallSummary?: boolean;
     /** The mailboxes the person reads: of one message that reached several, the tab lists the copy in one of these. */
     readMailboxIds?: readonly string[];
+    /**
+     * #3021: the numbers (E.164) the customer carries now (`numbersCustomerCarries`). A conversation keyed by its pair of
+     * numbers shows on the page of every customer carrying its number, whichever customer it is filed on, and on no other
+     * (#3013 decision 5); one from before pairs shows on the customer it is filed on, as it always did.
+     */
+    carriedNumbers?: readonly string[];
+    /** The customer whose page it is: on it, a text of a conversation keyed by its pair is with this customer. */
+    customer?: { first_name: string | null; last_name: string | null; company_name: string | null };
   }
 ): Promise<CommItem[]> {
-  const { customerId, organizationId, visibility = {}, withCallSummary = true, readMailboxIds = [] } = args;
+  const { customerId, organizationId, visibility = {}, withCallSummary = true, readMailboxIds = [], carriedNumbers = [], customer } = args;
   const [calls, messages, emails, whatsapps, manuals, ...entryLists] = await Promise.all([
     db.callSession.findMany({
       where: { customer_id: customerId, organization_id: organizationId, ...visibilityFor(visibility, 'calls') },
       include: CALL_INCLUDE,
     }),
     db.message.findMany({
-      where: { organization_id: organizationId, thread: { customer_id: customerId }, ...visibilityFor(visibility, 'messages') },
+      where: {
+        organization_id: organizationId,
+        thread: {
+          OR: [
+            { other_party_e164: null, customer_id: customerId },
+            ...(carriedNumbers.length > 0 ? [{ other_party_e164: { in: [...carriedNumbers] } }] : []),
+          ],
+        },
+        ...visibilityFor(visibility, 'messages'),
+      },
       include: MESSAGE_INCLUDE,
     }),
     emailHiddenFrom(visibility)
@@ -834,30 +915,42 @@ export async function getCustomerCommunications(
     paymentEntries(db, { organizationId, tie: PAYMENT_TIES.customer(customerId), visibility }),
   ]);
 
-  return unionAscending(calls, messages, collapseMailboxCopies(emails, readMailboxIds), whatsapps, manuals, withCallSummary, entryLists.flat());
+  // On this page a text of a conversation keyed by its pair is with this page's customer, whichever customer it is filed on.
+  const texts = customer
+    ? messages.map((row) => (row.thread?.other_party_e164 ? { ...row, thread: { ...row.thread, customer } } : row))
+    : messages;
+  return unionAscending(calls, texts, collapseMailboxCopies(emails, readMailboxIds), whatsapps, manuals, withCallSummary, entryLists.flat());
 }
 
 // Lead-scoped roll-up (full job-parity ruling, 2026-07-22 — "leads should
-// behave exactly like jobs"): strictly the rows attributed to THIS lead by
-// lead_id, mirroring getJobCommunications' job_id scoping exactly. No
-// customer-history union — a row phone-matched to the lead's customer but
-// never explicitly attributed to this lead (lead_id NULL) does not appear,
-// same as an un-job-tagged row never appearing on a job's timeline. Every
+// behave exactly like jobs"): the rows attributed to THIS lead by lead_id,
+// mirroring getJobCommunications' job_id scoping exactly. No customer-history
+// union — a call or email phone-matched to the lead's customer but never
+// explicitly attributed to this lead (lead_id NULL) does not appear, same as an
+// un-job-tagged row never appearing on a job's timeline. Texts are the one
+// exception, on both tabs (#3022, Q39): `windowTexts` adds the texts with the
+// record's numbers from its creation until it closes. Every
 // channel carries a lead link: CallSession.lead_id / Message.lead_id /
 // Email.lead_id directly, WhatsAppMessage via WhatsAppChat.lead_id (chat
 // stays lead-scoped, same shape as its job_id counterpart).
 export async function getLeadCommunications(
   db: CommDb,
-  args: { leadId: string; organizationId: string; visibility?: CommVisibility | ChannelVisibility; withCallSummary?: boolean; tied?: TiedConversations }
+  args: {
+    leadId: string; organizationId: string; visibility?: CommVisibility | ChannelVisibility; withCallSummary?: boolean; tied?: TiedConversations;
+    /** The texts the lead's numbers bring onto its tab (#3022, `recordTextWindow`); without it, the tied texts only. */
+    windowTexts?: CommVisibility;
+    /** Who its texts may be named after (`textsNamedFor`); without it, the customer each conversation is filed on. */
+    naming?: TextNaming;
+  }
 ): Promise<CommItem[]> {
-  const { leadId, organizationId, visibility = {}, withCallSummary = true, tied } = args;
+  const { leadId, organizationId, visibility = {}, withCallSummary = true, tied, windowTexts, naming } = args;
   const [calls, messages, emails, whatsapps, manuals, ...entryLists] = await Promise.all([
     db.callSession.findMany({
       where: { lead_id: leadId, organization_id: organizationId, ...visibilityFor(visibility, 'calls') },
       include: CALL_INCLUDE,
     }),
     db.message.findMany({
-      where: { lead_id: leadId, organization_id: organizationId, ...visibilityFor(visibility, 'messages') },
+      where: tabTextsWhere({ lead_id: leadId }, { organizationId, visibility, windowTexts }),
       include: MESSAGE_INCLUDE,
     }),
     tabEmails(db, { lead_id: leadId }, { organizationId, visibility, tied }),
@@ -879,5 +972,6 @@ export async function getLeadCommunications(
     paymentEntries(db, { organizationId, tie: PAYMENT_TIES.lead(leadId), visibility }),
   ]);
 
-  return unionAscending(calls, messages, emails, whatsapps, manuals, withCallSummary, entryLists.flat(), tied);
+  const texts = await textsNamedFor(db, organizationId, messages, naming);
+  return unionAscending(calls, texts, emails, whatsapps, manuals, withCallSummary, entryLists.flat(), tied);
 }

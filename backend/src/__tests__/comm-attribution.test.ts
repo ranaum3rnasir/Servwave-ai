@@ -45,7 +45,7 @@ beforeEach(() => {
  * the person's conversations through the same model, so the lookup is told apart by the job tie it asks for.
  */
 const autoRouteLookups = () =>
-  (mockPrisma.message.findMany as Mock).mock.calls.map((c) => c[0]).filter((q) => q?.where?.job_id !== undefined);
+  (mockPrisma.message.findMany as Mock).mock.calls.map((c) => c[0]).filter((q) => q?.where?.direction === 'out' && q?.where?.AND !== undefined);
 
 function expectOrgScoped(mockFn: Mock, orgId: string) {
   expect(mockFn).toHaveBeenCalledWith(
@@ -149,7 +149,7 @@ describe('POST /api/communication/sms — inbound auto-route', () => {
     mockAuthAs('dispatcher');
     mockCustomerThread();
     mockPrisma.message.findMany.mockResolvedValue([
-      { job_id: JOB_ID, job_label: 'J00077', ts: new Date(Date.now() - 2 * DAY_MS), job: { status: 'SCHEDULED' } },
+      { job_label: 'J00077', ts: new Date(Date.now() - 2 * DAY_MS), lead: null, job: { id: JOB_ID, status: 'SCHEDULED' } },
     ]);
     mockMessageCreate();
     const res = await request(app).post('/api/communication/sms').set(authHeader('dispatcher'))
@@ -162,21 +162,25 @@ describe('POST /api/communication/sms — inbound auto-route', () => {
     const call = autoRouteLookups()[0];
     expect(call.where.thread_id).toBe(THREAD_ID);
     expect(call.where.direction).toBe('out');
-    expect(call.where.job_id).toEqual({ not: null });
+    // Texts we sent carrying a lead or a job, that went out: never one skipped, failed or still queued (#3020).
+    expect(call.where.AND).toEqual([
+      { OR: [{ lead_id: { not: null } }, { job_id: { not: null } }] },
+      { OR: [{ status: null }, { status: { notIn: ['queued', 'skipped', 'failed'] } }] },
+    ]);
     expect(call.where.ts).toHaveProperty('gte');
-    // Truncation guard: dedupe per job at the DB (distinct + ts-desc → first
-    // row per job is its latest outbound) so a chatty job can't starve older
+    // Truncation guard: dedupe per lead and job at the DB (distinct + ts-desc → first
+    // row per record is its latest outbound) so a chatty job can't starve older
     // live jobs out of a take-N window.
-    expect(call.orderBy).toEqual({ ts: 'desc' });
-    expect(call.distinct).toEqual(['job_id']);
-    expect(call.take).toBe(10);
+    expect(call.orderBy).toEqual([{ ts: 'desc' }, { created_at: 'desc' }]);
+    expect(call.distinct).toEqual(['lead_id', 'job_id']);
+    expect(call.take).toBe(20);
   });
 
   it('routes a vendor-thread inbound reply from its outbound job text (story 28)', async () => {
     mockAuthAs('dispatcher');
     mockCustomerThread({ customer_id: null, vendor_id: VENDOR_ID });
     mockPrisma.message.findMany.mockResolvedValue([
-      { job_id: JOB_ID, job_label: 'J00077', ts: new Date(Date.now() - 2 * DAY_MS), job: { status: 'SCHEDULED' } },
+      { job_label: 'J00077', ts: new Date(Date.now() - 2 * DAY_MS), lead: null, job: { id: JOB_ID, status: 'SCHEDULED' } },
     ]);
     mockMessageCreate();
     const res = await request(app).post('/api/communication/sms').set(authHeader('dispatcher'))
@@ -193,10 +197,10 @@ describe('POST /api/communication/sms — inbound auto-route', () => {
     mockAuthAs('dispatcher');
     mockCustomerThread();
     mockPrisma.message.findMany.mockResolvedValue([
-      // Closed but recent — never routed to.
-      { job_id: 'ab000000-0000-0000-0000-000000000088', job_label: 'J00088', ts: new Date(Date.now() - DAY_MS), job: { status: 'COMPLETED' } },
+      // Closed (Done) but recent — never routed to.
+      { job_label: 'J00088', ts: new Date(Date.now() - DAY_MS), lead: null, job: { id: 'ab000000-0000-0000-0000-000000000088', status: 'DONE' } },
       // Live but stale (outside the recency window) — never routed to.
-      { job_id: 'ab000000-0000-0000-0000-000000000099', job_label: 'J00099', ts: new Date(Date.now() - 40 * DAY_MS), job: { status: 'SCHEDULED' } },
+      { job_label: 'J00099', ts: new Date(Date.now() - 40 * DAY_MS), lead: null, job: { id: 'ab000000-0000-0000-0000-000000000099', status: 'SCHEDULED' } },
     ]);
     mockMessageCreate();
     const res = await request(app).post('/api/communication/sms').set(authHeader('dispatcher'))
@@ -259,7 +263,7 @@ describe('PATCH /api/communication/sms/:id/job — one-click reassign', () => {
     // The internal-lane guard rides the atomic updateMany where too.
     expect(mockPrisma.message.updateMany).toHaveBeenCalledWith({
       where: { id: MSG_ID, organization_id: ALPHA_ORG_ID, thread: KIND_GUARD },
-      data: { job_id: JOB_ID, job_label: 'J00077' },
+      data: { job_id: JOB_ID, job_label: 'J00077', lead_id: null },
     });
     expectOrgScoped(mockPrisma.job.findUnique as Mock, ALPHA_ORG_ID);
     expect(res.body.message.jobId).toBe(JOB_ID);
@@ -283,7 +287,7 @@ describe('PATCH /api/communication/sms/:id/job — one-click reassign', () => {
     expect(mockPrisma.messageThread.findFirst).not.toHaveBeenCalled();
     expect(mockPrisma.message.updateMany).toHaveBeenCalledWith({
       where: { id: MSG_ID, organization_id: ALPHA_ORG_ID, thread: KIND_GUARD },
-      data: { job_id: null, job_label: null },
+      data: { job_id: null, job_label: null, lead_id: null },
     });
     expect(res.body.message).not.toHaveProperty('jobId');
     expect(res.body.message).not.toHaveProperty('jobLabel');

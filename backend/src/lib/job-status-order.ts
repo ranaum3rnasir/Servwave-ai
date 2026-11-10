@@ -30,6 +30,14 @@ export const COMPLETED_OR_LATER_JOB_STATUSES: readonly JobStatus[] = JOB_STATUS_
   JOB_STATUS_ORDER.indexOf('COMPLETED'),
 ).filter((s) => s !== 'CANCELLED');
 
+/**
+ * A closed job, where ServWave picks or ties a customer, lead or job for a text or a call (#3013; Ran, 2026-11-05): Done
+ * or Cancelled, nothing else. Completed, Office review and Ready to close are still open work. This is narrower than
+ * "the work is done" above on purpose: a customer whose job is waiting on the office is still the one most likely to call.
+ * Derived from the order: Done and everything after it.
+ */
+export const DONE_OR_CANCELLED_JOB_STATUSES: readonly JobStatus[] = JOB_STATUS_ORDER.slice(JOB_STATUS_ORDER.indexOf('DONE'));
+
 /** Takes the raw string too: a status that arrives as plain text (an automation's entity state, a message's job) is asked the same way. */
 export function isCompletedOrLater(status: string | null | undefined): boolean {
   return status != null && (COMPLETED_OR_LATER_JOB_STATUSES as readonly string[]).includes(status);

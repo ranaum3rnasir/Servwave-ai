@@ -181,7 +181,8 @@ suite('the Communication rows of the route-level table (real database)', () => {
       // Show Email is held too: the two email attach routes ask for it as well (M7), and the attach switch is what is under test.
       await setHolds(org, holder, withParents(['edit_communication_records', 'show_email']));
       const attach = COMMUNICATION_ROUTE_ROWS.filter((r) => r.needs[0] === 'attach_conversations' && r.needs.every((k) => k === 'attach_conversations' || k === 'show_email'));
-      expect(attach).toHaveLength(6);
+      // The six re-tie routes, and #3024's two menu reads of what they may be re-tied to.
+      expect(attach).toHaveLength(8);
       for (const row of attach) expectRefused(await call(api, row), `${row.method.toUpperCase()} ${row.path}`);
 
       await setHolds(org, holder, withParents(['attach_conversations', 'show_email']));

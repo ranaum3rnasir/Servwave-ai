@@ -24,6 +24,7 @@ import { optionalCustomerEmail, hasPhoneOrEmail, CONTACT_REQUIRED_MSG } from '..
 import { optionalCustomerPhone } from '../lib/phone-schema';
 import { hasNameOrCompany } from '../lib/customer-kind';
 import { accreteContactMethods } from '../lib/customer-accretion';
+import { NUMBER_ON_CUSTOMER_OUT_OF_REACH, mayAddTypedPhoneForReq, numberCarryCheckForReq } from '../lib/communication/numberGuard';
 import { resolveOrAccreteLocation, buildLocationTaxWarning, LocationResolutionError } from '../lib/service-location';
 import { loadTagsByEntity, loadTagsForEntity, type TagSummary } from '../lib/tags';
 import { mergeCustomFields, validateCustomFieldValues, CustomFieldValidationError } from '../lib/custom-fields';
@@ -2117,6 +2118,12 @@ export async function create(req: Request, res: Response) {
           res.status(403).json({ error: NEW_CUSTOMER_NEEDS_CREATE });
           return;
         }
+        // Guard the number (lib/communication/numberGuard.ts): Create anyway included, the new customer may not carry a number
+        // that a customer the person cannot open already carries, unless they hold Communication "All".
+        if (!(await (await numberCarryCheckForReq(req))(prisma, [new_customer.phone], null))) {
+          res.status(409).json({ error: NUMBER_ON_CUSTOMER_OUT_OF_REACH });
+          return;
+        }
 
         const job = await withNumberCollisionRetry(() => prisma.$transaction(async (tx) => {
           const { location, email, ad_source: newCustomerSource, ...customerData } = new_customer;
@@ -2254,6 +2261,13 @@ export async function create(req: Request, res: Response) {
       // with may still be booked. `customerReadable` instead gates the ad_source/accretion writes
       // below and the response redaction after the write.
       const customerReadable = isCustomerReadableRow(req, customer);
+
+      // Guard the number (lib/communication/numberGuard.ts): the typed phone accretes onto the customer (only when they can
+      // read it, as below), so Create anyway included it may not be one a customer the person cannot open already carries.
+      if (customerReadable && !(await mayAddTypedPhoneForReq(req, customer_id, phone))) {
+        res.status(409).json({ error: NUMBER_ON_CUSTOMER_OUT_OF_REACH });
+        return;
+      }
 
       // Validate an explicitly-picked location up front (preserves the BUG #20 query
       // shape + 404). A new_location is accreted inside the transaction instead.

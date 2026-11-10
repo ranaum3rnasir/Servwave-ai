@@ -94,3 +94,27 @@ _Avoid_: "self-notification suppression" (it names the mechanism, not the rule, 
 `self` were the thing being suppressed). Also avoid calling a deviation "an exception" as though
 that were a category: an exception is a justification string on one verb's rule, and a rule
 carrying an empty one is a bug.
+
+**Open** (of a lead or job, for texts and calls):
+A lead is open until it is converted or lost; a job is open until it is done or cancelled, so a Completed, Office
+review or Ready to close job is still open. This is what "open" means wherever ServWave picks or ties a customer, lead
+or job for a text or a call: the fixed order for a shared number, a reply's tie, a Communication tab's window.
+_Avoid_: calling a Completed job "closed" in these rules; its work is done, but the job is still open.
+
+**Conversation** (a text conversation with a customer or an unknown number):
+A pair of numbers: the other party's number and one of ours. A customer texted from two of our numbers has two
+conversations, as their phone shows them. A reply in a conversation leaves from our number in it, whoever sends it.
+Staff, vendor and group conversations are not pairs. The customer a conversation is filed on is its default customer,
+for screens that show one name; it does not decide which conversation a text joins.
+_Avoid_: "the customer's thread" for a pair's conversation; one customer can have several, and one conversation can
+belong to several customers sharing a number.
+
+**Carries a number** (a customer):
+The number is one of the customer's phone fields (phone, second phone, phones list) or a live phone entry of one of
+their leads or jobs, open or closed, stored as E.164 or bare ten digits. Worked out at every read, never stored: a
+conversation shows on every customer carrying its number, and a text in it tied to no lead or job is readable through any
+of them. Taking the number off a customer's record takes the conversation off that customer's page at once.
+_Avoid_: "the conversation's customer" for this; the customer it is filed on is only its default customer.
+
+**Main line**:
+The company's default number (else its oldest active number). A text whose company number is unknown is on the main line.

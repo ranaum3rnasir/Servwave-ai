@@ -23,6 +23,7 @@ import * as ctmClient from '../lib/ctm/client';
 import { resetNumberSyncThrottle } from '../lib/ctm/numberSync';
 import { clearOrgNumberRoster } from '../lib/ctm/unknownNumberSync';
 import { installPhoneNumberStore } from '../lib/ctm/__tests__/phoneNumberStore';
+import { numberBelongsTo, noNumberMatches } from './support/phone-match';
 
 const app = express();
 app.use('/api/webhooks', webhookRoutes);
@@ -33,9 +34,9 @@ const p = prisma as any;
 const CALL_END_PAYLOAD = {
   sid: 'CA0001',
   id: 12345,
-  account_id: 596375,
-  caller_number: '+12015551234',
-  tracking_number: '+12019037784',
+  account_id: 123456,
+  caller_number: '+12015550123',
+  tracking_number: '+12015550100',
   direction: 'inbound',
   dial_status: 'answered',
   duration: 62,
@@ -68,6 +69,7 @@ beforeEach(() => {
   p.callSession.upsert.mockResolvedValue({ id: 'cs-1' });
   p.user.findFirst.mockResolvedValue(null);
   p.customer.findFirst.mockResolvedValue(null);
+  noNumberMatches(p);
   p.lead.findFirst.mockResolvedValue(null);
   p.vendor.findFirst.mockResolvedValue(null);
   p.vendorContact.findFirst.mockResolvedValue(null);
@@ -141,7 +143,7 @@ describe('CTM webhook auth (fail closed)', () => {
   // API secret). CTM signs sub-account webhooks with a different secret, so with
   // the API secret set but no dedicated signing secret, a signed webhook must
   // still pass on the token alone — reusing the API secret 401'd every real
-  // The pilot org (596375) webhook on 2026-07-13.
+  // The pilot org (123456) webhook on 2026-07-13.
   it('does NOT verify the signature against CTM_SECRET_KEY — signed webhook passes when signing secret is unset', async () => {
     mockEnv.env.CTM_WEBHOOK_SIGNING_SECRET = undefined; // API secret stays set
     const rawBody = JSON.stringify(CALL_END_PAYLOAD);
@@ -270,9 +272,9 @@ describe('CTM webhook ingestion flow', () => {
 describe('CTM inbound SMS ingestion', () => {
   const SMS_PAYLOAD = {
     message_id: 'MSG0001',
-    account_id: 596375,
-    caller_number: '+12015551234',
-    tracking_number: '+12019037784',
+    account_id: 123456,
+    caller_number: '+12015550123',
+    tracking_number: '+12015550100',
     direction: 'msg_inbound',
     message_body: 'Hi, is my door fixed?',
     unix_time: 1_752_000_100,
@@ -308,14 +310,14 @@ describe('CTM inbound SMS ingestion', () => {
 
   it('unmatched threads key by the E.164-normalized number — bare vs +1 spellings share one thread', async () => {
     // First text arrives with the bare 10-digit spelling…
-    await post('inbound_text', { ...SMS_PAYLOAD, caller_number: '2015551234', caller_number_complete: undefined });
+    await post('inbound_text', { ...SMS_PAYLOAD, caller_number: '2015550123', caller_number_complete: undefined });
     expect(p.messageThread.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ title: '+12015551234' }),
+        where: expect.objectContaining({ title: '+12015550123' }),
       }),
     );
     const created = p.messageThread.create.mock.calls[0][0];
-    expect(created.data.title).toBe('+12015551234');
+    expect(created.data.title).toBe('+12015550123');
   });
 
   it('sms_error_code marks the message failed', async () => {
@@ -337,9 +339,9 @@ describe('CTM inbound SMS ingestion', () => {
 describe('CTM SMS thread find/create parity (one thread per counterpart)', () => {
   const SMS_PAYLOAD = {
     message_id: 'MSG1001',
-    account_id: 596375,
-    caller_number: '+12015551234',
-    tracking_number: '+12019037784',
+    account_id: 123456,
+    caller_number: '+12015550123',
+    tracking_number: '+12015550100',
     direction: 'msg_inbound',
     message_body: 'First message',
     unix_time: 1_752_000_100,
@@ -368,42 +370,10 @@ describe('CTM SMS thread find/create parity (one thread per counterpart)', () =>
     expect(p.messageThread.create).toHaveBeenCalledTimes(1);
   });
 
-  it('linking parity: a lead match lands customer_id + lead_id on the created thread', async () => {
-    p.lead.findFirst.mockResolvedValue({ id: 'lead-1', lead_number: 'L00007', customer_id: 'cust-9' });
-
-    await post('inbound_text', { ...SMS_PAYLOAD, message_id: 'MSG1003' });
-
-    const created = p.messageThread.create.mock.calls[0][0];
-    expect(created.data.customer_id).toBe('cust-9');
-    expect(created.data.lead_id).toBe('lead-1');
-    expect(created.data.vendor_id).toBeNull();
-    expect(created.data.title).toBeNull();
-    // Lead matches carry customerId → the customer arm keys the find.
-    expect(p.messageThread.findFirst).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({ customer_id: 'cust-9' }),
-      }),
-    );
-  });
-
-  // Full job-parity ruling (2026-07-22): getLeadCommunications now filters
-  // strictly on Message.lead_id, so an inbound reply that only lands lead_id
-  // on the THREAD (not the message) would silently vanish from the lead's
-  // Communication tab. This is the message-level mirror of the thread test
-  // above.
-  it('linking parity: a lead match also lands lead_id on the created MESSAGE itself, not just the thread', async () => {
-    p.lead.findFirst.mockResolvedValue({ id: 'lead-1', lead_number: 'L00007', customer_id: 'cust-9' });
-
-    await post('inbound_text', { ...SMS_PAYLOAD, message_id: 'MSG1005' });
-
-    const msg = p.message.create.mock.calls[0][0];
-    expect(msg.data.lead_id).toBe('lead-1');
-  });
-
   it('linking parity: a customer match lands customer_id on the created thread', async () => {
-    p.customer.findFirst.mockResolvedValue({
-      id: 'cust-1', first_name: 'Pat', last_name: 'Lee', company_name: null,
-    });
+    numberBelongsTo(p, { id: 'cust-1', first_name: 'Pat', last_name: 'Lee', company_name: null });
+    // The number is the customer's own phone, the number a conversation from before pairs texts.
+    p.customer.findFirst.mockResolvedValue({ phone: '2015550123' });
 
     await post('inbound_text', { ...SMS_PAYLOAD, message_id: 'MSG1004' });
 
@@ -421,9 +391,9 @@ describe('CTM SMS thread find/create parity (one thread per counterpart)', () =>
 describe('CTM outbound SMS reconciliation (webhook side)', () => {
   const OUT_PAYLOAD = {
     message_id: 'MSG2001',
-    account_id: 596375,
-    caller_number: '+12019037784',
-    called_number: '+12015551234',
+    account_id: 123456,
+    caller_number: '+12015550100',
+    called_number: '+12015550123',
     direction: 'msg_outbound',
     message_body: 'Your technician is on the way',
     unix_time: 1_752_000_200,
@@ -477,9 +447,8 @@ describe('CTM outbound SMS reconciliation (webhook side)', () => {
 // `status_change` is the REAL outbound-text carrier.
 //
 // Measured live 2026-08-01 against staging Supabase + the CTM API: the
-// `outbound_text` hook is provisioned on both connected accounts (ids 274748 /
-// 274595, `disabled: false`, no conditions) and has fired ZERO times in 21
-// days, while all 12 stored `status_change` events are `direction:
+// `outbound_text` hook is provisioned on both connected accounts (`disabled:
+// false`, no conditions) and has fired ZERO times in 21 days, while all 12 stored `status_change` events are `direction:
 // msg_outbound` carrying a full text activity - `message_id`, `message_body`,
 // caller/contact numbers and a sent|delivered status. `message_id` is the clean
 // discriminator: present on 18/18 text events, absent on all 36 call events.
@@ -491,17 +460,17 @@ describe('CTM outbound SMS reconciliation (webhook side)', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 describe('CTM status_change carries outbound texts (the outbound_text hook never fires)', () => {
   const STATUS_CHANGE_TEXT = {
-    sid: '1056366839',
-    message_id: 'MSGA9B07EC712F11C71FF8D9CB2DB3A28D80EBAA4A638C1559085F6E896A61189CC',
-    account_id: 596375,
-    caller_number: '+16098745252',
-    contact_number: '+16098745252',
-    called_number: '+12015551234',
+    sid: '1000000001',
+    message_id: 'MSG0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF',
+    account_id: 123456,
+    caller_number: '+16095550152',
+    contact_number: '+16095550152',
+    called_number: '+12015550123',
     direction: 'msg_outbound',
     call_status: 'sent',
     dial_status: 'sent',
     status: 'sent',
-    message_body: 'Hi Ran, this is a live test text from ServWave',
+    message_body: 'Hi there, this is a live test text from ServWave',
     unix_time: 1_752_000_300,
   };
 
@@ -516,7 +485,7 @@ describe('CTM status_change carries outbound texts (the outbound_text hook never
     const msg = p.message.create.mock.calls[0][0];
     expect(msg.data.ctm_sms_id).toBe(STATUS_CHANGE_TEXT.message_id);
     expect(msg.data.direction).toBe('out');
-    expect(msg.data.body).toBe('Hi Ran, this is a live test text from ServWave');
+    expect(msg.data.body).toBe('Hi there, this is a live test text from ServWave');
     expect(msg.data.status).toBe('sent');
   });
 
@@ -584,9 +553,9 @@ describe('CTM status_change carries outbound texts (the outbound_text hook never
 describe('a call or text on a number ServWave does not have yet', () => {
   /* eslint-disable @typescript-eslint/no-explicit-any */
   const client = ctmClient as any;
-  const ACCOUNT = '596375';
-  const KNOWN = '+12019037784';
-  const NEW = '+18555334801';
+  const ACCOUNT = '123456';
+  const KNOWN = '+12015550100';
+  const NEW = '+18555550101';
 
   const remoteNumber = (e164: string) => ({
     id: `TPN-${e164.slice(-4)}`,
@@ -609,8 +578,8 @@ describe('a call or text on a number ServWave does not have yet', () => {
   });
   const textOn = (messageId: string, trackingNumber: string, over: Record<string, unknown> = {}) => ({
     message_id: messageId,
-    account_id: 596375,
-    caller_number: '+12015551234',
+    account_id: 123456,
+    caller_number: '+12015550123',
     tracking_number: trackingNumber,
     direction: 'msg_inbound',
     message_body: 'Is anyone there?',
@@ -753,17 +722,17 @@ describe('a call or text on a number ServWave does not have yet', () => {
 
   it('does not sync for a call on a number the org already has, however the payload spells it', async () => {
     await post('end', callOn('CA-known-1', KNOWN));
-    await post('end', callOn('CA-known-2', '(201) 903-7784'));
-    await post('inbound_text', textOn('MSG-known-1', '2019037784'));
+    await post('end', callOn('CA-known-2', '(201) 555-0100'));
+    await post('inbound_text', textOn('MSG-known-1', '2015550100'));
     await settle();
 
     expect(client.listNumbers).not.toHaveBeenCalled();
   });
 
   it.each([
-    ['a punctuated call', 'end', () => callOn('CA-spelled-1', '(855) 533-4801')],
-    ['a bare-digits call', 'end', () => callOn('CA-spelled-2', '8555334801')],
-    ['a bare-digits text', 'inbound_text', () => textOn('MSG-spelled-1', '18555334801')],
+    ['a punctuated call', 'end', () => callOn('CA-spelled-1', '(855) 555-0101')],
+    ['a bare-digits call', 'end', () => callOn('CA-spelled-2', '8555550101')],
+    ['a bare-digits text', 'inbound_text', () => textOn('MSG-spelled-1', '18555550101')],
   ])('syncs for %s naming a number it does not have', async (_label, position, payload) => {
     // The other half of the spelling test above: a number the payload does not
     // spell in E.164 is still read as a number, so an unknown one still syncs.
@@ -812,7 +781,7 @@ describe('a call or text on a number ServWave does not have yet', () => {
     [
       'an outbound text status change',
       'status_change',
-      () => textOn('MSG-status-1', NEW, { direction: 'msg_outbound', status: 'sent', called_number: '+12015551234' }),
+      () => textOn('MSG-status-1', NEW, { direction: 'msg_outbound', status: 'sent', called_number: '+12015550123' }),
     ],
     ['an outbound text', 'outbound_text', () => textOn('MSG-out-1', NEW, { direction: 'msg_outbound' })],
   ])('does not sync for %s, even on a number it does not have', async (_label, position, payload) => {
@@ -869,7 +838,7 @@ describe('a call or text on a number ServWave does not have yet', () => {
   });
 
   it('reads no full number list for a call whose sync the window skips', async () => {
-    const OTHER_NEW = '+18555334802';
+    const OTHER_NEW = '+18555550102';
     await post('end', callOn('CA-skip-1', NEW));
     await vi.waitFor(() => expect(store.get(NEW)).toBeDefined());
     await settle();

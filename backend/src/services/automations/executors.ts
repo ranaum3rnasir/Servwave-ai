@@ -538,7 +538,13 @@ async function sendSmsAction(config: NormalizedConfig, bundle: ExecutionBundle):
         summary: bundle.customer.phone,
         // Verbatim, and deliberately number-free: what a failed customer text has always read.
         failureDetail: 'Text delivery failed',
-        to: { type: 'customer', customerId: bundle.customer.id, job: bundle.jobRef ?? null },
+        // The record the text is about: a job's (jobRef), or the lead's on a lead trigger, so a reply ties to it (#3020).
+        to: {
+          type: 'customer',
+          customerId: bundle.customer.id,
+          job: bundle.jobRef ?? null,
+          lead: bundle.entityRef.type === 'lead' ? { id: bundle.entityRef.id } : null,
+        },
       });
     }
   }

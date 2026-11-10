@@ -40,6 +40,8 @@ vi.mock("@/lib/api/communication", () => ({
   useJobSearch: () => ({ data: [] }),
   useLeadSearch: () => ({ data: [] }),
   ATTACH_SEARCH_MIN: 2,
+  // #3024: what "Attach to a lead or job" offers for the call.
+  useAttachMenuTargets: () => ({ data: { rule: "carriers", groups: [] }, isLoading: false }),
   useRecordingUrl: () => ({ data: undefined, refetch: vi.fn(), isFetching: false }),
   useRecordingDownloadUrl: () => ({ data: undefined, refetch: vi.fn(), isFetching: false }),
   useCallTranscript,

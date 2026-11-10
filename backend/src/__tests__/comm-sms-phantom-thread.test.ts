@@ -15,6 +15,7 @@ import { _resetCtmSmsDoubleFireGuard } from '../lib/ctm/sendSms';
 import { clearTokenCache } from '../middleware/authenticate';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 import { ALPHA_ORG_ID, mockAuthAs, authHeader, CUSTOMER_FIXTURE } from './helpers';
+import { numberBelongsTo, noNumberMatches } from './support/phone-match';
 
 // The inbound-keying block below drives the real webhook door; the bell is not
 // what is under test and emitting it would reach the notification service.
@@ -29,6 +30,8 @@ const client = ctmClient as any;
 const ORG_ID = ALPHA_ORG_ID;
 // The webhook's resolver: the whole company's customers, leads and vendors (the helper takes it from its caller, NV-vp3-1).
 const companyWide = (n: string) => matchByPhone(prisma, ORG_ID, n);
+// #3019: our number, the other side of a conversation's pair.
+const OUR_NUMBER = '+12015550100';
 const NEW_THREAD_ID = 'a1b2c3d4-0000-0000-0000-0000000000aa';
 const EXISTING_THREAD_ID = 'a1b2c3d4-0000-0000-0000-0000000000bb';
 
@@ -58,10 +61,13 @@ beforeEach(() => {
   client.isOptedOut.mockResolvedValue(false);
   client.isOutboundAllowed.mockReturnValue(true);
   p.customer.findFirst.mockResolvedValue(null);
+  noNumberMatches(p);
   p.lead.findFirst.mockResolvedValue(null);
   p.vendor.findFirst.mockResolvedValue(null);
   p.vendorContact.findFirst.mockResolvedValue(null);
   p.messageThread.findFirst.mockResolvedValue(null);
+  // #3019: the lookup for a conversation from before pairs also lists the customer's ones holding an unsent reply.
+  p.messageThread.findMany.mockResolvedValue([]);
   p.timelineEvent.create.mockResolvedValue({});
   // No staff owns any number by default - the org roster is empty.
   p.user.findMany.mockResolvedValue([]);
@@ -264,7 +270,7 @@ describe('inbound SMS from a member of staff keys onto their team thread', () =>
       id: STAFF_THREAD_ID, customer_id: null, vendor_id: null, lead_id: null, title: 'Mike Reyes', kind: 'team',
     });
 
-    await findOrCreateSmsThreadByNumber(prisma, ORG_ID, STAFF_NUMBER, companyWide, { matchStaff: true });
+    await findOrCreateSmsThreadByNumber(prisma, ORG_ID, STAFF_NUMBER, OUR_NUMBER, companyWide, { matchStaff: true });
 
     expect(p.messageThread.create.mock.calls[0][0].data).toEqual({
       channel: 'sms',
@@ -291,7 +297,7 @@ describe('inbound SMS from a member of staff keys onto their team thread', () =>
     p.messageThread.findFirst.mockResolvedValue(null);
     p.messageThread.create.mockResolvedValue({ id: STAFF_THREAD_ID, kind: 'team' });
 
-    await findOrCreateSmsThreadByNumber(prisma, ORG_ID, STAFF_NUMBER, companyWide, { matchStaff: true });
+    await findOrCreateSmsThreadByNumber(prisma, ORG_ID, STAFF_NUMBER, OUR_NUMBER, companyWide, { matchStaff: true });
 
     expect(p.messageThread.create.mock.calls[0][0].data.title).toBe('mike@example-company.test');
   });
@@ -309,7 +315,7 @@ describe('inbound SMS from a member of staff keys onto their team thread', () =>
     p.messageThread.findFirst.mockResolvedValue(null);
     p.messageThread.create.mockResolvedValue({ id: STAFF_THREAD_ID, kind: 'team' });
 
-    await findOrCreateSmsThreadByNumber(prisma, ORG_ID, STAFF_NUMBER, companyWide, { matchStaff: true });
+    await findOrCreateSmsThreadByNumber(prisma, ORG_ID, STAFF_NUMBER, OUR_NUMBER, companyWide, { matchStaff: true });
 
     expect(p.messageThread.create.mock.calls[0][0].data.title).toBe('mike@example-company.test');
   });
@@ -324,7 +330,7 @@ describe('inbound SMS from a member of staff keys onto their team thread', () =>
     p.messageThread.findFirst.mockResolvedValue(null);
     p.messageThread.create.mockResolvedValue({ id: STAFF_THREAD_ID, kind: 'team' });
 
-    await findOrCreateSmsThreadByNumber(prisma, ORG_ID, STAFF_NUMBER, companyWide, { matchStaff: true });
+    await findOrCreateSmsThreadByNumber(prisma, ORG_ID, STAFF_NUMBER, OUR_NUMBER, companyWide, { matchStaff: true });
 
     expect(p.messageThread.create.mock.calls[0][0].data.title).toBe('Reyes');
   });
@@ -336,7 +342,7 @@ describe('inbound SMS from a member of staff keys onto their team thread', () =>
     staffRoster();
     p.messageThread.findFirst.mockResolvedValue({ id: STAFF_THREAD_ID, kind: 'team' });
 
-    await findOrCreateSmsThreadByNumber(prisma, ORG_ID, STAFF_NUMBER, companyWide, { matchStaff: true });
+    await findOrCreateSmsThreadByNumber(prisma, ORG_ID, STAFF_NUMBER, OUR_NUMBER, companyWide, { matchStaff: true });
 
     expect(p.user.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ select: expect.objectContaining({ email: true }) }),
@@ -348,7 +354,7 @@ describe('inbound SMS from a member of staff keys onto their team thread', () =>
     p.messageThread.findFirst.mockResolvedValue(null);
     p.messageThread.create.mockResolvedValue({ id: STAFF_THREAD_ID, title: 'Mike Reyes', kind: 'team' });
 
-    await findOrCreateSmsThreadByNumber(prisma, ORG_ID, STAFF_NUMBER, companyWide, { matchStaff: true });
+    await findOrCreateSmsThreadByNumber(prisma, ORG_ID, STAFF_NUMBER, OUR_NUMBER, companyWide, { matchStaff: true });
 
     expect(p.messageThread.create.mock.calls[0][0].data.user_id).toBe(STAFF_USER_ID);
   });
@@ -357,7 +363,7 @@ describe('inbound SMS from a member of staff keys onto their team thread', () =>
     staffRoster();
     p.messageThread.findFirst.mockResolvedValue({ id: STAFF_THREAD_ID, kind: 'team' });
 
-    await findOrCreateSmsThreadByNumber(prisma, ORG_ID, STAFF_NUMBER, companyWide, { matchStaff: true });
+    await findOrCreateSmsThreadByNumber(prisma, ORG_ID, STAFF_NUMBER, OUR_NUMBER, companyWide, { matchStaff: true });
 
     expect(p.user.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -366,12 +372,12 @@ describe('inbound SMS from a member of staff keys onto their team thread', () =>
     );
   });
 
-  it('leaves a number owned by NOBODY on the title-keyed thread it makes today', async () => {
+  it('leaves a number owned by NOBODY on a conversation of its own, filed on nobody and keyed by its pair (#3019)', async () => {
     p.user.findMany.mockResolvedValue([]);
     p.messageThread.findFirst.mockResolvedValue(null);
     p.messageThread.create.mockResolvedValue({ id: 'th-unknown', title: '+12015550123' });
 
-    await findOrCreateSmsThreadByNumber(prisma, ORG_ID, '+12015550123', companyWide, { matchStaff: true });
+    await findOrCreateSmsThreadByNumber(prisma, ORG_ID, '+12015550123', OUR_NUMBER, companyWide, { matchStaff: true });
 
     expect(p.messageThread.create.mock.calls[0][0].data).toEqual({
       channel: 'sms',
@@ -380,6 +386,8 @@ describe('inbound SMS from a member of staff keys onto their team thread', () =>
       lead_id: null,
       vendor_id: null,
       title: '+12015550123',
+      other_party_e164: '+12015550123',
+      our_number_e164: OUR_NUMBER,
       organization_id: ORG_ID,
     });
   });
@@ -388,13 +396,11 @@ describe('inbound SMS from a member of staff keys onto their team thread', () =>
 describe('inbound SMS keying for everyone else is byte-identical', () => {
   it('a CUSTOMER number never reaches the staff lookup at all', async () => {
     staffRoster();
-    p.customer.findFirst.mockResolvedValue({
-      id: CUSTOMER_FIXTURE.id, first_name: 'Pat', last_name: 'Lee', company_name: null,
-    });
+    numberBelongsTo(p, { id: CUSTOMER_FIXTURE.id, first_name: 'Pat', last_name: 'Lee', company_name: null });
     p.messageThread.findFirst.mockResolvedValue(null);
     p.messageThread.create.mockResolvedValue({ id: 'th-c', customer_id: CUSTOMER_FIXTURE.id });
 
-    const { thread, match } = await findOrCreateSmsThreadByNumber(prisma, ORG_ID, STAFF_NUMBER, companyWide, {
+    const { thread, match } = await findOrCreateSmsThreadByNumber(prisma, ORG_ID, STAFF_NUMBER, OUR_NUMBER, companyWide, {
       matchStaff: true,
     });
 
@@ -411,7 +417,7 @@ describe('inbound SMS keying for everyone else is byte-identical', () => {
     p.messageThread.findFirst.mockResolvedValue(null);
     p.messageThread.create.mockResolvedValue({ id: 'th-v', vendor_id: 'vendor-1' });
 
-    await findOrCreateSmsThreadByNumber(prisma, ORG_ID, STAFF_NUMBER, companyWide, { matchStaff: true });
+    await findOrCreateSmsThreadByNumber(prisma, ORG_ID, STAFF_NUMBER, OUR_NUMBER, companyWide, { matchStaff: true });
 
     expect(p.user.findMany).not.toHaveBeenCalled();
     expect(p.messageThread.create.mock.calls[0][0].data.vendor_id).toBe('vendor-1');
@@ -422,7 +428,7 @@ describe('inbound SMS keying for everyone else is byte-identical', () => {
     p.messageThread.findFirst.mockResolvedValue(null);
     p.messageThread.create.mockResolvedValue({ id: 'th-t', title: STAFF_NUMBER });
 
-    await findOrCreateSmsThreadByNumber(prisma, ORG_ID, STAFF_NUMBER, companyWide);
+    await findOrCreateSmsThreadByNumber(prisma, ORG_ID, STAFF_NUMBER, OUR_NUMBER, companyWide);
 
     expect(p.user.findMany).not.toHaveBeenCalled();
     expect(p.messageThread.create.mock.calls[0][0].data.title).toBe(STAFF_NUMBER);

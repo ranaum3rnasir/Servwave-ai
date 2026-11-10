@@ -2010,7 +2010,7 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
       'Edit communication records does not allow it.',
     requires: ['view_communication'],
     grants: [{ action: 'attach', subject: 'Communication' }],
-    serverChecks: ['call-attach-job', 'call-attach-lead', 'email-attach-job', 'email-attach-lead', 'text-attach-job', 'text-attach-lead'],
+    serverChecks: ['call-attach-job', 'call-attach-lead', 'call-attach-targets', 'email-attach-job', 'email-attach-lead', 'text-attach-job', 'text-attach-lead', 'text-attach-targets'],
     presets: presets(true, true, true, true),
   }),
   entry({

@@ -100,12 +100,13 @@ beforeEach(() => {
 });
 
 describe('CustomerContactCard Text entry (S05.1)', () => {
-  it('phone service + Contact customers: Text opens the in-app composer for the customer, not an sms: link', async () => {
+  it('phone service + Contact customers: Text opens the in-app composer by the job\'s number with the job attached, not an sms: link', async () => {
     renderWithProviders(<CustomerContactCard job={JOB} />, { ability: fullAbility });
 
     await userEvent.click(await screen.findByRole('button', { name: 'Text' }));
 
-    expect(mockNavigate).toHaveBeenCalledWith(`/communication/text?customerId=${JOB.customer.id}`);
+    // #3017: addressed to the number the job shows, with the job attached, so the text is filed on the job.
+    expect(mockNavigate).toHaveBeenCalledWith(`/communication/text?to=5551234567&owner=customer&name=Daniel+Cohen&jobId=${JOB.id}`);
     expect(document.querySelector('a[href^="sms:"]')).toBeNull();
   });
 

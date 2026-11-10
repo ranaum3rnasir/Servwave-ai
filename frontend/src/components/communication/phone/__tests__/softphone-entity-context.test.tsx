@@ -101,7 +101,7 @@ describe("Softphone entity-context attribution (E2)", () => {
 
     // Terminal copy names the job the call will be logged to.
     expect(
-      screen.getByText("Your phone will ring first - this call will be logged to J00042."),
+      screen.getByText("Your phone will ring first. It will be logged to J00042."),
     ).toBeInTheDocument();
   });
 
@@ -126,7 +126,7 @@ describe("Softphone entity-context attribution (E2)", () => {
     expect(body).not.toHaveProperty("job_id");
 
     expect(
-      screen.getByText("Your phone will ring first - this call will be logged to L00007."),
+      screen.getByText("Your phone will ring first. It will be logged to L00007."),
     ).toBeInTheDocument();
   });
 
@@ -144,7 +144,7 @@ describe("Softphone entity-context attribution (E2)", () => {
     });
 
     expect(
-      screen.getByText("Your phone will ring first - answer to connect."),
+      screen.getByText("Your phone will ring first."),
     ).toBeInTheDocument();
   });
 
@@ -162,7 +162,7 @@ describe("Softphone entity-context attribution (E2)", () => {
     expect(body.customer_id).toBe(JOB_CONTEXT.customerId);
 
     expect(
-      screen.getByText("Your phone will ring first - this call will be logged to J00042."),
+      screen.getByText("Your phone will ring first. It will be logged to J00042."),
     ).toBeInTheDocument();
   });
 });

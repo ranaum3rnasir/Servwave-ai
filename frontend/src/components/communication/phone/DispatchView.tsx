@@ -24,6 +24,7 @@ import {
   AnsweredBy,
   customerById,
   DirIcon,
+  callStatusLabel,
   shortTime,
 } from "@/components/communication/phone/shared";
 import { CallDetailDrawer } from "@/components/communication/phone/CallsView";
@@ -91,7 +92,7 @@ export function DispatchView({
                       <p className="truncate text-sm font-semibold text-text-primary">
                         {cust?.name ?? fmtPhone(c.fromNumber)}
                         <span className="ml-2 text-[10px] font-normal uppercase tracking-wide text-text-secondary">
-                          {c.status} · {shortTime(c.startedAt, tz)}
+                          {callStatusLabel(c)} · {shortTime(c.startedAt, tz)}
                         </span>
                       </p>
                       {c.summary && <p className="truncate text-[12px] text-text-secondary">{c.summary}</p>}

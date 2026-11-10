@@ -251,7 +251,7 @@ describe('SmsInboxView - an open staff thread', () => {
     await pickLane(user, 'Team');
     await screen.findByText('Internal team thread');
 
-    expect(screen.queryByText('no job')).not.toBeInTheDocument();
+    expect(screen.queryByText('No lead or job')).not.toBeInTheDocument();
     expect(screen.queryByText('Unrouted')).not.toBeInTheDocument();
     expect(screen.queryByText('Assign')).not.toBeInTheDocument();
   });
@@ -354,14 +354,14 @@ describe('SmsInboxView - an open staff thread', () => {
 });
 
 describe('SmsInboxView - the customer lane is unchanged', () => {
-  it('still lists customer threads with their campaign meta line and job pills', async () => {
+  it('still lists customer threads with their campaign meta line and each text\'s lead or job', async () => {
     mockEnabledOrg();
     renderWithProviders(<Harness initial={[fresh(CUSTOMER_THREAD), fresh(STAFF_THREAD)]} />);
 
     const row = await screen.findByRole('button', { name: /Rolex 5th Ave/ });
     expect(within(row).getByText(/Customer care · SMS/)).toBeInTheDocument();
     // Job attribution UI is alive on the customer side.
-    expect(await screen.findByText('no job')).toBeInTheDocument();
+    expect(await screen.findByText('No lead or job')).toBeInTheDocument();
     expect(screen.queryByText('Internal team thread')).not.toBeInTheDocument();
   });
 

@@ -6,6 +6,7 @@ import { decideCloseOutMove, type CloseOutDecision } from './job-close-out';
 import { subStatusClears } from './job-sub-status';
 import { findLiveJobEntry } from './record-contact-entries';
 import { applyDecisionToCustomer, CONTACT_LABEL, OUTCOME, shown, type AppliedDecision, type Outcome } from './job-review-apply';
+import type { NumberCarryCheck } from './communication/numberGuard';
 
 /**
  * Finish review (Roles & Permissions, PRD 6, S06.12): the move from Office review to Ready to close, and the customer
@@ -46,6 +47,8 @@ export interface FinishReviewArgs {
   sentVersion: string | null;
   mayCosts: boolean;
   openInvoices: ReadReviewArgs['openInvoices'];
+  /** Guard the number: the reviewer's check, read before the transaction and asked on its own client. */
+  mayCarry: NumberCarryCheck;
 }
 
 export interface FinishReviewResult {
@@ -124,7 +127,10 @@ export async function finishReview(args: FinishReviewArgs): Promise<FinishReview
       const entry = await findLiveJobEntry(tx, orgId, jobId, contact.entry_id);
       if (!entry) continue;
 
-      const applied = await applyDecisionToCustomer(tx, { orgId, customerId: locked.customer_id, choice: contact.choice, entry });
+      const applied = await applyDecisionToCustomer(tx, {
+        orgId, customerId: locked.customer_id, choice: contact.choice, entry,
+        mayCarry: (phone) => args.mayCarry(tx, [phone], locked.customer_id),
+      });
       const label = CONTACT_LABEL[entry.kind] ?? 'Detail';
       const by = item.checked_by ?? 'the reviewer';
       await tx.timelineEvent.create({

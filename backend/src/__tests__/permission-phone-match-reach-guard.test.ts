@@ -23,6 +23,7 @@ const RAW_CALLERS: Readonly<Record<string, string>> = {
   'lib/communication/phoneMatchInReach.ts': 'the reach-aware wrapper every signed-in door uses',
   'lib/ctm/ingest.ts': 'the phone service webhook: nobody is signed in; an inbound call or text is filed for the company',
   'lib/web-form/process.ts': 'the public web form: nobody is signed in; a lead is filed for the company',
+  'lib/sms-reply-router.ts': 'the reply rule\'s own-number step (#3020): only the phone service webhook passes it a number (nobody is signed in); the composer\'s received-text door passes none',
 };
 
 function sourceFiles(dir: string): string[] {
@@ -34,7 +35,7 @@ function sourceFiles(dir: string): string[] {
 }
 
 /** A call of a raw resolver, not a mention in a comment. */
-const RAW_CALL = /\bmatchBy(?:Phone|Email)\s*\(/;
+const RAW_CALL = /\bmatch(?:Caller)?By(?:Phone|Email)\s*\(/;
 
 describe('a phone number or address resolves to a customer inside the person\'s reach (P2-1)', () => {
   const callers = sourceFiles(SRC)

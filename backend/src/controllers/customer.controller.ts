@@ -43,6 +43,7 @@ import { getRequestOrgTimezone } from '../lib/timezone';
 import { orgTodayStart } from '../lib/orgDayRange';
 import { paidCents, fromCents } from '../lib/payment-ledger';
 import { LONG_TEXT_MAX } from '../lib/text-limits';
+import { NUMBER_ON_CUSTOMER_OUT_OF_REACH, numberCarryCheckForReq, numbersNotYetOn, phonesOnCustomer } from '../lib/communication/numberGuard';
 
 // ─── Shared status sets ────────────────────────────────
 
@@ -775,6 +776,14 @@ export async function create(req: Request, res: Response) {
       return;
     }
 
+    // Guard the number (lib/communication/numberGuard.ts): Create anyway included, the new customer may not carry a number
+    // that a customer the person cannot open already carries, unless they hold Communication "All".
+    const mayCarry = await numberCarryCheckForReq(req);
+    if (!(await mayCarry(prisma, [rest.phone, rest.secondary_phone, ...(phones ?? []).map((p: { phone: string }) => p.phone)], null))) {
+      res.status(409).json({ error: NUMBER_ON_CUSTOMER_OUT_OF_REACH });
+      return;
+    }
+
     // "same as service location" billing-address copy convenience.
     if (billing_same_as_service_location) {
       applyBillingCopy(Object.assign(rest, { billing_same_as_service_location: true }), locations);
@@ -1469,6 +1478,22 @@ export async function update(req: Request, res: Response) {
       const effEmail = 'email' in rest ? rest.email : (existing.email as string | null);
       if (!hasPhoneOrEmail({ phone: effPhone, email: effEmail })) {
         res.status(400).json({ error: CONTACT_REQUIRED_MSG });
+        return;
+      }
+    }
+
+    // Guard the number (lib/communication/numberGuard.ts): a phone this edit puts on the customer may not be one that a
+    // customer the person cannot open already carries, unless they hold Communication "All". The form sends the phones
+    // the customer already has on every save, so only the ones it does not have yet are asked about.
+    const sentPhones = [
+      ...('phone' in rest ? [rest.phone as string | null] : []),
+      ...('secondary_phone' in rest ? [rest.secondary_phone as string | null] : []),
+      ...((phones ?? []) as { phone: string }[]).map((p) => p.phone),
+    ];
+    if (sentPhones.some(Boolean)) {
+      const added = numbersNotYetOn(sentPhones, await phonesOnCustomer(req.user!.organization_id, selfId));
+      if (!(await (await numberCarryCheckForReq(req))(prisma, added, selfId))) {
+        res.status(409).json({ error: NUMBER_ON_CUSTOMER_OUT_OF_REACH });
         return;
       }
     }

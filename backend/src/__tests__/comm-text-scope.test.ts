@@ -50,6 +50,8 @@ const firstArg = (fn: Mock, call = 0) => {
   return fn.mock.calls[call][0];
 };
 const capturedWhere = (fn: Mock, call = 0) => firstArg(fn, call).where as Record<string, unknown>;
+/** The route's own read of one conversation: the last one. Before it, the read scope looks up the conversation's number (#3021). */
+const lastCall = (fn: Mock) => fn.mock.calls.length - 1;
 /** The filter the handler put on the nested `messages` of the conversation(s) it read. */
 const nestedMessages = (fn: Mock, call = 0) => (firstArg(fn, call).include ?? firstArg(fn, call).select).messages.where as Record<string, unknown>;
 
@@ -160,7 +162,7 @@ describe('reply attribution on the text inbox (S08.6)', () => {
     inThread(REPLY.id as string, { direction: 'in', ts: new Date('2026-10-01T10:05:00Z') }),
   ];
   const listedIds = (fn: Mock) =>
-    [REPLY, OTHER_MAIN_LINE_TEXT, SENT_BY_ME_ON_MAIN_LINE].filter((r) => matchesWhere(r, nestedMessages(fn))).map((r) => r.id);
+    [REPLY, OTHER_MAIN_LINE_TEXT, SENT_BY_ME_ON_MAIN_LINE].filter((r) => matchesWhere(r, nestedMessages(fn, lastCall(fn)))).map((r) => r.id);
 
   it('lists the reply to a text the person sent, and not another main-line text, in the list and the unread count', async () => {
     mockPrisma.message.findMany.mockResolvedValue(sendThenReply);
@@ -208,7 +210,7 @@ describe('GET /communication/threads/:id on "Linked to me"', () => {
   it('returns the person\'s own messages and the job\'s, and leaves out a message tied to a job they cannot open', async () => {
     linkNumbers(LINKED);
     await request(app).get(`/api/communication/threads/${THREAD_ID}`).set(authHeader('dispatcher'));
-    const ids = visible(nestedMessages(mockPrisma.messageThread.findFirst as Mock));
+    const ids = visible(nestedMessages(mockPrisma.messageThread.findFirst as Mock, lastCall(mockPrisma.messageThread.findFirst as Mock)));
     expect(ids).toEqual(expect.arrayContaining([ON_LINKED.id, ON_MY_JOB_UNLINKED.id]));
     for (const m of [ON_UNLINKED, ON_OTHER_JOB_UNLINKED, NO_NUMBER]) expect(ids, String(m.id)).not.toContain(m.id);
   });
@@ -216,7 +218,7 @@ describe('GET /communication/threads/:id on "Linked to me"', () => {
   it('opens the conversation when any one message in it is readable, and 404s when none is', async () => {
     linkNumbers(LINKED);
     await request(app).get(`/api/communication/threads/${THREAD_ID}`).set(authHeader('dispatcher'));
-    const where = capturedWhere(mockPrisma.messageThread.findFirst as Mock);
+    const where = capturedWhere(mockPrisma.messageThread.findFirst as Mock, lastCall(mockPrisma.messageThread.findFirst as Mock));
     expect(matchesWhere(conversation(ON_MY_JOB_UNLINKED, ON_OTHER_JOB_UNLINKED), where)).toBe(true);
     expect(matchesWhere(conversation(ON_OTHER_JOB_UNLINKED, NO_NUMBER), where)).toBe(false);
     mockPrisma.messageThread.findFirst.mockResolvedValue(null);
@@ -227,7 +229,7 @@ describe('GET /communication/threads/:id on "Linked to me"', () => {
   it('returns every message under "All"', async () => {
     mockRoleSwitches({ communication_scope: 'all' });
     await request(app).get(`/api/communication/threads/${THREAD_ID}`).set(authHeader('dispatcher'));
-    expect(visible(nestedMessages(mockPrisma.messageThread.findFirst as Mock))).toEqual(ALL.map((r) => r.id));
+    expect(visible(nestedMessages(mockPrisma.messageThread.findFirst as Mock, lastCall(mockPrisma.messageThread.findFirst as Mock)))).toEqual(ALL.map((r) => r.id));
   });
 });
 
@@ -238,7 +240,7 @@ describe('marking a text conversation read or unread', () => {
     for (const path of ['read', 'unread']) {
       mockPrisma.messageThread.findFirst.mockClear();
       await request(app).patch(`/api/communication/threads/${THREAD_ID}/${path}`).set(authHeader('dispatcher'));
-      const where = capturedWhere(mockPrisma.messageThread.findFirst as Mock);
+      const where = capturedWhere(mockPrisma.messageThread.findFirst as Mock, lastCall(mockPrisma.messageThread.findFirst as Mock));
       expect(matchesWhere(conversation(ON_LINKED), where), path).toBe(true);
       expect(matchesWhere(conversation(ON_UNLINKED), where), path).toBe(false);
     }
@@ -253,7 +255,7 @@ describe('replying inside a conversation', () => {
       .send({ threadId: THREAD_ID, body: 'On my way' });
     expect(res.status).toBe(404);
     expect(res.body.error).toBe('Thread not found');
-    const where = capturedWhere(mockPrisma.messageThread.findFirst as Mock);
+    const where = capturedWhere(mockPrisma.messageThread.findFirst as Mock, lastCall(mockPrisma.messageThread.findFirst as Mock));
     expect(matchesWhere(conversation(ON_LINKED), where)).toBe(true);
     expect(matchesWhere(conversation(ON_UNLINKED, ON_OTHER_JOB_UNLINKED), where)).toBe(false);
   });

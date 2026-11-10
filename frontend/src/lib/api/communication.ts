@@ -24,7 +24,7 @@ import type {
 // shared module directly.
 export type {
   CallSession, CallTranscriptTurn, PhoneCustomer, Contact, ChannelIdentity, PhoneAgent, ScoredPhoneAgent,
-  MessageThread, Message, ThreadKind, TextTemplate, TextAutomation, MergeField,
+  MessageThread, Message, ThreadKind, ConversationPair, ConversationCustomer, OurLine, TextTemplate, TextAutomation, MergeField,
   TextTrigger, TextAudience, BlockedNumber, BlockReason,
   TrainingScenario, TrainingSession, TranscriptTurn,
   TrainingTurn, TrainingOutcome, TrainingRoleId,
@@ -195,6 +195,32 @@ export function useLeadSearch(term: string, enabled = true) {
       api
         .get('/api/leads', { params: { search: q, limit: 8 } })
         .then((r) => ((r.data.leads ?? []) as LeadRow[]).map(mapLead)),
+  });
+}
+
+// ─── "Attach to a lead or job" (#3024) ──────────────────────────────────────
+
+/** One customer carrying the number, with the leads and jobs of theirs the person can open. Ids travel only in the payload. */
+export type AttachTargetGroup = {
+  customer: { id: string; name: string };
+  jobs: { id: string; number: string; location: string }[];
+  leads: { id: string; number: string; detail: string }[];
+};
+
+/**
+ * What the menu offers for a text or a call. `carriers`: the leads and jobs of every customer carrying its number that the
+ * person can open, grouped by customer (the server refuses any other). `any`: no customer carries the number, so any lead or
+ * job the person can open, found by search, as before.
+ */
+export type AttachTargetsAnswer = { rule: 'carriers' | 'any'; groups: AttachTargetGroup[] };
+
+/** The menu's targets, read when the menu opens (`enabled`), never for a row whose menu stays shut. */
+export function useAttachMenuTargets(target: { kind: 'sms' | 'call'; id: string }, enabled: boolean) {
+  const path = target.kind === 'sms' ? 'sms' : 'calls';
+  return useQuery<AttachTargetsAnswer>({
+    queryKey: ['communication', 'attach-targets', target.kind, target.id],
+    enabled,
+    queryFn: () => api.get(`/api/communication/${path}/${target.id}/attach-targets`).then((r) => r.data as AttachTargetsAnswer),
   });
 }
 
@@ -1392,6 +1418,40 @@ export const useStartTrainingSession = () => useCommMutation<unknown>('/api/comm
 
 // ─── SMS send (slice 6) ─────────────────────────────────────────────────────
 
+/** What a text is sent to, as the send names it: a conversation, a customer or a number, with the lead or job it is sent from. */
+export type SmsSendTarget = { threadId?: string; customerId?: string; toNumber?: string; leadId?: string; jobId?: string };
+
+/**
+ * The numbers a text with this target goes between (#3023), as the server will send it: the number it goes to, ours it
+ * leaves from, whether that one is the person's own, and the conversation's number when it is no longer in use.
+ */
+export type SendingNumbers = {
+  to: string | null;
+  from: string | null;
+  fromIsYours: boolean;
+  /** The conversation's number, once released or inactive: the text leaves from the main line instead. */
+  noLongerInUse: string | null;
+  /**
+   * The conversation's number, still in use but unable to send texts: the text leaves from the main line instead. With no
+   * conversation, the main line when no number of the company can send texts (nothing can be sent).
+   */
+  cannotSendTexts: string | null;
+  /**
+   * The conversation the text box continues: the one named, else the latest with the number the person may continue (#3013
+   * decision 2), else the one the text would join; null when the text would start one. Text on a customer opens it.
+   */
+  conversationId?: string | null;
+};
+
+/** The line above a text box (#3023): read for the same fields the send will name. Off while there is nothing to send to. */
+export function useSendingNumbers(target: SmsSendTarget | null) {
+  return useQuery<SendingNumbers>({
+    queryKey: ['communication', 'sms-numbers', target],
+    queryFn: () => api.get('/api/communication/sms/numbers', { params: target }).then((r) => r.data as SendingNumbers),
+    enabled: target != null,
+  });
+}
+
 /** Human copy for a blocked SMS send — maps the compliance gate's 409
  *  `{ error, code }` to short UI strings, falls back to the server's error
  *  text, then to a generic retry line. Callers render this INLINE near the
@@ -1453,7 +1513,12 @@ export function useReassignSmsJob() {
       api.patch(`/api/communication/sms/${messageId}/job`, { job_id: jobId }).then((r) => r.data as ConversationLinkResult),
     // Cross-surface sync: the SMS center, every job page's Communication tab
     // and every customer/lead roll-up show the same attribution.
-    onSuccess: () => invalidateConversationLinks(qc),
+    onSuccess: () => {
+      invalidateConversationLinks(qc);
+      // Filing a text on a job re-points (or clears) its lead (#3024), which can move the lead it left back to New
+      // (SPEC-4 D7): every lead view refetches, as for a call.
+      invalidateAllLeadViews(qc);
+    },
     // Failed reassign: callers never committed locally — refetch the center's
     // server truth anyway so any stale view resyncs.
     onError: () => qc.invalidateQueries({ queryKey: ['communication'] }),

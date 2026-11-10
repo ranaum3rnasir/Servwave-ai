@@ -305,6 +305,9 @@ function CreateJobForm({
         setDupExisting(dup);
         setPendingData(data);
         setDupMatched(computeMatchedFields(data, dup));
+      } else {
+        // Any other answer (a number refused after Create anyway) closes the dialog, so the form's error line shows it.
+        setDupExisting(null);
       }
     },
   });

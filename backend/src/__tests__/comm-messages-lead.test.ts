@@ -81,7 +81,7 @@ describe('PATCH /api/communication/sms/:id/lead — manual attach', () => {
     );
     expect(mockPrisma.message.updateMany).toHaveBeenCalledWith({
       where: { id: MSG_ID, organization_id: ALPHA_ORG_ID, thread: { OR: [{ kind: null }, { kind: 'customer' }] } },
-      data: { lead_id: LEAD_ID },
+      data: { lead_id: LEAD_ID, job_id: null, job_label: null },
     });
     expectOrgScoped(mockPrisma.lead.findUnique as Mock, ALPHA_ORG_ID);
     expect(res.body.message.leadId).toBe(LEAD_ID);
@@ -104,7 +104,7 @@ describe('PATCH /api/communication/sms/:id/lead — manual attach', () => {
     expect(mockPrisma.messageThread.findFirst).not.toHaveBeenCalled();
     expect(mockPrisma.message.updateMany).toHaveBeenCalledWith({
       where: { id: MSG_ID, organization_id: ALPHA_ORG_ID, thread: { OR: [{ kind: null }, { kind: 'customer' }] } },
-      data: { lead_id: null },
+      data: { lead_id: null, job_id: null, job_label: null },
     });
     expect(res.body.message).not.toHaveProperty('leadId');
   });

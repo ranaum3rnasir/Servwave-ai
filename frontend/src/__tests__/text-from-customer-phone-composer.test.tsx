@@ -266,7 +266,7 @@ describe('Text from the invoice page phone menu, for a person who may contact cu
 });
 
 describe('Text from the job page, for a person who may view customers', () => {
-  it('still opens the composer with the customer preselected from the directory, as before', async () => {
+  it('opens the composer addressed to the number the job shows, and the text is filed on the job (#3017)', async () => {
     const user = userEvent.setup();
     renderAt(`/jobs/${JOB_ID}`, { copyPhone: true, contact: true, view: true });
 
@@ -275,12 +275,13 @@ describe('Text from the job page, for a person who may view customers', () => {
 
     const panel = await composer();
     expect(await within(panel).findByText('To: John Doe')).toBeInTheDocument();
-    expect(asked()).toContain('/api/communication/contacts');
+    expect(within(panel).getByText('(555) 123-4567')).toBeInTheDocument();
 
     await user.type(within(panel).getByPlaceholderText('Write a message to John Doe…'), 'On my way');
+    await waitFor(() => expect(sendButton(panel)).toBeEnabled());
     await user.click(sendButton(panel));
     await waitFor(() =>
-      expect(mockApi.post).toHaveBeenCalledWith('/api/communication/sms', { customerId: CUSTOMER_ID, body: 'On my way' }),
+      expect(mockApi.post).toHaveBeenCalledWith('/api/communication/sms', { toNumber: E164, body: 'On my way', jobId: JOB_ID }),
     );
   });
 });

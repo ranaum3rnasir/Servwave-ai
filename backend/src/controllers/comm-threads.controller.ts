@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import type { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
@@ -6,9 +7,23 @@ import { tenantWhere } from '../lib/tenant';
 import { findCustomerToContact, leadReachWhere } from '../lib/permissions/targetReach';
 import { normalizeNAPhone } from '../lib/comms-identity';
 import { matchByPhoneInReach } from '../lib/communication/phoneMatchInReach';
+import { otherPartyE164 } from '../lib/communication/otherPartyNumber';
+import { NUMBER_NOT_ON_RECORD, recordTextDestination, type TextAnchor } from '../lib/communication/recordTextDestination';
 import { scopeWhereForReq } from '../lib/permissions/enforce';
-import { textReadScopeForReq, textsInSectionScopeForReq } from '../lib/communication/communicationScope';
-import { findOrCreateSmsThreadByNumber, smsThreadExistsForNumber } from '../lib/ctm/smsThread';
+import { textContinueScopeForReq, textReadScopeForReq, textsInSectionScopeForReq } from '../lib/communication/communicationScope';
+import {
+  existingPairConversation,
+  existingSmsThreadForNumber,
+  findOrCreatePairConversation,
+  findOrCreateSmsThreadByNumber,
+  latestPairConversationWith,
+  mainLineE164,
+  type PairReach,
+} from '../lib/ctm/smsThread';
+import { isPersonsNumber, movedFrom, sendingNumber } from '../lib/communication/sendingNumber';
+import { type NumberCarrier } from '../lib/comms-identity';
+import { carriersInReach, customersInReach } from '../lib/communication/numberCarriers';
+import { attachTargets, textTieRule, tieAllowed } from '../lib/communication/attachTargets';
 import { isCtmConfigured } from '../lib/ctm/client';
 import {
   markMessageNotDelivered,
@@ -16,11 +31,7 @@ import {
   sendCtmSms,
   type CtmSmsFailureReason,
 } from '../lib/ctm/sendSms';
-import {
-  resolveInboundSmsJob,
-  SMS_ROUTER_RECENCY_WINDOW_DAYS,
-  type JobTextCandidate,
-} from '../lib/sms-reply-router';
+import { tieIncomingText, UNTIED, type ReplyTie } from '../lib/sms-reply-router';
 import {
   reconsiderLeadLeftBehind,
   recordLeadContactOnLink,
@@ -177,8 +188,10 @@ const SMS_GATE_409: Partial<Record<CtmSmsFailureReason, string>> = {
  */
 async function resolveSmsDestination(
   req: Request,
-  thread: { customer_id?: string | null; vendor_id?: string | null; user_id?: string | null; title?: string | null },
+  thread: { customer_id?: string | null; vendor_id?: string | null; user_id?: string | null; title?: string | null; other_party_e164?: string | null },
 ): Promise<string | null> {
+  // #3019: a conversation keyed by its pair of numbers texts its other party's number, whichever customer it is filed on.
+  if (thread.other_party_e164) return thread.other_party_e164;
   let raw: string | null = null;
   if (thread.customer_id) {
     const customer = await prisma.customer.findFirst({
@@ -227,6 +240,8 @@ function mapMessage(m: any) {
     ...(m.job_id != null && { jobId: m.job_id }),
     ...(m.job_label != null && { jobLabel: m.job_label }),
     ...(m.lead_id != null && { leadId: m.lead_id }),
+    // #3024: the lead's number, for the inbox's grey text on a text tied to a lead only (read where the thread reads include it).
+    ...(m.lead_id != null && m.lead?.lead_number != null && { leadLabel: m.lead.lead_number }),
   };
 }
 
@@ -257,7 +272,110 @@ function mapThread(t: any) {
     ...(t.user_id != null && { userId: t.user_id }),
     ...(t.lead_id != null && { leadId: t.lead_id }),
     ...(t.vendor_id != null && { vendorId: t.vendor_id }),
+    // #3019: a conversation keyed by its pair of numbers names both: the other party's, and whose our number is.
+    // #3021: and every customer carrying the other party's number, in the fixed order (#3015), worked out at this read.
+    ...(t.other_party_e164 != null && {
+      pair: {
+        otherPartyE164: t.other_party_e164, ourNumberE164: t.our_number_e164 ?? null, ourLine: t.ourLine ?? null,
+        customers: t.carriers ?? [],
+      },
+    }),
   };
+}
+
+/** Whose our number is, as the inbox names it (#3019): the main line, or the person it belongs to. */
+type OurLine = { kind: 'main_line' } | { kind: 'person'; name: string };
+
+/**
+ * Names our number on every pair-keyed conversation of a page (#3019), in one read of the company's numbers: the main line
+ * (the company's default number, or the number a text with no company number is filed under), else the active person the
+ * number is assigned to (their default number first, then the earliest assignment), else nothing. Only names are read.
+ */
+async function attachOurLines<T extends { other_party_e164?: string | null; our_number_e164?: string | null }>(
+  req: Request,
+  threads: T[],
+): Promise<(T & { ourLine?: OurLine | null })[]> {
+  const keyed = threads.filter((t) => t.other_party_e164 != null);
+  if (keyed.length === 0) return threads;
+  const orgId = req.user!.organization_id;
+  const e164s = [...new Set(keyed.map((t) => t.our_number_e164).filter((n): n is string => n != null))];
+  const numbers = e164s.length
+    ? await prisma.phoneNumber.findMany({
+        where: { organization_id: orgId, e164: { in: e164s } },
+        select: {
+          e164: true,
+          is_org_default: true,
+          user_links: {
+            where: { user: { is_active: true } },
+            orderBy: [{ is_default: 'desc' }, { created_at: 'asc' }],
+            select: { user: { select: { first_name: true, last_name: true } } },
+          },
+        },
+      })
+    : [];
+  const mainLine = await mainLineE164(prisma, orgId);
+  const lineOf = (e164: string | null | undefined): OurLine | null => {
+    if (e164 == null || e164 === mainLine) return { kind: 'main_line' };
+    const row = numbers.find((n) => n.e164 === e164);
+    if (!row) return null;
+    if (row.is_org_default) return { kind: 'main_line' };
+    for (const link of row.user_links) {
+      const name = [link.user.first_name, link.user.last_name].map((p) => p?.trim() ?? '').filter(Boolean).join(' ');
+      if (name) return { kind: 'person', name };
+    }
+    return null;
+  };
+  return threads.map((t) => (t.other_party_e164 != null ? { ...t, ourLine: lineOf(t.our_number_e164) } : t));
+}
+
+/**
+ * The customers carrying the other party's number on every pair-keyed conversation of a page (#3021, #3013 decision 5), the
+ * ones the person can open: ONE read of the carriers for the whole page, however many conversations and customers, and one
+ * of the person's reach over them (`carriersInReach`). Nothing is stored, so a number taken off a customer's record takes
+ * that customer off the conversation on the next read.
+ *
+ * A pair-keyed conversation is read through any customer carrying its number, so the person may not be able to open the
+ * customer it happens to be filed on. Then it is sent to them as filed on nobody: no id or name of that customer, and not
+ * the lead it is filed on (that customer's); the screen names the conversation by its carriers alone (ruling on #3021: names
+ * only customers the viewer can open; re-audit P2-1). One more read for the page, only for a scope that does not reach every
+ * customer (`customersInReach`).
+ */
+async function attachCarriers<
+  T extends { other_party_e164?: string | null; customer_id?: string | null },
+>(
+  req: Request,
+  threads: T[],
+): Promise<(T & { carriers?: NumberCarrier[] })[]> {
+  const keyed = threads.filter((t) => t.other_party_e164 != null);
+  if (keyed.length === 0) return threads;
+  const orgId = req.user!.organization_id;
+  const customerScope = await scopeWhereForReq(req, 'Customer');
+  const numbers = [...new Set(keyed.map((t) => t.other_party_e164!))];
+  const carriers = await carriersInReach(prisma, orgId, numbers, customerScope);
+  const filedOn = keyed.map((t) => t.customer_id).filter((id): id is string => id != null);
+  const opens = await customersInReach(prisma, orgId, filedOn, customerScope);
+  return threads.map((t) => {
+    if (t.other_party_e164 == null) return t;
+    const named = { ...t, carriers: carriers.get(t.other_party_e164) ?? [] };
+    return t.customer_id != null && !opens.has(t.customer_id)
+      ? { ...named, customer_id: null, customer: null, lead_id: null, lead: null }
+      : named;
+  });
+}
+
+/**
+ * The one customer a conversation is named by for this person (whole-diff ruling, Ran 2026-11-07, #3013 decision 5): for a
+ * conversation keyed by its pair, the first customer carrying its number in the fixed order (#3015) that they can open - the
+ * customer the inbox names it by first (`attachCarriers`), worked out now, so the customer it happens to be stored on decides
+ * nothing; none when no customer they can open carries the number. A conversation from before pairs is its own customer's.
+ */
+async function conversationCustomerFor(
+  req: Request,
+  thread: { other_party_e164?: string | null; customer_id?: string | null },
+): Promise<string | null> {
+  if (thread.other_party_e164 == null) return thread.customer_id ?? null;
+  const [named] = await attachCarriers(req, [thread]);
+  return named?.carriers?.[0]?.id ?? null;
 }
 
 function mapTemplate(t: any) {
@@ -349,7 +467,7 @@ export async function listThreads(req: Request, res: Response) {
       where: { ...tenantWhere(req), ...scope.thread },
       orderBy: { updated_at: 'desc' },
       include: {
-        messages: { where: scope.messages, orderBy: { ts: 'asc' } },
+        messages: { where: scope.messages, orderBy: { ts: 'asc' }, include: { lead: { select: { lead_number: true } } } },
         customer: { select: { id: true, first_name: true, last_name: true, company_name: true } },
         lead: { select: { id: true, lead_number: true } },
         vendor: { select: { id: true, name: true } },
@@ -360,7 +478,7 @@ export async function listThreads(req: Request, res: Response) {
     });
 
     const withUnread = await attachCallerUnread(req, threads);
-    res.json({ threads: withUnread.map(mapThread) });
+    res.json({ threads: (await attachCarriers(req, await attachOurLines(req, withUnread))).map(mapThread) });
   } catch (err) {
     logger.error('Failed to list threads:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -369,11 +487,11 @@ export async function listThreads(req: Request, res: Response) {
 
 export async function getThread(req: Request, res: Response) {
   try {
-    const scope = await textReadScopeForReq(req);
+    const scope = await textReadScopeForReq(req, { threadId: req.params.id as string });
     const thread = await prisma.messageThread.findFirst({
       where: { id: req.params.id as string, ...tenantWhere(req), ...scope.thread },
       include: {
-        messages: { where: scope.messages, orderBy: { ts: 'asc' } },
+        messages: { where: scope.messages, orderBy: { ts: 'asc' }, include: { lead: { select: { lead_number: true } } } },
         customer: { select: { id: true, first_name: true, last_name: true, company_name: true } },
         lead: { select: { id: true, lead_number: true } },
         vendor: { select: { id: true, name: true } },
@@ -389,7 +507,8 @@ export async function getThread(req: Request, res: Response) {
     }
 
     const [withUnread] = await attachCallerUnread(req, [thread]);
-    res.json({ thread: mapThread(withUnread) });
+    const [named] = await attachCarriers(req, await attachOurLines(req, [withUnread]));
+    res.json({ thread: mapThread(named) });
   } catch (err) {
     logger.error('Failed to get thread:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -407,7 +526,7 @@ export async function getThread(req: Request, res: Response) {
  * `user_id` from the body, the query or the path (R8).
  */
 async function resolveVisibleThread(req: Request): Promise<{ id: string } | null> {
-  const scope = await textReadScopeForReq(req);
+  const scope = await textReadScopeForReq(req, { threadId: req.params.id as string });
   return prisma.messageThread.findFirst({
     where: { id: req.params.id as string, ...tenantWhere(req), ...scope.thread },
     select: { id: true },
@@ -505,6 +624,225 @@ export async function createThread(req: Request, res: Response) {
   }
 }
 
+/**
+ * A lead the sender may see, for a send (slice E4) and for its line: under the sender's OWN Lead row-scope, matching
+ * reassignMessageLead and the WhatsApp/email composers, so a text is never attributed to a lead they cannot see.
+ */
+async function findLeadInReach(req: Request, leadId: string) {
+  return prisma.lead.findFirst({
+    where: { id: leadId, ...tenantWhere(req), ...(await scopeWhereForReq(req, 'Lead')) },
+    select: { id: true, customer_id: true },
+  });
+}
+
+/** A job the sender may see (re-audit NV-v3b-1, GitHub #2906), under their OWN Job row-scope, as sendWhatsApp and sendEmail. */
+async function findJobInReach(req: Request, jobId: string) {
+  return prisma.job.findUnique({
+    where: { id: jobId, ...tenantWhere(req), ...(await scopeWhereForReq(req, 'Job')) },
+    select: { id: true, job_number: true, customer_id: true },
+  });
+}
+
+/**
+ * The ONE reach rule for continuing a conversation with this number (E.164) (#3023; Ran, 2026-11-06, after spec r3):
+ * `textContinueScopeForReq`, decided per conversation - a customer the person can open carries the number, or they can read
+ * any text in the conversation - never text by text, and never "filed on nobody" as a stand-in. It decides only which
+ * conversation a text CONTINUES (#3013 decision 2) and whether a send by number starts a new one (the Access Communication
+ * gate); once the number a text leaves from is known, the text joins that pair's one conversation whoever can read it
+ * (#3019: never a second conversation for a pair). A reply in a conversation asks the same rule about that conversation.
+ */
+async function conversationsTheyMayContinue(req: Request, otherParty: string): Promise<PairReach> {
+  const within = await textContinueScopeForReq(req, { otherPartyE164: otherParty });
+  // {} for a person who reads every conversation (Communication "All"): nothing to narrow.
+  return Object.keys(within).length > 0 ? { within: within as Prisma.MessageThreadWhereInput } : {};
+}
+
+/**
+ * A send from a customer (with the customer's own lead or job): the number it goes to, and the latest conversation with
+ * that number it continues (#3013 decision 2), whichever of our numbers it is on, among the ones the sender may continue.
+ *   - #3016: the record decides the number - its changed number for the customer's primary - else the customer's phone.
+ *   - The other party is decided by the one own-number rule (#3014): a customer whose phone is one of our own numbers has
+ *     no pair (trap 8), so no conversation to continue.
+ */
+async function customerDoorTarget(req: Request, customerId: string, anchor: TextAnchor | null) {
+  const orgId = req.user!.organization_id;
+  let anchoredTo: string | null | undefined;
+  if (anchor) {
+    const recordNumber = await recordTextDestination(prisma, orgId, anchor);
+    if (recordNumber.ok) anchoredTo = recordNumber.to;
+  }
+  const destination = anchoredTo !== undefined ? anchoredTo : await resolveSmsDestination(req, { customer_id: customerId });
+  const otherParty = await otherPartyE164(prisma, orgId, destination);
+  const reach = otherParty ? await conversationsTheyMayContinue(req, otherParty) : {};
+  const latest = otherParty ? await latestPairConversationWith(prisma, orgId, otherParty, reach) : null;
+  return { anchoredTo, destination, otherParty, latest };
+}
+
+/**
+ * The latest conversation with a number a send by number may continue (#3023, #3013 decision 2), among the ones the sender
+ * may continue (conversationsTheyMayContinue), and that reach, for whether the conversation the text joins when it continues
+ * none is one they may continue (the Access Communication gate).
+ * A vendor's number keeps the vendor's own conversation, as findOrCreateSmsThreadByNumber keys it.
+ */
+async function latestConversationByNumber(req: Request, toNumber: string, match: Awaited<ReturnType<typeof matchByPhoneInReach>>) {
+  if (match && !match.customerId && match.vendorId) return { latest: null, reach: {} };
+  const orgId = req.user!.organization_id;
+  const otherParty = await otherPartyE164(prisma, orgId, toNumber);
+  if (!otherParty) return { latest: null, reach: {} };
+  const reach = await conversationsTheyMayContinue(req, otherParty);
+  return { latest: await latestPairConversationWith(prisma, orgId, otherParty, reach), reach };
+}
+
+/** Whether the person may continue this conversation (`reach`: conversationsTheyMayContinue for its number). */
+async function mayContinue(conversation: { id: string } | null, reach: PairReach): Promise<boolean> {
+  if (!conversation) return false;
+  if (!reach.within) return true;
+  return (await prisma.messageThread.findFirst({ where: { id: conversation.id, AND: [reach.within] }, select: { id: true } })) != null;
+}
+
+/**
+ * The conversation, when the person can read it (#3021's read rule), else null. Text on a customer opens the conversation
+ * the customer's text box continues only when the person can read it; one they may continue but hold no readable text in
+ * (or one from before pairs they cannot read) opens New message to the customer, whose send continues it, rather than a
+ * conversation the inbox would refuse.
+ */
+async function readableConversation(req: Request, conversation: { id: string } | null) {
+  if (!conversation) return null;
+  return prisma.messageThread.findFirst({
+    where: { id: conversation.id, ...tenantWhere(req), ...(await textReadScopeForReq(req, { threadId: conversation.id })).thread },
+    select: { id: true },
+  });
+}
+
+/** GET /api/communication/sms/numbers: what the line above a text box names (#3023), for the same target a send names. */
+export const sendingNumbersQuerySchema = z.object({
+  threadId: z.string().uuid().optional(),
+  customerId: z.string().uuid().optional(),
+  toNumber: z.string().min(7).max(40).optional(),
+  jobId: z.string().uuid().optional(),
+  leadId: z.string().uuid().optional(),
+}).refine((d) => d.threadId || d.customerId || d.toNumber);
+
+/**
+ * The line above a text box (#3023): the number a text sent with these fields would go to, and the number of ours it would
+ * leave from (sendingNumber, the same answer the send uses), whether that number is the person's own, and the conversation's
+ * number when it is no longer in use or cannot send texts. Read only: nothing is made. Refused as the send would refuse it, in the same words.
+ * `conversationId`: the conversation the text box continues - the one named; else the latest with the number the person may
+ * continue (#3013 decision 2; when its number can no longer send, a reply in it moves to the main line); else the one the
+ * text would join (the pair's own, or one from before pairs) - or null when the text would start one. Text on a customer
+ * opens it, so the inbox and the record's own text box continue the same conversation.
+ */
+export async function getSendingNumbers(req: Request, res: Response) {
+  try {
+    const parsed = sendingNumbersQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'threadId, customerId or toNumber is required' });
+      return;
+    }
+    const q = parsed.data;
+    const orgId = req.user!.organization_id;
+    const lead = q.leadId ? await findLeadInReach(req, q.leadId) : null;
+    if (q.leadId && !lead) {
+      res.status(404).json({ error: 'Lead not found' });
+      return;
+    }
+    const job = q.jobId && !q.threadId ? await findJobInReach(req, q.jobId) : null;
+    if (q.jobId && !q.threadId && !job) {
+      res.status(404).json({ error: 'Job not found' });
+      return;
+    }
+    let to: string | null;
+    let continued: { other_party_e164?: string | null; our_number_e164?: string | null } | null;
+    // The conversation the text box continues, once the number it leaves from is known.
+    let continues: (from: string | null) => Promise<{ id: string } | null>;
+    if (q.threadId) {
+      // A reply in a conversation: its number, for a person who may continue it, or refused like the reply itself.
+      const thread = await prisma.messageThread.findFirst({
+        where: { id: q.threadId, ...tenantWhere(req), ...(await textContinueScopeForReq(req, { threadId: q.threadId })) },
+      });
+      if (!thread) {
+        res.status(404).json({ error: 'Thread not found' });
+        return;
+      }
+      to = await resolveSmsDestination(req, thread);
+      continued = thread;
+      continues = async () => thread;
+    } else if (!q.customerId) {
+      // A number tapped or typed: the record's number for a number the record carries (#3016), else the number itself.
+      if (!normalizeNAPhone(String(q.toNumber))) {
+        res.status(400).json({ error: 'Enter a valid North American phone number' });
+        return;
+      }
+      const anchor = job ? { kind: 'job' as const, id: job.id } : lead ? { kind: 'lead' as const, id: lead.id } : null;
+      let anchoredTo: string | null | undefined;
+      if (anchor) {
+        const destination = await recordTextDestination(prisma, orgId, anchor, String(q.toNumber));
+        if (!destination.ok) {
+          res.status(404).json({ error: NUMBER_NOT_ON_RECORD[anchor.kind] });
+          return;
+        }
+        anchoredTo = destination.to;
+      }
+      const toNumber = anchoredTo ?? String(q.toNumber);
+      to = toNumber;
+      const match = await matchByPhoneInReach(req, toNumber);
+      const { latest } = await latestConversationByNumber(req, toNumber, match);
+      continued = latest;
+      continues = async (from) => latest ?? existingSmsThreadForNumber(prisma, orgId, toNumber, from, async () => match);
+    } else {
+      // A customer, with its own lead or job.
+      const customer = await findCustomerToContact(req, q.customerId);
+      if (!customer) {
+        res.status(404).json({ error: 'Customer not found' });
+        return;
+      }
+      if (job && job.customer_id !== customer.id) {
+        res.status(404).json({ error: 'Job not found' });
+        return;
+      }
+      const anchor = job ? { kind: 'job' as const, id: job.id } : lead?.customer_id === customer.id ? { kind: 'lead' as const, id: lead.id } : null;
+      const target = await customerDoorTarget(req, customer.id, anchor);
+      to = target.destination;
+      continued = target.latest;
+      const identity = { customerId: customer.id, leadId: anchor?.kind === 'lead' ? anchor.id : null, title: null };
+      continues = async (from) => target.latest ?? (target.otherParty
+        ? existingPairConversation(prisma, orgId, { otherPartyE164: target.otherParty, ourNumberE164: from }, identity)
+        : null);
+    }
+    const conversationNumber = continued ? keyedConversationNumber(continued) : null;
+    const sending = await sendingNumber(prisma, orgId, req.user!.id, conversationNumber);
+    res.json({
+      to: to ? (normalizeNAPhone(to) ?? to) : null,
+      from: sending.fromE164,
+      fromIsYours: await isPersonsNumber(prisma, orgId, req.user!.id, sending.fromE164),
+      noLongerInUse: sending.noLongerInUse,
+      cannotSendTexts: sending.cannotSendTexts,
+      conversationId: (await readableConversation(req, await continues(sending.fromE164)))?.id ?? null,
+    });
+  } catch (err) {
+    logger.error('Failed to read the sending numbers:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/**
+ * Whether a lead or a job carries the number of the conversation a reply is sent in (#3023; Ran, 2026-11-06: a text from a
+ * lead or a job keeps it, so #3020 ties the answer to it): the record's own number, or one of its customer's as the record
+ * shows it (#3016's rule, `recordTextDestination`). So a reply sent from Pat's lead in a shared conversation filed on Jordan
+ * keeps Pat's lead; a record that does not carry the number is still not stamped (or, for a job, answers "Job not found").
+ */
+async function recordCarriesConversationNumber(orgId: string, anchor: TextAnchor, thread: { other_party_e164?: string | null }) {
+  const number = thread.other_party_e164;
+  if (!number) return false;
+  const destination = await recordTextDestination(prisma, orgId, anchor, number);
+  return destination.ok && destination.to === number;
+}
+
+/** Our number in a conversation keyed by its pair of numbers (#3019), or null for any other conversation. */
+function keyedConversationNumber(thread: { other_party_e164?: string | null; our_number_e164?: string | null }): string | null {
+  return thread.other_party_e164 && thread.our_number_e164 ? thread.our_number_e164 : null;
+}
+
 // Append a Message to a thread (the "send SMS" action). The seam posts to
 // /api/communication/sms with the new message; the thread is resolved from
 // `threadId` and scoped to the requesting org.
@@ -521,10 +859,7 @@ export async function sendMessage(req: Request, res: Response) {
       // the WhatsApp/email composers: a sender must not be able to attribute a
       // message to a lead they cannot see. Unconditional-read roles get {} here,
       // so dispatcher/admin are unaffected.
-      lead = await prisma.lead.findFirst({
-        where: { id: req.body.leadId, ...tenantWhere(req), ...(await scopeWhereForReq(req, 'Lead')) },
-        select: { id: true, customer_id: true },
-      });
+      lead = await findLeadInReach(req, req.body.leadId);
       if (!lead) {
         res.status(404).json({ error: 'Lead not found' });
         return;
@@ -536,13 +871,9 @@ export async function sendMessage(req: Request, res: Response) {
     // exists. Refusing it after a number's thread was made left an empty conversation behind, and the next plain send to that
     // number then counted as a reply to an existing conversation and skipped the Access Communication gate below. A send into
     // an existing conversation (threadId) makes no thread, and keeps its order: the internal-lane refusal comes first, below.
-    const findJobInReach = async () => prisma.job.findUnique({
-      where: { id: req.body.jobId, ...tenantWhere(req), ...(await scopeWhereForReq(req, 'Job')) },
-      select: { id: true, job_number: true, customer_id: true },
-    });
     let job: Awaited<ReturnType<typeof findJobInReach>> = null;
     if (req.body.jobId && !req.body.threadId) {
-      job = await findJobInReach();
+      job = await findJobInReach(req, req.body.jobId);
       if (!job) {
         res.status(404).json({ error: 'Job not found' });
         return;
@@ -551,13 +882,31 @@ export async function sendMessage(req: Request, res: Response) {
 
     // Compose-to-number (slice H7): resolved AFTER threadId and customerId —
     // an explicit thread/customer always wins over the raw number.
-    let threadFromNumber = false;
     // s1d: whether THIS call created a brand-new thread — a 409 further down
     // must delete it (empty thread = phantom conversation on the next poll),
     // but must never touch a thread this send merely appended to.
     let threadCreated = false;
 
+    // #3016 (closes #2952's anchored path): a new text sent from a lead or a job goes where the record says, never to a
+    // number the browser chose (lib/communication/recordTextDestination.ts). Undefined while the send is not anchored;
+    // a send into an existing conversation (threadId) keeps that conversation's own number.
+    let anchoredTo: string | null | undefined;
+    // #3016: the number named with this lead or job was checked to be the record's or its customer's, so the text stays tied
+    // to that record whichever conversation the number keys to (one with nobody, or another customer carrying it too).
+    let numberCheckedOn: TextAnchor['kind'] | null = null;
+
     let thread: { id: string } | null = null;
+    // #3023: the number the text leaves from when its conversation's number is no longer in use (the main line). Otherwise
+    // the number of the conversation the text is in decides it (below).
+    let leaveFrom: string | null = null;
+    // The customer the sender is texting (#3019): the one they picked, else the one the number named in their reach, else the
+    // conversation's own. A conversation keyed by a shared number is filed on ONE default customer, which need not be the
+    // one the sender is working on; the same-customer rules for a lead or job follow the sender's.
+    let anchorCustomerId: string | null = null;
+    // The customer whose history the "SMS sent to customer" line goes on: the one the sender picked, or, in a conversation from
+    // before pairs, the one the number they typed names in their reach; otherwise (undefined) the conversation's own customer as it is now
+    // (conversationCustomerFor), never the one it happens to be stored on (whole-diff ruling, Ran 2026-11-07).
+    let historyCustomerId: string | undefined;
     if (req.body.threadId) {
       // Scoped like the read paths: a caller who cannot see a conversation must
       // not be able to append to it either. The resolve-or-create branches below
@@ -569,12 +918,36 @@ export async function sendMessage(req: Request, res: Response) {
         where: {
           id: req.body.threadId,
           ...tenantWhere(req),
-          ...(await textReadScopeForReq(req)).thread,
+          // #3023 (Ran, 2026-11-06): whoever may continue the conversation (textContinueScopeForReq, per conversation).
+          ...(await textContinueScopeForReq(req, { threadId: req.body.threadId })),
         },
       });
       if (!thread) {
         res.status(404).json({ error: 'Thread not found' });
         return;
+      }
+      // #3023 (#3013 decision 3): a reply in a conversation whose number is no longer in use, or still in use but unable to
+      // send texts (Ran, 2026-11-06), leaves from the main line, and is filed in the main-line conversation with the same
+      // number - that pair's one conversation, whoever can read it (#3019), else a new one - which the answer names so the
+      // screen opens it. The old conversation stays as history (Q38).
+      const keyed = thread as { other_party_e164?: string | null; our_number_e164?: string | null; customer_id?: string | null; title?: string | null };
+      const ours = keyedConversationNumber(keyed);
+      if (ours) {
+        const sending = await sendingNumber(prisma, orgId, req.user!.id, ours);
+        if (movedFrom(sending)) {
+          // The person is still texting the customer of the conversation they replied in, whichever customer's main-line
+          // conversation the reply is filed in (the same-customer rules for a lead or job).
+          anchorCustomerId = keyed.customer_id ?? null;
+          const mainLine = await findOrCreatePairConversation(
+            prisma,
+            orgId,
+            { otherPartyE164: keyed.other_party_e164!, ourNumberE164: sending.fromE164 },
+            { customerId: keyed.customer_id ?? null, leadId: null, title: keyed.title ?? null },
+          );
+          thread = mainLine.thread;
+          threadCreated = mainLine.created;
+          leaveFrom = sending.fromE164;
+        }
       }
     } else if (!req.body.customerId) {
       // toNumber path: key the thread with the same helper the CTM webhook
@@ -592,6 +965,20 @@ export async function sendMessage(req: Request, res: Response) {
         res.status(400).json({ error: 'Enter a valid North American phone number' });
         return;
       }
+      // #3016: a number tapped on a lead or a job must be one that record or its customer carries; the record decides what
+      // it stands for (its changed number for a customer phone it changed). Any other number is refused before anything is
+      // made, in words that say nothing about who else might carry it.
+      const anchor = job ? { kind: 'job' as const, id: job.id } : lead ? { kind: 'lead' as const, id: lead.id } : null;
+      if (anchor) {
+        const destination = await recordTextDestination(prisma, orgId, anchor, String(req.body.toNumber));
+        if (!destination.ok) {
+          res.status(404).json({ error: NUMBER_NOT_ON_RECORD[anchor.kind] });
+          return;
+        }
+        anchoredTo = destination.to;
+        numberCheckedOn = anchor.kind;
+      }
+      const toNumber = anchoredTo ?? String(req.body.toNumber);
       // #2046 security round 1: this door can ORIGINATE a brand-new, org-wide
       // thread with no lead/job anchor — the same org-wide inbox surface
       // GET/POST /threads gate on `access_inbox`. Gate it the same way, but
@@ -602,18 +989,25 @@ export async function sendMessage(req: Request, res: Response) {
       // acting on something already in their view and stays ungated.
       // Re-audit NV-vp3-1: the number's customer only within the sender's customer reach, resolved once for the gate, the
       // job check and the keying below.
-      const match = await matchByPhoneInReach(req, String(req.body.toNumber));
+      const match = await matchByPhoneInReach(req, toNumber);
       const identify = async () => match;
-      // NV-v3b-1: a customer's conversation takes only that customer's jobs (the same-customer rule below), checked before
-      // the conversation is made; another customer's job answers like a missing one.
-      if (job && match?.customerId && job.customer_id !== match.customerId) {
-        res.status(404).json({ error: 'Job not found' });
-        return;
-      }
+      // #3019: the conversation is the number plus ours - the number this text will leave from. #3023 (decision 2): the latest
+      // conversation with the number this door may continue decides it, while a text can leave from its number; else the
+      // sender's own number, else the main line (and the main line, filed in its conversation, once that number is gone or
+      // cannot send texts: decision 3).
+      const { latest, reach } = await latestConversationByNumber(req, toNumber, match);
+      const latestNumber = latest ? keyedConversationNumber(latest) : null;
+      const sending = await sendingNumber(prisma, orgId, req.user!.id, latestNumber);
+      const continues = latest && latestNumber && !movedFrom(sending) ? latest : null;
+      const ourNumber = sending.fromE164;
+      if (movedFrom(sending)) leaveFrom = sending.fromE164;
+      // No same-customer check for a job here (NV-v3b-1 is the customer and existing-conversation doors'): a job on this
+      // door is the anchor, so its number was checked above, and a number the job carries is texted from the job even when
+      // the number's customer is another one who carries it too (#3016).
       if (!req.body.leadId && !req.body.jobId) {
-        // Re-audit NV-vp3-1: asked within the sender's customer reach, so whether a customer they cannot open has a
-        // conversation never changes this answer.
-        const exists = await smsThreadExistsForNumber(prisma, orgId, String(req.body.toNumber), identify);
+        // Re-audit NV-vp3-1, #3023: a conversation the text joins counts only when the sender may continue it
+        // (conversationsTheyMayContinue), so whether someone else has a conversation they cannot read never changes this answer.
+        const exists = continues != null || (await mayContinue(await existingSmsThreadForNumber(prisma, orgId, toNumber, ourNumber, identify), reach));
         if (!exists && !req.ability?.can('access_inbox', 'Communication')) {
           res.status(403).json({
             error: 'Starting a new conversation from the inbox requires access to the Communication section.',
@@ -621,12 +1015,22 @@ export async function sendMessage(req: Request, res: Response) {
           return;
         }
       }
-      // Re-audit NV-vp3-1: the number's customer only when the sender can open it. Otherwise the text goes to the number in
-      // a conversation of its own, filed on nobody; it never joins, or names, the customer's conversation.
-      const resolution = await findOrCreateSmsThreadByNumber(prisma, orgId, String(req.body.toNumber), identify);
-      thread = resolution.thread;
-      threadCreated = resolution.created;
-      threadFromNumber = true;
+      // Re-audit NV-vp3-1: the number's customer only when the sender can open it. Otherwise a conversation this text makes is
+      // filed on nobody and never names the customer. Once the number it leaves from is known, it joins that pair's one
+      // conversation whoever can read it (#3019, Ran 2026-11-06: never a second conversation for a pair).
+      if (continues) {
+        thread = continues;
+        anchorCustomerId = match?.customerId ?? continues.customer_id;
+      } else {
+        const resolution = await findOrCreateSmsThreadByNumber(prisma, orgId, toNumber, ourNumber, identify);
+        thread = resolution.thread;
+        anchorCustomerId = match?.customerId ?? resolution.thread.customer_id;
+        threadCreated = resolution.created;
+      }
+      // A conversation keyed by its pair is logged on its one customer as it is now (conversationCustomerFor), never on the
+      // customer the number's match picked (it can match a phone stored in a spelling the carriers do not count). One from
+      // before pairs keeps the number's customer in the sender's reach.
+      if ((thread as { other_party_e164?: string | null }).other_party_e164 == null) historyCustomerId = match?.customerId ?? undefined;
     } else {
       const customer = await findCustomerToContact(req, req.body.customerId);
       if (!customer) {
@@ -638,25 +1042,60 @@ export async function sendMessage(req: Request, res: Response) {
         res.status(404).json({ error: 'Job not found' });
         return;
       }
-      thread = await prisma.messageThread.findFirst({
-        where: { customer_id: customer.id, channel: 'sms', ...tenantWhere(req) },
-      });
-      if (!thread) {
-        thread = await prisma.messageThread.create({
-          data: {
-            channel: 'sms',
-            campaign_type: 'customer_care',
-            customer_id: customer.id,
-            // Lead attribution (slice E4): a thread born from a Lead-page send
-            // carries the lead link from creation — but ONLY when the lead
-            // belongs to THIS customer; a mismatched leadId/customerId pair
-            // (cross-entity) is silently dropped, same as the backfill gate
-            // below never overwriting across customers.
-            ...(lead != null && lead.customer_id === customer.id && { lead_id: lead.id }),
-            organization_id: orgId,
+      anchorCustomerId = customer.id;
+      historyCustomerId = customer.id;
+      // #3019: the text continues the latest conversation with the customer's number, whichever of our numbers it is on
+      // (#3013 decision 2). With none, the conversation is the number plus the sender's own number, else the main line.
+      // A conversation from before pairs (not keyed yet by the split script) takes it only when it holds this pair's texts
+      // (findOrCreatePairConversation). The other party is decided by the one own-number rule (#3014): a customer whose
+      // phone is one of our own numbers has no pair (trap 8).
+      // #3016: the customer's own lead or job decides the number (another customer's lead is not stamped, see below).
+      const anchor = job ? { kind: 'job' as const, id: job.id } : lead?.customer_id === customer.id ? { kind: 'lead' as const, id: lead.id } : null;
+      // The pair is keyed by the number this text goes to: the record's number for a lead's or job's send (#3016), else
+      // the customer's. The conversation's other party is then the number texted, and a reply in it texts that number.
+      const target = await customerDoorTarget(req, customer.id, anchor);
+      anchoredTo = target.anchoredTo;
+      const { otherParty, latest } = target;
+      // #3023: the latest conversation's number, while a text can leave from it; once it is gone or cannot send texts, the
+      // main line and its conversation (decision 3). With no conversation, the sender's own number, else the main line.
+      const latestNumber = latest ? keyedConversationNumber(latest) : null;
+      const sending = await sendingNumber(prisma, orgId, req.user!.id, latestNumber);
+      if (movedFrom(sending)) leaveFrom = sending.fromE164;
+      if (latest && latestNumber && !movedFrom(sending)) {
+        thread = latest;
+      } else if (otherParty) {
+        const resolution = await findOrCreatePairConversation(
+          prisma,
+          orgId,
+          { otherPartyE164: otherParty, ourNumberE164: sending.fromE164 },
+          {
+            customerId: customer.id,
+            // Lead attribution (slice E4): a conversation born from a Lead-page send carries the lead link from creation,
+            // but ONLY when the lead belongs to THIS customer.
+            leadId: lead != null && lead.customer_id === customer.id ? lead.id : null,
+            title: null,
           },
+        );
+        thread = resolution.thread;
+        threadCreated = resolution.created;
+      } else {
+        // A customer with no number to text, or whose number is one of our own, keeps the conversation it always had, never
+        // one keyed by a pair, which would text that pair's number.
+        thread = await prisma.messageThread.findFirst({
+          where: { customer_id: customer.id, channel: 'sms', other_party_e164: null, ...tenantWhere(req) },
         });
-        threadCreated = true;
+        if (!thread) {
+          thread = await prisma.messageThread.create({
+            data: {
+              channel: 'sms',
+              campaign_type: 'customer_care',
+              customer_id: customer.id,
+              ...(lead != null && lead.customer_id === customer.id && { lead_id: lead.id }),
+              organization_id: orgId,
+            },
+          });
+          threadCreated = true;
+        }
       }
     }
 
@@ -665,14 +1104,28 @@ export async function sendMessage(req: Request, res: Response) {
     // replies on customer/vendor threads get a best-effort recency-gated
     // auto-route ("act + cheap undo" — one-click reassign fixes a wrong
     // guess). Internal lanes (kind team/group) NEVER carry a job_id.
-    const threadRow = thread as { id: string; customer_id?: string | null; vendor_id?: string | null; user_id?: string | null; kind?: string | null; title?: string | null };
+    const threadRow = thread as {
+      id: string; customer_id?: string | null; vendor_id?: string | null; user_id?: string | null; kind?: string | null; title?: string | null;
+      other_party_e164?: string | null; our_number_e164?: string | null;
+    };
+    anchorCustomerId ??= threadRow.customer_id ?? null;
+    // #3023: a reply sent from a lead in a conversation whose number the lead carries keeps the lead, whichever customer the
+    // conversation is filed on (a shared number's conversation is filed on one of them).
+    if (req.body.threadId && lead && (await recordCarriesConversationNumber(orgId, { kind: 'lead', id: lead.id }, threadRow))) {
+      numberCheckedOn = 'lead';
+    }
+    // #3019: a text in a conversation keyed by its pair leaves from that conversation's number, whoever sends it.
+    // #3023: once that number is no longer in use, the main line (leaveFrom).
+    const conversationNumber = leaveFrom ?? keyedConversationNumber(threadRow);
+    const fromConversation = conversationNumber ? { conversationNumberE164: conversationNumber } : {};
 
     // Lead attribution (message-level): the SAME same-customer gate as the
     // thread backfill above — a customer-owned thread only stamps that
     // customer's OWN lead onto the message; a mismatched leadId/customerId
     // pair (or a customer-less/vendor thread, which never carries a lead)
-    // is silently dropped rather than leaking an unrelated lead's id.
-    const leadId = lead != null && threadRow.customer_id === lead.customer_id ? lead.id : null;
+    // is silently dropped rather than leaking an unrelated lead's id. A text
+    // sent to a number checked against the lead (#3016, above) keeps the lead.
+    const leadId = lead != null && (numberCheckedOn === 'lead' || anchorCustomerId === lead.customer_id) ? lead.id : null;
 
     // NV-v3b-1: a refusal from here on that follows a thread THIS call made takes the thread back with it, guarded on it
     // still being empty (see the s1d note at the delivery precheck below), so a refused send never leaves a conversation.
@@ -684,6 +1137,7 @@ export async function sendMessage(req: Request, res: Response) {
     };
 
     let jobStamp: { job_id: string; job_label: string | null } | null = null;
+    let replyTie: ReplyTie = UNTIED;
     if (req.body.jobId) {
       // Internal lanes are never job-attached — reject loudly rather than
       // silently dropping the attribution.
@@ -692,10 +1146,14 @@ export async function sendMessage(req: Request, res: Response) {
         return;
       }
       // The existing-conversation path resolves its job here, after the internal-lane rule, as it always has.
-      job ??= await findJobInReach();
+      job ??= await findJobInReach(req, req.body.jobId);
       if (!job) {
         res.status(404).json({ error: 'Job not found' });
         return;
+      }
+      // #3023: the same for a reply sent from a job.
+      if (req.body.threadId && (await recordCarriesConversationNumber(orgId, { kind: 'job', id: job.id }, threadRow))) {
+        numberCheckedOn = 'job';
       }
       // The job is resolved under the caller's own Job row-scope (up front for a new conversation, NV-v3b-1). Stamping a send with a job
       // the sender cannot see writes the message straight out of their own view (job > lead > customer precedence) and INTO
@@ -704,9 +1162,11 @@ export async function sendMessage(req: Request, res: Response) {
       // customer's jobs. Another customer's job is indistinguishable from a
       // nonexistent one → 404 'Job not found' (same as cross-org; no existence
       // oracle). Customer-less threads (vendor/lead) keep org-scope-only
-      // validation. The number and customer paths already checked this before
-      // making a thread; this is the existing-thread path's check.
-      if (threadRow.customer_id && job.customer_id !== threadRow.customer_id) {
+      // validation. The customer path already checked this before making a
+      // thread; this is the existing-thread path's check. A number checked
+      // against the job (#3016, the number path) keeps the job whichever
+      // customer's conversation the number keys to.
+      if (numberCheckedOn !== 'job' && anchorCustomerId && job.customer_id !== anchorCustomerId) {
         await refuseAfterThread(404, { error: 'Job not found' });
         return;
       }
@@ -716,37 +1176,12 @@ export async function sendMessage(req: Request, res: Response) {
       (threadRow.customer_id || threadRow.vendor_id) &&
       isJobAttributableThread(threadRow)
     ) {
-      const now = new Date();
-      const windowStart = new Date(now.getTime() - SMS_ROUTER_RECENCY_WINDOW_DAYS * 24 * 60 * 60 * 1000);
-      // distinct(job_id) + ts-desc → the first (only) row per job is already
-      // its latest outbound text, so a chatty job can't starve older live
-      // jobs out of the take-N window.
-      const recentJobTexts = await prisma.message.findMany({
-        where: {
-          thread_id: thread.id,
-          ...tenantWhere(req),
-          direction: 'out',
-          job_id: { not: null },
-          ts: { gte: windowStart },
-        },
-        orderBy: { ts: 'desc' },
-        distinct: ['job_id'],
-        take: 10,
-        select: { job_id: true, job_label: true, ts: true, job: { select: { status: true } } },
-      });
-      const candidates: JobTextCandidate[] = [];
-      for (const row of recentJobTexts) {
-        if (row.job_id && row.job) {
-          candidates.push({
-            jobId: row.job_id,
-            jobLabel: row.job_label,
-            lastOutboundAt: row.ts,
-            jobStatus: row.job.status,
-          });
-        }
-      }
-      const routed = resolveInboundSmsJob({ now, recentJobTexts: candidates });
-      if (routed) jobStamp = { job_id: routed.jobId, job_label: routed.jobLabel };
+      // A text recorded as received is tied by the same rule as one the phone system delivers (#3020,
+      // lib/sms-reply-router.ts): the lead or job of the latest text we sent in the conversation. A lead named on the
+      // request keeps its own stamp above. No number is passed, so the rule's own-number step (a company-wide lookup) never
+      // runs for a signed-in person (re-audit P2-1): without a recent text, the text stays untied.
+      replyTie = await tieIncomingText(prisma, orgId, { threadId: thread.id, at: new Date(), from: null });
+      if (replyTie.jobId) jobStamp = { job_id: replyTie.jobId, job_label: replyTie.jobLabel };
     }
 
     // Lead attribution (slice E4): stamp the resolved thread's lead link.
@@ -774,6 +1209,11 @@ export async function sendMessage(req: Request, res: Response) {
     // writes never attempt delivery.
     const isOutboundSend = (req.body.direction ?? 'out') === 'out';
     let deliverTo: string | null = null;
+    // The number the text goes to, read once when first needed: the delivery below and the stored row (#3014) use the same.
+    // A send anchored on a lead or a job goes where the record says (#3016, resolved above).
+    let destination: Promise<string | null> | undefined;
+    const sendingTo = () =>
+      (destination ??= anchoredTo !== undefined ? Promise.resolve(anchoredTo) : resolveSmsDestination(req, threadRow));
     let shouldDeliver = false;
     // Why an outbound row will not be delivered, when it will not be. Drives the
     // row's `skipped` reason below so a suppressed send never reads as sent.
@@ -788,13 +1228,14 @@ export async function sendMessage(req: Request, res: Response) {
         select: { ctm_account_id: true },
       });
       if (org?.ctm_account_id) {
-        deliverTo = await resolveSmsDestination(req, threadRow);
+        deliverTo = await sendingTo();
         const pre = await precheckCtmSms(prisma, {
           orgId,
           toE164: deliverTo,
           threadId: thread.id,
           body: req.body.body,
           userId: req.user!.id,
+          ...fromConversation,
         });
         if (!pre.ok && SMS_GATE_409[pre.reason]) {
           // s1d: the message never gets written on this path — a thread
@@ -838,20 +1279,22 @@ export async function sendMessage(req: Request, res: Response) {
         // Full job-parity ruling (2026-07-22): stamp the Message row itself
         // with lead_id, mirroring job_id above — the thread-level lead_id
         // set/backfilled up top is not enough now that lead scoping reads
-        // per-message. leadId is already same-customer-gated above.
-        ...(leadId != null && { lead_id: leadId }),
+        // per-message. leadId is already gated above (same customer, or #3016's checked number).
+        ...((leadId ?? replyTie.leadId) != null && { lead_id: leadId ?? replyTie.leadId }),
         // The person who sent it from the app (S08.1). A simulated inbound write has no sender.
         ...(isOutboundSend && { sent_by_user_id: req.user!.id }),
+        // #3014: the other party's number - the destination the text is sent to (the one the delivery above uses), stored
+        // even when nothing is delivered; none on a thread with no single counterparty (a group thread), and never one of our
+        // own numbers.
+        other_party_e164: await otherPartyE164(prisma, orgId, isDeliverableThread(threadRow) ? await sendingTo() : null),
         organization_id: orgId,
       },
     });
 
-    // F3: surface an outbound SMS on the linked customer's central timeline.
-    // thread may be a just-created thread (Phase 2 resolve-or-create) — its customer_id
-    // is set on create, so this fires for both the found-thread and created-thread paths.
-    // Phase 2 narrows thread's static type, so cast to read customer_id off it without a tsc error.
-    const linkedCustomerId = (thread as { customer_id?: string | null }).customer_id ?? null;
-    if (linkedCustomerId && isOutboundSend) {
+    // F3: surface an outbound SMS on the customer's central timeline: the customer the sender picked or typed the number
+    // of, else the conversation's one customer as it is now (historyCustomerId, above).
+    const linkedCustomerId = isOutboundSend ? historyCustomerId ?? (await conversationCustomerFor(req, threadRow)) : null;
+    if (linkedCustomerId) {
       await prisma.timelineEvent.create({
         data: {
           organization_id: orgId,
@@ -876,6 +1319,7 @@ export async function sendMessage(req: Request, res: Response) {
         threadId: thread.id,
         messageId: message.id,
         userId: req.user!.id,
+        ...fromConversation,
       });
       if (result.delivered) {
         delivery = 'sent';
@@ -934,12 +1378,14 @@ export async function sendMessage(req: Request, res: Response) {
       });
     }
 
-    // Compose-to-number returns the resolved thread id so the composer can
-    // open/append the right conversation; existing paths keep their exact
-    // response shape (the caller already knows its thread/customer).
+    // The resolved thread id lets the composer open/append the right conversation (compose-to-number, slice H7).
+    // #3023: every send names the conversation the text was filed in (a reply from a number no longer in use is filed in the
+    // main-line conversation, which the screen then opens) and the number it went to (the record's number on a lead or a
+    // job, #3016), so the screen names the number actually texted.
     res.status(201).json({
       message: mapMessage(message),
-      ...(threadFromNumber ? { threadId: thread.id } : {}),
+      threadId: thread.id,
+      ...(isDeliverableThread(threadRow) ? { to: await sendingTo() } : {}),
       ...(delivery ? { delivery } : {}),
     });
   } catch (err) {
@@ -948,26 +1394,85 @@ export async function sendMessage(req: Request, res: Response) {
   }
 }
 
+/** #3024: which customers' leads and jobs a text in this conversation may be tied to by the person (lib/communication/attachTargets.ts). */
+function textTieRuleForReq(req: Request, thread: { other_party_e164: string | null; customer_id: string | null }) {
+  return textTieRule(prisma, req.user!.organization_id, thread);
+}
+
+/**
+ * #3024: what "Attach to a lead or job" offers for this text: the leads and jobs the person can open of every customer carrying
+ * its conversation's number, grouped by customer (`rule: 'carriers'`), or `rule: 'any'` when no customer carries it (the
+ * screen then searches every lead and job, as before). A text the person cannot read, or one in an internal lane, is 404.
+ */
+export async function messageAttachTargets(req: Request, res: Response) {
+  try {
+    const visibility = (await textReadScopeForReq(req, { messageId: req.params.id as string })).messages;
+    const msgThread = await prisma.messageThread.findFirst({
+      where: { messages: { some: { id: req.params.id as string, ...visibility } }, ...tenantWhere(req) },
+      select: { kind: true, customer_id: true, other_party_e164: true },
+    });
+    if (!msgThread || !isJobAttributableThread(msgThread)) {
+      res.status(404).json({ error: 'Message not found' });
+      return;
+    }
+    const rule = await textTieRuleForReq(req, msgThread);
+    res.json(await attachTargets(prisma, req.user!.organization_id, rule, {
+      job: await scopeWhereForReq(req, 'Job'), lead: await scopeWhereForReq(req, 'Lead'),
+    }));
+  } catch (err) {
+    logger.error('Failed to read attach targets for a text:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/** The stored text before a re-tie, under the same filter as the write: D7 needs its lead, direction, provenance and status. */
+function readTextBeforeRetie(req: Request, visibility: Prisma.MessageWhereInput) {
+  return prisma.message.findMany({
+    where: { id: req.params.id as string, ...tenantWhere(req), thread: JOB_ATTRIBUTABLE_THREAD_WHERE, ...visibility },
+    select: { lead_id: true, direction: true, automated: true, status: true, ts: true, sent_by_user_id: true, organization_id: true },
+    take: 1,
+  }).then(([row]) => row);
+}
+
+/** D7 after a re-tie: the lead the text left, if it held one (after the write, plain client, never throws). */
+async function reconsiderLeadTextLeft(
+  req: Request,
+  before: { lead_id: string | null; direction: string; automated: boolean | null; status: string | null; organization_id: string },
+  leadIdAfter: string | null,
+) {
+  const row = { direction: before.direction, automated: before.automated, deliveryStatus: before.status };
+  await reconsiderLeadLeftBehind({ client: prisma }, {
+    source: 'text',
+    before: { leadId: before.lead_id, ...row },
+    after: { leadId: leadIdAfter, ...row },
+  }, { orgId: before.organization_id, actorId: req.user!.id, entryId: req.params.id as string });
+}
+
 // One-click reassign (spec §7 "act + cheap undo"): a wrong auto-route guess
 // costs one PATCH. job_id: null clears attribution (→ Unrouted tray).
+//
+// #3024 (Ran, 2026-11-06): one pick, one record, as a call's job does (reassignCallJob). Attaching a text to a job sets its
+// lead to the job's own lead (Job.estimate -> Estimate.lead_id; a job made from scratch has none), so a text is never left
+// on another customer's lead; the lead it leaves is reconsidered (SPEC-4 D7). Filing a text on a job is not an attach to that
+// lead (SPEC-4 §5): nothing is recorded as contact. job_id: null clears both ends.
 export async function reassignMessageJob(req: Request, res: Response) {
   try {
     // One filter for the update AND the refetch (the refetch used to be weaker;
     // see reassignCallJob for why that stops being benign once the guard is a
     // visibility predicate).
-    const visibility = (await textReadScopeForReq(req)).messages;
-    let data: { job_id: string | null; job_label: string | null };
+    const visibility = (await textReadScopeForReq(req, { messageId: req.params.id as string })).messages;
+    let data: { job_id: string | null; job_label: string | null; lead_id: string | null };
     if (req.body.job_id != null) {
       // Resolve the message's thread (org-scoped, by membership) to enforce
       // the attribution rules: internal lanes (kind team/group) are invisible
-      // to this endpoint → 404, and a customer-owned thread only accepts that
-      // customer's jobs.
+      // to this endpoint → 404, and the job must be one the conversation's
+      // number allows (#3024, textTieRule).
       const msgThread = await prisma.messageThread.findFirst({
         where: {
           messages: { some: { id: req.params.id as string, ...visibility } },
           ...tenantWhere(req),
         },
-        select: { kind: true, customer_id: true },
+        select: { kind: true, customer_id: true, other_party_e164: true },
       });
       if (!msgThread || !isJobAttributableThread(msgThread)) {
         res.status(404).json({ error: 'Message not found' });
@@ -978,23 +1483,25 @@ export async function reassignMessageJob(req: Request, res: Response) {
       // (the row stays inside their scope after the write).
       const job = await prisma.job.findUnique({
         where: { id: req.body.job_id, ...tenantWhere(req), ...(await scopeWhereForReq(req, 'Job')) },
-        select: { id: true, job_number: true, customer_id: true },
+        select: { id: true, job_number: true, customer_id: true, estimate: { select: { lead_id: true } } },
       });
       if (!job) {
         res.status(404).json({ error: 'Job not found' });
         return;
       }
-      // Same-customer constraint (mirrors sendMessage): another customer's job
-      // is indistinguishable from a nonexistent one → 404 'Job not found'.
-      // Customer-less threads (vendor/lead) keep org-scope-only validation.
-      if (msgThread.customer_id && job.customer_id !== msgThread.customer_id) {
+      // #3024: a job of a customer carrying the conversation's number that the person can open (a conversation from before
+      // pairs: of the customer it is filed on; a number nobody carries: any job). Any other is indistinguishable from a
+      // nonexistent one → 404 'Job not found'.
+      if (!tieAllowed(await textTieRuleForReq(req, msgThread), job.customer_id)) {
         res.status(404).json({ error: 'Job not found' });
         return;
       }
-      data = { job_id: job.id, job_label: job.job_number };
+      data = { job_id: job.id, job_label: job.job_number, lead_id: job.estimate?.lead_id ?? null };
     } else {
-      data = { job_id: null, job_label: null };
+      data = { job_id: null, job_label: null, lead_id: null };
     }
+    // A row the person cannot reach reads nothing here; the update below answers the 404.
+    const before = await readTextBeforeRetie(req, visibility);
 
     // updateMany with id+org filter is atomic — no TOCTOU window. The
     // internal-lane guard rides along so team/group messages 404 on BOTH the
@@ -1007,9 +1514,11 @@ export async function reassignMessageJob(req: Request, res: Response) {
       res.status(404).json({ error: 'Message not found' });
       return;
     }
+    if (before) await reconsiderLeadTextLeft(req, before, data.lead_id);
 
     const [message] = await prisma.message.findMany({
       where: { id: req.params.id as string, ...tenantWhere(req), ...visibility },
+      include: { lead: { select: { lead_number: true } } },
       take: 1,
     });
     // A detach can take the message out of the person's reach (it was readable only through the record it was taken
@@ -1038,6 +1547,9 @@ export async function reassignMessageJob(req: Request, res: Response) {
 // sender. Taking a text that held a lead off it (a detach, or a move to another
 // lead) reconsiders the lead it left (SPEC-4 D7): a Contacted lead with no
 // outbound contact left goes back to New, credited to the person who moved it.
+//
+// #3024: one pick, one record. Attaching a text to a lead takes it off the job it was on, in the same write, so the text ends
+// on the record picked; lead_id: null clears both ends, as the job door does.
 export const reassignMessageLeadSchema = z.object({
   lead_id: z.string().uuid('lead_id must be a valid id').nullable(),
 });
@@ -1046,30 +1558,20 @@ export async function reassignMessageLead(req: Request, res: Response) {
   try {
     // See reassignMessageJob: one filter, applied to the pre-read, the update and
     // the refetch alike.
-    const visibility = (await textReadScopeForReq(req)).messages;
-    let data: { lead_id: string | null };
+    const visibility = (await textReadScopeForReq(req, { messageId: req.params.id as string })).messages;
+    let data: { lead_id: string | null; job_id: null; job_label: null };
     // The stored row before this write, read on an attach and a detach alike, under the same filter
     // as the update below, so the row read is the row written: the link rule (and D7) need its lead,
     // direction, provenance, status, time and sender.
-    let before: {
-      lead_id: string | null; direction: string; automated: boolean | null; status: string | null;
-      ts: Date; sent_by_user_id: string | null; organization_id: string;
-    } | undefined;
-    const readBefore = async () => {
-      const [row] = await prisma.message.findMany({
-        where: { id: req.params.id as string, ...tenantWhere(req), thread: JOB_ATTRIBUTABLE_THREAD_WHERE, ...visibility },
-        select: { lead_id: true, direction: true, automated: true, status: true, ts: true, sent_by_user_id: true, organization_id: true },
-        take: 1,
-      });
-      return row;
-    };
+    let before: Awaited<ReturnType<typeof readTextBeforeRetie>>;
+    const readBefore = () => readTextBeforeRetie(req, visibility);
     if (req.body.lead_id != null) {
       const msgThread = await prisma.messageThread.findFirst({
         where: {
           messages: { some: { id: req.params.id as string, ...visibility } },
           ...tenantWhere(req),
         },
-        select: { kind: true, customer_id: true },
+        select: { kind: true, customer_id: true, other_party_e164: true },
       });
       if (!msgThread || !isJobAttributableThread(msgThread)) {
         res.status(404).json({ error: 'Message not found' });
@@ -1084,11 +1586,8 @@ export async function reassignMessageLead(req: Request, res: Response) {
         res.status(404).json({ error: 'Lead not found' });
         return;
       }
-      // Same-customer constraint (mirrors reassignMessageJob): another
-      // customer's lead is indistinguishable from a nonexistent one → 404
-      // 'Lead not found'. Customer-less threads (vendor) keep org-scope-only
-      // validation.
-      if (msgThread.customer_id && lead.customer_id !== msgThread.customer_id) {
+      // #3024, the lead mirror of reassignMessageJob: a lead the conversation's number allows, else 404 'Lead not found'.
+      if (!tieAllowed(await textTieRuleForReq(req, msgThread), lead.customer_id)) {
         res.status(404).json({ error: 'Lead not found' });
         return;
       }
@@ -1097,11 +1596,11 @@ export async function reassignMessageLead(req: Request, res: Response) {
         res.status(404).json({ error: 'Message not found' });
         return;
       }
-      data = { lead_id: lead.id };
+      data = { lead_id: lead.id, job_id: null, job_label: null };
     } else {
       // A row the person cannot reach reads nothing here; the update below answers the 404, as before.
       before = await readBefore();
-      data = { lead_id: null };
+      data = { lead_id: null, job_id: null, job_label: null };
     }
 
     const result = await prisma.message.updateMany({
@@ -1132,17 +1631,11 @@ export async function reassignMessageLead(req: Request, res: Response) {
     }
     // D7: the lead the text left, if it held it. Also after the write and with the plain client;
     // never throws, so a failed move back leaves the detach or move standing.
-    if (before) {
-      const row = { direction: before.direction, automated: before.automated, deliveryStatus: before.status };
-      await reconsiderLeadLeftBehind({ client: prisma }, {
-        source: 'text',
-        before: { leadId: before.lead_id, ...row },
-        after: { leadId: data.lead_id, ...row },
-      }, { orgId: before.organization_id, actorId: req.user!.id, entryId: req.params.id as string });
-    }
+    if (before) await reconsiderLeadTextLeft(req, before, data.lead_id);
 
     const [message] = await prisma.message.findMany({
       where: { id: req.params.id as string, ...tenantWhere(req), ...visibility },
+      include: { lead: { select: { lead_number: true } } },
       take: 1,
     });
     // A detach can take the message out of the person's reach (it was readable only through the record it was taken

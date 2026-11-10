@@ -432,6 +432,7 @@ describe('purgeOrganization - customer and lead threads are unaffected (regressi
     // catch-all is additive and runs last, after both scoped sweeps.
     const threadOps = ops.filter((o) => o.startsWith('messageThread.') || o === 'message.deleteMany');
     expect(threadOps).toEqual([
+      'messageThread.findMany',   // #3019: the conversations someone else still carries the number of are kept (none here)
       'messageThread.findMany',   // lead-scoped resolve
       'message.deleteMany',       // its messages
       'messageThread.deleteMany', // its threads

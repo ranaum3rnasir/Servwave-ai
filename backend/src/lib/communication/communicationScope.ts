@@ -11,9 +11,11 @@ import { tenantWhere } from '../tenant';
 import { attachedReach } from '../permissions/recordPeople';
 import { substituteConditions } from '../permissions/substituteConditions';
 import { MATCH_NOTHING } from '../permissions/scopeWhereFor';
+import { canReadCustomerById } from '../permissions/customerScope';
 import { recordPeopleThreads, type PeopleThread } from './recordPeopleThreads';
 import { emailFeatureOn } from './emailFeature';
 import { departmentMemberIds } from '../permissions/moduleReach';
+import { numbersCarriedInReach } from './numberCarriers';
 
 /**
  * M11 Communication scope (Roles & Permissions PRD 8).
@@ -92,6 +94,12 @@ export interface CommunicationScopeInputs {
   /** The record conversations the person gets as one of the record's people (S10.9), found by `recordPeopleThreadsTheyReach`:
    *  present only where the Email section lists them (Attached). */
   recordPeopleThreadIds?: readonly string[];
+  /**
+   * #3021 (#3013 decision 4): the numbers (E.164) carried by at least one customer the person reaches, among the numbers of
+   * the text conversations the question is about (`numbersCarriedInReach`). A text of a conversation keyed by one of them
+   * that is tied to no lead or job is the person's to read. Left out, none.
+   */
+  carrierNumbers?: readonly string[];
 }
 
 /** The fields of a text message that reply attribution reads. */
@@ -355,15 +363,20 @@ function ownTextBranches(i: CommunicationScopeInputs): Where[] {
 /**
  * A text message reaches its record by the same precedence as a call, but only the job and the lead sit on the message
  * itself: the customer and the vendor sit on its conversation.
+ *
+ * #3021 (#3013 decision 4): a text tied to no lead or job, in a conversation keyed by its pair of numbers, is reached through
+ * ANY customer carrying the conversation's number (`carrierNumbers`), never through the customer it happens to be filed on.
+ * A conversation from before pairs (no number of its own yet) is reached through the customer it is filed on, as always.
  */
-function textRecordBranches(reach: RecordReach): Where[] {
+function textRecordBranches(reach: RecordReach, carrierNumbers: readonly string[] = []): Where[] {
   return [
     { job_id: { not: null }, ...relationScopeFilter('job', reach.job) },
     { job_id: null, lead_id: { not: null }, ...relationScopeFilter('lead', reach.lead) },
     {
       job_id: null, lead_id: null,
-      thread: { customer_id: { not: null }, ...relationScopeFilter('customer', reach.customer) },
+      thread: { other_party_e164: null, customer_id: { not: null }, ...relationScopeFilter('customer', reach.customer) },
     },
+    ...(carrierNumbers.length > 0 ? [{ job_id: null, lead_id: null, thread: { other_party_e164: { in: [...carrierNumbers] } } }] : []),
     ...(reach.vendors ? [{ job_id: null, lead_id: null, thread: { customer_id: null, vendor_id: { not: null } } }] : []),
   ];
 }
@@ -385,7 +398,7 @@ export function textsInSectionWhere(inputs: CommunicationScopeInputs): Where {
  */
 export function textReadWhere(inputs: CommunicationScopeInputs): Where {
   if (inputs.scope === 'all') return {};
-  return { OR: [...ownTextBranches(inputs), ...textRecordBranches(inputs.reach)] };
+  return { OR: [...ownTextBranches(inputs), ...textRecordBranches(inputs.reach, inputs.carrierNumbers)] };
 }
 
 /**
@@ -395,6 +408,17 @@ export function textReadWhere(inputs: CommunicationScopeInputs): Where {
  */
 export function textThreadHolding(messages: Where): Where {
   return Object.keys(messages).length === 0 ? {} : { messages: { some: messages } };
+}
+
+/**
+ * #3013 decision 4 on a record's Communication tab: a text tied to no lead or job is readable by a person who reaches at least
+ * one customer carrying its number, or who holds Communication "All". The caller passes only numbers such a customer of the
+ * person's carries, or every number for "All" (on a lead's or a job's tab, `recordNumbersOpenedForReq`).
+ * The text's own number (#3014) is matched, so a conversation filed on another customer of a shared number, or on nobody,
+ * does not hide it. Tied texts keep record reach; nothing else is opened.
+ */
+function untiedTextsOnCarriedNumbers(carrierNumbers: readonly string[]): Where[] {
+  return carrierNumbers.length > 0 ? [{ job_id: null, lead_id: null, other_party_e164: { in: [...carrierNumbers] } }] : [];
 }
 
 /**
@@ -418,7 +442,9 @@ export function textThreadHolding(messages: Where): Where {
  * else its estimate's lead, else its customer; on top of it the person must be able to open the invoice, which
  * `invoiceScope` (the Invoices row scope) says.
  */
-export function recordTabWhere(reach: RecordReach, estimateScope: Where, invoiceScope: Where): ChannelVisibility {
+export function recordTabWhere(
+  reach: RecordReach, estimateScope: Where, invoiceScope: Where, carrierNumbers: readonly string[] = [],
+): ChannelVisibility {
   const estimateReach = (): Where => {
     const record = {
       OR: [
@@ -456,7 +482,7 @@ export function recordTabWhere(reach: RecordReach, estimateScope: Where, invoice
     perChannel: true,
     calls: rows,
     emails: rows,
-    messages: { OR: textRecordBranches(reach) },
+    messages: { OR: [...textRecordBranches(reach, carrierNumbers), ...untiedTextsOnCarriedNumbers(carrierNumbers)] },
     whatsapps: anchorInheritedWhere(reach.job, reach.lead),
     manuals: { OR: recordBranches(reach, { vendor: false }) },
     estimates: estimateReach(),
@@ -507,6 +533,21 @@ async function linkedNumberIdsFor(req: Request, people: readonly string[]): Prom
 
 async function scopeValueForReq(req: Request): Promise<CommunicationScopeValue> {
   return scopeValueOf((await resolveSwitches(req.user!)).communication_scope);
+}
+
+/**
+ * #3013 decision 4 on a lead's or a job's tab: a text tied to no lead or job is readable by a person who can open at least one
+ * customer carrying its number, or who holds Communication "All". The record's customer carries every number its card shows
+ * (`numbers`), so those numbers open the record's untied texts (`recordTabVisibilityForReq`'s `carriedNumbers`) for a person
+ * who can open that customer or holds "All", and for nobody else. Opening the record is not opening its customer: without
+ * View customers (the preset Technician) a person reads the record's tied texts only, as before #3022.
+ */
+export async function recordNumbersOpenedForReq(
+  req: Request, record: { customerId: string; numbers: readonly string[] },
+): Promise<readonly string[]> {
+  if (record.numbers.length === 0) return [];
+  if ((await scopeValueForReq(req)) === 'all') return record.numbers;
+  return (await canReadCustomerById(req, record.customerId)) ? record.numbers : [];
 }
 
 /**
@@ -634,11 +675,16 @@ async function inputsForReq(
  * Controller-facing: the row filters for a record's Communication tab (job, lead or customer). It reads reach (and the
  * Estimates and Invoices scopes, for the customer's estimate decisions and the payments received) only, so it is the same under both scope values and with Access Communication off. Pass it as the aggregator's `visibility`.
  */
-export async function recordTabVisibilityForReq(req: Request): Promise<ChannelVisibility> {
+export async function recordTabVisibilityForReq(
+  req: Request, { carriedNumbers = [] }: { carriedNumbers?: readonly string[] } = {},
+): Promise<ChannelVisibility> {
   const [reach, estimateScope, invoiceScope] = await Promise.all([
     reachForReq(req), scopeWhereForReq(req, 'Estimate'), scopeWhereForReq(req, 'Invoice'),
   ]);
-  const tab = recordTabWhere(reach, estimateScope, invoiceScope);
+  // `carriedNumbers`: the numbers of the customer whose tab it is, which the person can open (the tab's own gate), so each is
+  // carried by a customer they reach (#3021); or the numbers a lead's or job's card shows, kept only for a person who can open
+  // the record's customer or holds "All" (`recordNumbersOpenedForReq`, #3022).
+  const tab = recordTabWhere(reach, estimateScope, invoiceScope, carriedNumbers);
   // While the company's Email plan feature is off the tabs show no email, sent or received (PRD 10, S10.6). Calls, texts and
   // the rest are decided by their own features and are untouched.
   return emailFeatureOn(req) ? tab : { ...tab, emails: NO_EMAIL, emailHidden: true };
@@ -985,14 +1031,65 @@ export async function textsInSectionScopeForReq(req: Request): Promise<TextScope
 }
 
 /**
- * Controller-facing: the filters for opening one text conversation (detail, mark read, reply) or one message
- * (reassign). Both are {} under "All".
+ * The one text conversation, or the one text, a read is about (#3021): the conversation's number decides who reaches it. Or
+ * (#3023) every conversation with one number (E.164): the ones with that number a person may continue.
  */
-export async function textReadScopeForReq(req: Request): Promise<TextScope> {
+export type TextTarget = { threadId: string } | { messageId: string } | { otherPartyE164: string };
+
+/**
+ * The number of the conversation a read is about, when a customer the person reaches carries it (#3013 decision 4): one read of
+ * the conversation, then `numbersCarriedInReach`. Nothing for a conversation from before pairs (it has no number of its own), for
+ * one of another company, or for an id that is no id. For a number itself (#3023), that number when such a customer carries it.
+ */
+async function carrierNumbersFor(req: Request, reach: RecordReach, target: TextTarget): Promise<string[]> {
+  if ('otherPartyE164' in target) {
+    return numbersCarriedInReach(prisma, req.user!.organization_id, [target.otherPartyE164], reach.customer);
+  }
+  const id = 'threadId' in target ? target.threadId : target.messageId;
+  if (!UUID.test(id)) return [];
+  const thread = await prisma.messageThread.findFirst({
+    where: { ...tenantWhere(req), ...('threadId' in target ? { id } : { messages: { some: { id } } }) },
+    select: { other_party_e164: true },
+  });
+  if (!thread?.other_party_e164) return [];
+  return numbersCarriedInReach(prisma, req.user!.organization_id, [thread.other_party_e164], reach.customer);
+}
+
+/**
+ * Controller-facing: the filters for opening one text conversation (detail, mark read, reply) or one message
+ * (reassign). Both are {} under "All". `target` names the conversation or the message, so the customers carrying its number
+ * are asked about (#3021).
+ */
+export async function textReadScopeForReq(req: Request, target: TextTarget): Promise<TextScope> {
   const scope = await scopeValueForReq(req);
   if (scope === 'all') return { messages: {}, thread: {} };
-  const messages = textReadWhere(await inputsForReq(req, scope, { withReplies: true }));
+  const inputs = await inputsForReq(req, scope, { withReplies: true });
+  const messages = textReadWhere({ ...inputs, carrierNumbers: await carrierNumbersFor(req, inputs.reach, target) });
   return { messages, thread: textThreadHolding(messages) };
+}
+
+/**
+ * Controller-facing (#3023; Ran, 2026-11-06, after spec r3): the filter for the text conversations a person may CONTINUE -
+ * send a text in - with the conversation, or every conversation with the number, that `target` names. Decided PER
+ * CONVERSATION, never text by text: a person continues a conversation when they can open at least one customer carrying
+ * its number (one from before pairs: the customer it is filed on), or can read any text in it. Continuing never shows them
+ * a text: what they read in it stays `textReadScopeForReq`'s. {} under "All".
+ * Every door that picks a conversation to continue asks this (a reply in one, and a text from a customer, a lead, a job or
+ * a number), and the line above its text box with it. Joining the pair's own conversation once the number a text leaves
+ * from is known is never narrowed by it (#3019: one conversation per pair).
+ */
+export async function textContinueScopeForReq(req: Request, target: TextTarget): Promise<Where> {
+  const scope = await scopeValueForReq(req);
+  if (scope === 'all') return {};
+  const inputs = await inputsForReq(req, scope, { withReplies: true });
+  const carrierNumbers = await carrierNumbersFor(req, inputs.reach, target);
+  return {
+    OR: [
+      ...(carrierNumbers.length > 0 ? [{ other_party_e164: { in: carrierNumbers } }] : []),
+      { other_party_e164: null, customer_id: { not: null }, ...relationScopeFilter('customer', inputs.reach.customer) },
+      textThreadHolding(textReadWhere({ ...inputs, carrierNumbers })),
+    ],
+  };
 }
 
 /**

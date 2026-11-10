@@ -5,6 +5,7 @@ import { customerContactSet } from './customer-contact-set';
 import { normalizeEmail, normalizePhone } from './customer-duplicate';
 import { deriveCustomerKind } from './customer-kind';
 import { formatPhoneDisplay } from './phone-format';
+import { NumberOutOfReachRefusal } from './communication/numberGuard';
 
 /**
  * Applying one customer decision of an office review to the customer (Roles & Permissions, PRD 6, S06.12), the way the
@@ -17,6 +18,10 @@ import { formatPhoneDisplay } from './phone-format';
  *    primary or secondary column, or the lists). If that value is no longer on the customer the new one is added instead,
  *    and the outcome says so. A name or company name replaces whatever the customer holds now.
  *  - This job only: the customer is not touched.
+ *
+ * A phone written to the customer is asked about first (`mayCarry`, guard the number: lib/communication/numberGuard.ts): one
+ * that a customer the reviewer cannot open already carries is refused with `NumberOutOfReachRefusal`, unless the reviewer
+ * holds Communication "All", and the whole finish is rolled back.
  *
  * The reviewer needs Office review alone for this; the customer's own edit switch plays no part, because the review is
  * the one door for these changes (PRD 6, DR-07).
@@ -70,11 +75,14 @@ export const shown = (kind: string, value: string | null): string => (value === 
 const samePhone = (a: string | null | undefined, b: string | null | undefined) => normalizePhone(a) !== null && normalizePhone(a) === normalizePhone(b);
 const sameEmail = (a: string | null | undefined, b: string | null | undefined) => normalizeEmail(a) !== null && normalizeEmail(a) === normalizeEmail(b);
 
+/** May the reviewer put this phone on the job's customer (guard the number)? */
+export type MayCarry = (phone: string) => Promise<boolean>;
+
 export async function applyDecisionToCustomer(
   tx: Tx,
-  args: { orgId: string; customerId: string; choice: ReviewChoice; entry: DecidedEntry },
+  args: { orgId: string; customerId: string; choice: ReviewChoice; entry: DecidedEntry; mayCarry: MayCarry },
 ): Promise<AppliedDecision> {
-  const { orgId, customerId, choice, entry } = args;
+  const { orgId, customerId, choice, entry, mayCarry } = args;
   if (choice === CHOICE.THIS_JOB_ONLY || choice === CHOICE.NONE) {
     return { outcome: OUTCOME.KEPT_ON_JOB, old: null, new: entry.value, fields: [] };
   }
@@ -83,7 +91,7 @@ export async function applyDecisionToCustomer(
   if (!customer) return { outcome: OUTCOME.KEPT_ON_JOB, old: null, new: entry.value, fields: [] };
 
   if (isNameKind(entry.kind)) return applyName(tx, customerId, customer, entry, entry.kind);
-  return entry.kind === 'PHONE' ? applyPhone(tx, customerId, customer, entry, choice) : applyEmail(tx, customerId, customer, entry, choice);
+  return entry.kind === 'PHONE' ? applyPhone(tx, customerId, customer, entry, choice, mayCarry) : applyEmail(tx, customerId, customer, entry, choice);
 }
 
 type CustomerRow = Prisma.CustomerGetPayload<{ select: typeof CUSTOMER_SELECT }>;
@@ -109,18 +117,28 @@ async function applyName(tx: Tx, customerId: string, customer: CustomerRow, entr
 
 // ─── Phones ────────────────────────────────────────────
 
-async function addPhone(tx: Tx, customerId: string, customer: CustomerRow, entry: DecidedEntry, replaced: string | null): Promise<AppliedDecision> {
+/** Guard the number before a phone is written on the customer. */
+async function refuseOutOfReach(mayCarry: MayCarry, phone: string): Promise<void> {
+  if (!(await mayCarry(phone))) throw new NumberOutOfReachRefusal();
+}
+
+async function addPhone(
+  tx: Tx, customerId: string, customer: CustomerRow, entry: DecidedEntry, replaced: string | null, mayCarry: MayCarry,
+): Promise<AppliedDecision> {
   if (customerContactSet(customer).phones.some((p) => samePhone(p.phone, entry.value))) {
     return { outcome: OUTCOME.ALREADY_ON_CUSTOMER, old: replaced, new: entry.value, fields: [] };
   }
+  await refuseOutOfReach(mayCarry, entry.value);
   await tx.customerPhone.create({
     data: { customer_id: customerId, phone: entry.value, extension: entry.extension, label: entry.label, is_primary: false },
   });
   return { outcome: replaced ? OUTCOME.ADDED_INSTEAD : OUTCOME.ADDED, old: replaced, new: entry.value, fields: ['phones'] };
 }
 
-async function applyPhone(tx: Tx, customerId: string, customer: CustomerRow, entry: DecidedEntry, choice: ReviewChoice): Promise<AppliedDecision> {
-  if (choice === CHOICE.ADD) return addPhone(tx, customerId, customer, entry, null);
+async function applyPhone(
+  tx: Tx, customerId: string, customer: CustomerRow, entry: DecidedEntry, choice: ReviewChoice, mayCarry: MayCarry,
+): Promise<AppliedDecision> {
+  if (choice === CHOICE.ADD) return addPhone(tx, customerId, customer, entry, null, mayCarry);
 
   const was = entry.customer_value_at_change;
   const columns: Prisma.CustomerUpdateInput = {};
@@ -128,12 +146,13 @@ async function applyPhone(tx: Tx, customerId: string, customer: CustomerRow, ent
   if (was && samePhone(customer.phone, was)) { columns.phone = entry.value; columns.phone_ext = entry.extension; fields.push('phone'); }
   if (was && samePhone(customer.secondary_phone, was)) { columns.secondary_phone = entry.value; columns.secondary_phone_ext = entry.extension; fields.push('secondary_phone'); }
   const rows = was ? customer.phones.filter((p) => samePhone(p.phone, was)) : [];
-  if (fields.length === 0 && rows.length === 0) return addPhone(tx, customerId, customer, entry, was);
+  if (fields.length === 0 && rows.length === 0) return addPhone(tx, customerId, customer, entry, was, mayCarry);
 
   // The new number is already on the customer elsewhere: keep what is there rather than make it appear twice.
   const elsewhere = customerContactSet(customer).phones.some((p) => samePhone(p.phone, entry.value));
   if (elsewhere && !samePhone(was, entry.value)) return { outcome: OUTCOME.ALREADY_ON_CUSTOMER, old: was, new: entry.value, fields: [] };
 
+  if (!samePhone(was, entry.value)) await refuseOutOfReach(mayCarry, entry.value);
   if (fields.length > 0) await tx.customer.update({ where: { id: customerId }, data: columns });
   for (const row of rows) await tx.customerPhone.update({ where: { id: row.id }, data: { phone: entry.value, extension: entry.extension } });
   if (rows.length > 0) fields.push('phones');

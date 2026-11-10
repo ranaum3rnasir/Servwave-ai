@@ -35,6 +35,8 @@ vi.mock("@/lib/api/communication", () => ({
   useJobSearch: () => ({ data: [] }),
   useLeadSearch: () => ({ data: [] }),
   ATTACH_SEARCH_MIN: 2,
+  // #3024: what "Attach to a lead or job" offers for the call.
+  useAttachMenuTargets: () => ({ data: { rule: "carriers", groups: [] }, isLoading: false }),
   useRecordingUrl: () => ({ refetch: vi.fn(), isFetching: false }),
   useRecordingDownloadUrl: () => ({ refetch: vi.fn(), isFetching: false }),
   useCallTranscript: () => ({ data: undefined, isLoading: false }),
@@ -139,7 +141,7 @@ describe("the call drawer follows Attach conversations to jobs and leads", () =>
     const { onClose, onToast } = renderDrawer(presetRules("DISPATCHER"), ON_A_JOB);
 
     fireEvent.pointerDown(attachedButton()!, { button: 0, ctrlKey: false });
-    fireEvent.click(await screen.findByRole("menuitem", { name: /No job or lead/ }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /No lead or job/ }));
 
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
     expect(reassignCallJob).toHaveBeenCalledWith({ callId: ON_A_JOB.id, jobId: null }, expect.anything());
@@ -152,7 +154,7 @@ describe("the call drawer follows Attach conversations to jobs and leads", () =>
     const { onClose, onToast } = renderDrawer(presetRules("DISPATCHER"), ON_A_JOB);
 
     fireEvent.pointerDown(attachedButton()!, { button: 0, ctrlKey: false });
-    fireEvent.click(await screen.findByRole("menuitem", { name: /No job or lead/ }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /No lead or job/ }));
 
     await waitFor(() => expect(onToast).toHaveBeenCalledWith("Link removed"));
     expect(onClose).not.toHaveBeenCalled();

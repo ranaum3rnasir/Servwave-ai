@@ -13,6 +13,7 @@ import { JOB_CLOSE_OUT_REFUSED } from '../lib/job-close-out';
 import { queueReviewAttention } from '../services/notifications/reviewAttentionQueue';
 import { finishReview, FinishRefusal, REVIEW_NOT_OPEN_MESSAGE } from '../lib/job-review-finish';
 import { logAudit } from '../lib/audit';
+import { NumberOutOfReachRefusal, numberCarryCheckForReq } from '../lib/communication/numberGuard';
 
 /**
  * GET /api/jobs/:id/review - the office review panel's content (Roles & Permissions, PRD 6, S06.8): the job summary and
@@ -214,6 +215,8 @@ export async function finish(req: Request, res: Response) {
     // The person's invoice reach is read BEFORE the transaction opens and asked on the transaction's own client: a query on
     // another connection from inside it waits for the one the transaction holds (the hosted pool has one) and fails the finish.
     const openInvoices = await invoiceOpenerFor(req);
+    // Guard the number (lib/communication/numberGuard.ts), read here for the same reason.
+    const mayCarry = await numberCarryCheckForReq(req);
     const result = await finishReview({
       orgId: user.organization_id,
       jobId: job.id,
@@ -221,6 +224,7 @@ export async function finish(req: Request, res: Response) {
       sentVersion: (req.body as z.infer<typeof finishSchema>).version ?? null,
       mayCosts: canSeeCosts(req),
       openInvoices,
+      mayCarry,
     });
     if (result.customer_fields.length > 0) {
       void logAudit({
@@ -240,6 +244,10 @@ export async function finish(req: Request, res: Response) {
       const { kind, reason } = err.refusal;
       const code = REFUSAL_CODE[kind];
       res.status(kind === 'forbidden' ? 403 : 409).json({ error: reason, ...(code ? { code } : {}) });
+      return;
+    }
+    if (err instanceof NumberOutOfReachRefusal) {
+      res.status(err.status).json({ error: err.message });
       return;
     }
     logger.error('Finish job review error:', err);

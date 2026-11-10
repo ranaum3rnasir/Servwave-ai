@@ -179,7 +179,7 @@ describe('/phone tab on a phone', () => {
     );
     // No pick made: no explicit caller number, so the server picks the default.
     expect(post.mock.calls[0]?.[1]).not.toHaveProperty('from_number_id');
-    expect(await screen.findByText('Your phone will ring first - answer to connect.')).toBeInTheDocument();
+    expect(await screen.findByText('Your phone will ring first.')).toBeInTheDocument();
     expect(createSpy).not.toHaveBeenCalled();
   });
 
@@ -223,6 +223,12 @@ describe('/phone tab on a phone', () => {
       ),
     );
     expect(JSON.stringify(post.mock.calls[0]?.[1])).not.toContain('TPN-');
+    // #3025: the call screen names the picked number as the one to answer.
+    await waitFor(() =>
+      expect(screen.queryAllByRole('status').map((el) => el.textContent)).toContain(
+        'Your phone will ring first. Answer the call from (555) 010-0142 to connect.',
+      ),
+    );
     expect(createSpy).not.toHaveBeenCalled();
   });
 
@@ -280,7 +286,7 @@ describe('/phone tab on a computer without the "Office phone in the browser" swi
         expect.objectContaining({ direction: 'out', to_number: '+15555550123' }),
       ),
     );
-    expect(await screen.findByText('Your phone will ring first - answer to connect.')).toBeInTheDocument();
+    expect(await screen.findByText('Your phone will ring first.')).toBeInTheDocument();
     expect(createSpy).not.toHaveBeenCalled();
   });
 });

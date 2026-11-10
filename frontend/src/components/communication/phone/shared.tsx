@@ -280,6 +280,21 @@ export function describeSearchScope(
 
 /* ─────────────────── Shared components ─────────────────── */
 
+const CALL_STATUS_LABELS: Record<CallSession["status"], string> = {
+  ringing: "Ringing",
+  active: "Active",
+  completed: "Completed",
+  voicemail: "Voicemail",
+  missed: "Missed",
+};
+
+/** A call's outcome in the call history's words. An outbound call stored as missed never reached anyone: it reads
+ *  "Not connected", never "Missed" (nobody missed a call we placed) or "Completed" (#3025). */
+export function callStatusLabel(call: Pick<CallSession, "direction" | "status">): string {
+  if (call.direction === "outbound" && call.status === "missed") return "Not connected";
+  return CALL_STATUS_LABELS[call.status];
+}
+
 /** Direction / status glyph for a call row. */
 export function DirIcon({ call }: { call: CallSession }) {
   if (call.status === "missed")

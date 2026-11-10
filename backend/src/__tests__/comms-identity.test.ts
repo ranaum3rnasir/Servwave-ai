@@ -36,69 +36,34 @@ describe('normalizeEmail', () => {
 });
 
 describe('matchByPhone', () => {
-  it('returns a customer match (highest precedence) scoped to the org', async () => {
+  // The customer pick (the fixed order, one raw query) is proven on a real database by
+  // comm-shared-number-fixed-order-db.test.ts. Here a stub answers it, to pin what the match returns around it.
+  const pick = (row: Record<string, unknown> | null) => vi.fn().mockResolvedValue(row ? [row] : []);
+
+  it('returns the picked customer (highest precedence) scoped to the org', async () => {
     const prisma = {
-      customer: { findFirst: vi.fn().mockResolvedValue({ id: 'cust-1', first_name: 'John', last_name: 'Doe', company_name: 'Doe HVAC' }) },
+      $queryRaw: pick({ id: 'cust-1', first_name: 'John', last_name: 'Doe', company_name: 'Doe HVAC', own_lead_id: null }),
+      customer: { findFirst: vi.fn() },
       lead: { findFirst: vi.fn() },
       vendor: { findFirst: vi.fn() },
       vendorContact: { findFirst: vi.fn() },
     } as any;
     const m = await matchByPhone(prisma, ORG, '(555) 123-4567');
-    // Customers store numbers in THREE places: the scalar phone, the legacy
-    // secondary_phone, and the phones[] relation (customer_phones — where the
-    // current create/edit flow writes). All three must match, or real inbound
-    // calls from phones[]-stored customers ingest as unmatched.
-    const phoneIn = { in: ['+15551234567', '5551234567', '(555) 123-4567'] };
-    expect(prisma.customer.findFirst).toHaveBeenCalledWith({
-      where: {
-        organization_id: ORG,
-        OR: [
-          { phone: phoneIn },
-          { secondary_phone: phoneIn },
-          { phones: { some: { phone: phoneIn } } },
-        ],
-      },
-      select: { id: true, first_name: true, last_name: true, company_name: true },
-    });
+    // One query asks for the customer, for this org, under every spelling a number is stored as.
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    const values = prisma.$queryRaw.mock.calls[0].slice(1);
+    expect(values).toContain(ORG);
+    expect(values).toContainEqual(['+15551234567', '5551234567', '(555) 123-4567']);
     expect(m).toEqual({ kind: 'customer', id: 'cust-1', customerId: 'cust-1', leadId: null, vendorId: null, label: 'Doe HVAC' });
     // Customer matched → no lead/vendor lookups (short-circuit).
     expect(prisma.lead.findFirst).not.toHaveBeenCalled();
     expect(prisma.vendor.findFirst).not.toHaveBeenCalled();
   });
 
-  it('falls through to an OPEN lead when no customer matches', async () => {
+  it('falls through to a Vendor (then VendorContact) when no customer matches', async () => {
     const prisma = {
-      customer: { findFirst: vi.fn().mockResolvedValue(null) },
-      lead: { findFirst: vi.fn().mockResolvedValue({ id: 'lead-1', lead_number: 'L00001', customer_id: 'cust-9' }) },
-      vendor: { findFirst: vi.fn() },
-      vendorContact: { findFirst: vi.fn() },
-    } as any;
-    const m = await matchByPhone(prisma, ORG, '5551234567');
-    const phoneIn = { in: ['+15551234567', '5551234567', '5551234567'] };
-    expect(prisma.lead.findFirst).toHaveBeenCalledWith({
-      where: {
-        organization_id: ORG,
-        status: { notIn: ['WON', 'LOST'] },
-        // The lead's identity is its customer's phone — match all three
-        // storage places there too.
-        customer: {
-          OR: [
-            { phone: phoneIn },
-            { secondary_phone: phoneIn },
-            { phones: { some: { phone: phoneIn } } },
-          ],
-        },
-      },
-      select: { id: true, lead_number: true, customer_id: true },
-      orderBy: { created_at: 'desc' },
-    });
-    expect(m).toEqual({ kind: 'lead', id: 'lead-1', customerId: 'cust-9', leadId: 'lead-1', vendorId: null, label: 'L00001' });
-    expect(prisma.vendor.findFirst).not.toHaveBeenCalled();
-  });
-
-  it('falls through to a Vendor (then VendorContact) when no customer/lead matches', async () => {
-    const prisma = {
-      customer: { findFirst: vi.fn().mockResolvedValue(null) },
+      $queryRaw: pick(null),
+      customer: { findFirst: vi.fn() },
       lead: { findFirst: vi.fn().mockResolvedValue(null) },
       vendor: { findFirst: vi.fn().mockResolvedValue({ id: 'ven-1', name: 'Acme Supply' }) },
       vendorContact: { findFirst: vi.fn() },
@@ -115,7 +80,8 @@ describe('matchByPhone', () => {
 
   it('matches a VendorContact phone when the vendor row has no match', async () => {
     const prisma = {
-      customer: { findFirst: vi.fn().mockResolvedValue(null) },
+      $queryRaw: pick(null),
+      customer: { findFirst: vi.fn() },
       lead: { findFirst: vi.fn().mockResolvedValue(null) },
       vendor: { findFirst: vi.fn().mockResolvedValue(null) },
       vendorContact: { findFirst: vi.fn().mockResolvedValue({ id: 'vc-1', vendor_id: 'ven-2', vendor: { id: 'ven-2', name: 'Bolt Co' } }) },
@@ -129,15 +95,17 @@ describe('matchByPhone', () => {
   });
 
   it('returns null without querying when the number is invalid', async () => {
-    const prisma = { customer: { findFirst: vi.fn() }, lead: { findFirst: vi.fn() }, vendor: { findFirst: vi.fn() }, vendorContact: { findFirst: vi.fn() } } as any;
+    const prisma = { $queryRaw: vi.fn(), customer: { findFirst: vi.fn() }, lead: { findFirst: vi.fn() }, vendor: { findFirst: vi.fn() }, vendorContact: { findFirst: vi.fn() } } as any;
     const m = await matchByPhone(prisma, ORG, 'not-a-number');
     expect(m).toBeNull();
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
     expect(prisma.customer.findFirst).not.toHaveBeenCalled();
   });
 
   it('returns null when nothing matches', async () => {
     const prisma = {
-      customer: { findFirst: vi.fn().mockResolvedValue(null) },
+      $queryRaw: pick(null),
+      customer: { findFirst: vi.fn() },
       lead: { findFirst: vi.fn().mockResolvedValue(null) },
       vendor: { findFirst: vi.fn().mockResolvedValue(null) },
       vendorContact: { findFirst: vi.fn().mockResolvedValue(null) },

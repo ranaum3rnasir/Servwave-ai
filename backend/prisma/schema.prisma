@@ -418,6 +418,8 @@ model Customer {
   @@index([created_by_id])
   @@index([email])
   @@index([phone])
+  // #3015: the fixed-order customer pick for a phone number reads the second phone too.
+  @@index([organization_id, secondary_phone])
   @@index([organization_id])
   @@index([parent_id])
   @@index([bill_to_customer_id])
@@ -459,6 +461,8 @@ model CustomerPhone {
   customer    Customer @relation(fields: [customer_id], references: [id], onDelete: Cascade)
 
   @@index([customer_id])
+  // #3015: the fixed-order customer pick for a phone number reads the phone list by number.
+  @@index([phone])
   @@map("customer_phones")
 }
 
@@ -4543,6 +4547,14 @@ model MessageThread {
   archived      Boolean? @default(false)
   title         String?
   subtitle      String?
+  // #3019: an SMS conversation with a customer or an unknown number is the pair of numbers - the
+  // other party's (normalized E.164) and ours (normalized E.164; null when the company has no
+  // number). Both null on staff, vendor and group conversations, and on a customer conversation the
+  // split script (scripts/sms-conversation-pair-split.ts) has not keyed yet; such a conversation is
+  // read exactly as before. One conversation per pair is kept by lib/ctm/smsThread.ts, not by a
+  // unique rule.
+  other_party_e164 String?
+  our_number_e164  String?
   created_at    DateTime @default(now())
   updated_at    DateTime @updatedAt
 
@@ -4568,6 +4580,7 @@ model MessageThread {
   @@index([lead_id])
   @@index([vendor_id])
   @@index([user_id])
+  @@index([organization_id, other_party_e164, our_number_e164])
   @@map("message_threads")
 }
 
@@ -4596,6 +4609,13 @@ model Message {
   // texted; outbound: the number it was sent from). Null on a text the number
   // could not be placed for (roles & permissions S08.1).
   phone_number_id String? @db.Uuid
+  // The OTHER party's number, normalized E.164 (+1XXXXXXXXXX): where an outbound
+  // text went, or where an inbound text came from. It sits beside the company
+  // number above, so "the latest text we sent to this number" can be asked (#3014).
+  // Null on a text whose other side is no single phone number (a group thread)
+  // and on older texts the fill-in (scripts/text-other-party-number-fill-in.ts)
+  // could not place.
+  other_party_e164 String?
   // The person who sent a text from the app. Null on inbound texts, automated
   // texts, texts sent from outside the app, and app-sent texts from before S08.1.
   sent_by_user_id String? @db.Uuid
@@ -4617,6 +4637,7 @@ model Message {
   @@index([lead_id])
   @@index([phone_number_id])
   @@index([sent_by_user_id])
+  @@index([organization_id, other_party_e164, ts])
   @@map("messages")
 }
 
@@ -6803,6 +6824,8 @@ model RecordContactEntry {
   @@index([organization_id])
   @@index([job_id])
   @@index([lead_id])
+  // #3015: a lead's or job's own phone value, read by the fixed-order customer pick for a phone number.
+  @@index([organization_id, kind, value])
   @@map("record_contact_entries")
 }
 

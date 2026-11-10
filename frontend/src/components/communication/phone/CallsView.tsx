@@ -59,8 +59,8 @@ import { EmptyState } from '@/components/ui/empty-state';
 import { KpiTile } from "@/components/data/KpiStrip";
 
 import { JobBadge } from "@/components/communication/shared/atoms";
-import { CommJobMenu, type AttachPick } from "@/components/communication/shared/CommJobMenu";
-import { useAttachTargets } from "@/components/communication/shared/useAttachTargets";
+import { AttachMenu } from "@/components/communication/shared/AttachMenu";
+import type { AttachPick } from "@/components/communication/shared/CommJobMenu";
 import { CallTranscriptBubbles } from "@/components/communication/phone/CallTranscript";
 
 import {
@@ -86,6 +86,7 @@ import {
   dayLabel,
   shortTime,
   DirIcon,
+  callStatusLabel,
   AnsweredBy,
   InfoRow,
 } from "@/components/communication/phone/shared";
@@ -680,7 +681,7 @@ export function CallsView({
         <>
           <DirIcon call={c} />
           <span>
-            {c.direction === "inbound" ? "Inbound" : "Outbound"} · {STATUS_LABELS[c.status]}
+            {c.direction === "inbound" ? "Inbound" : "Outbound"} · {callStatusLabel(c)}
           </span>
         </>
       ),
@@ -1123,14 +1124,6 @@ export function CallsView({
 
 /* ─────────────────── Call detail panel ─────────────────── */
 
-const STATUS_LABELS: Record<CallSession["status"], string> = {
-  ringing: "Ringing",
-  active: "Active",
-  completed: "Completed",
-  voicemail: "Voicemail",
-  missed: "Missed",
-};
-
 function scoreTone(score: number): string {
   if (score >= 90) return "bg-success/10 text-success ring-success/20";
   if (score >= 80) return "bg-warning/10 text-warning ring-warning/20";
@@ -1231,15 +1224,13 @@ export function CallDetailDrawer({
           ? { id: call.linkedLead.id, kind: 'lead' as const, label: call.linkedLead.leadNumber }
           : null;
 
-  // Attach-to-job/lead (story 21, widened). Unknown callers used to get NO
-  // control at all here, despite the API accepting the attach — that gap is what
-  // useAttachTargets' search mode closes.
+  // "Attach to a lead or job" (#3024): the leads and jobs of every customer carrying the call's number, or, when none
+  // carries it (an unknown caller), any lead or job by search, as before (AttachMenu).
   //
   // Attach conversations to jobs and leads (S08.19) decides who gets the menu; Edit communication records plays no part
   // in it. Without the switch the drawer still says where the call is filed, and fetches no target list for a menu it
   // will not show.
   const mayAttach = ability.can("attach", "Communication");
-  const targets = useAttachTargets(mayAttach ? call.customerId : undefined);
   const reassignCall = useReassignCallJob();
   const reassignCallLead = useReassignCallLead();
 
@@ -1296,21 +1287,15 @@ export function CallDetailDrawer({
               {cust?.name ?? "Unknown caller"}
             </p>
             <p className="mt-0.5 text-sm text-text-primary"><OtherPartyNumber call={call} /></p>
-            {/* Job/lead linkage. With Attach conversations to jobs and leads, the attach / reassign menu: a known
-                customer lists that customer's jobs and leads; an unknown caller searches the org instead
-                (useAttachTargets). Without it, only where the call is filed. */}
+            {/* Job/lead linkage. With Attach conversations to jobs and leads, "Attach to a lead or job" (AttachMenu).
+                Without it, only where the call is filed. */}
             {(mayAttach || linkedJob) && (
               <div className="mt-1.5">
                 {mayAttach ? (
-                  <CommJobMenu
-                    jobs={targets.jobs}
-                    leads={targets.leads}
+                  <AttachMenu
+                    target={{ kind: "call", id: call.id }}
+                    current={{ jobId: call.jobId, leadId: call.linkedLead?.id }}
                     onPick={pickJob}
-                    search={targets.search}
-                    onSearchChange={targets.setSearch}
-                    querying={targets.querying}
-                    needsMoreInput={targets.needsMoreInput}
-                    loading={targets.loading}
                   >
                     {linkedJob ? (
                       <button
@@ -1328,7 +1313,7 @@ export function CallDetailDrawer({
                         <Briefcase className="h-3 w-3" /> Attach to job or lead
                       </button>
                     )}
-                  </CommJobMenu>
+                  </AttachMenu>
                 ) : (
                   <JobBadge job={linkedJob?.label} />
                 )}
@@ -1366,7 +1351,7 @@ export function CallDetailDrawer({
             <div className="flex items-center justify-between">
               <span className="flex items-center gap-2 text-sm font-medium text-text-primary">
                 <DirIcon call={call} />
-                {STATUS_LABELS[call.status]}
+                {callStatusLabel(call)}
               </span>
               <span className="text-sm text-text-secondary">
                 {dayLabel(call.startedAt, tz)}, {shortTime(call.startedAt, tz)}

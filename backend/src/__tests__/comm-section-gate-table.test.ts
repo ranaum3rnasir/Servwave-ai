@@ -64,11 +64,13 @@ const OUTSIDE_THE_SECTION: Record<string, string> = {
   'get /calls/:id/transcript': 'the call drawer, with View transcript',
   'patch /calls/:id/job': 'attaching a call, with Attach conversations',
   'patch /calls/:id/lead': 'attaching a call, with Attach conversations',
+  'get /calls/:id/attach-targets': 'the menu for attaching a call, with Attach conversations',
   'get /threads/:id': 'a conversation opened from a record tab',
   'patch /threads/:id/read': 'reading a conversation opened from a record tab',
   'patch /threads/:id/unread': 'reading a conversation opened from a record tab',
   'patch /sms/:id/job': 'attaching a text, with Attach conversations',
   'patch /sms/:id/lead': 'attaching a text, with Attach conversations',
+  'get /sms/:id/attach-targets': 'the menu for attaching a text, with Attach conversations',
   'patch /emails/:id/job': 'attaching an email, with Attach conversations',
   'patch /emails/:id/lead': 'attaching an email, with Attach conversations',
   'get /emails/attach-source': 'the email composer on a record',
@@ -76,6 +78,8 @@ const OUTSIDE_THE_SECTION: Record<string, string> = {
   'get /templates': 'the composer, which reads templates for the signature',
   // Composing and calling, which are not a way into the section lists.
   'post /sms': 'sending a text (the new-conversation case checks the gate inside)',
+  // #3023: read only; every text box shows it (a lead's and a job's tab too), refused exactly as the send it describes.
+  'get /sms/numbers': 'the line above every text box: the numbers a send with the same fields uses, gated as that send',
   'post /emails': 'sending an email (a send from a record tab needs no section; a reply, and a send from the Email page, check the gate inside)',
   'post /calls': 'placing a call',
   'post /calls/attribution': 'placing a call from the browser phone',

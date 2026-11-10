@@ -3,13 +3,20 @@
  *
  * A person with the pencil adds a phone or email that belongs to ONE job or ONE lead; the customer row is never
  * written, and nothing that reads the customer (documents, public pages, send recipients, automated messages, the
- * lists) reads these. The job page and the lead page are the readers, through `liveJobEntries` and `liveLeadEntries`.
+ * lists) reads these. The job page and the lead page are the readers, through `liveJobEntries` and `liveLeadEntries`,
+ * and so is the destination of a text a person sends from the job or the lead (#3016, communication/recordTextDestination).
  * The office review (PRD 6) reads the same rows to decide what reaches the customer, so the shape `presentEntry`
  * returns is a contract: the fields are pinned by a test.
  *
+ * One reader outside the record pages, by decision (#3013 decision 1, #3015): the identity match (`matchByPhone`,
+ * lib/comms-identity.ts) picks the customer for a phone number first by the one lead or job carrying that number as its
+ * own. It reads the live phone entries through `livePhoneEntriesSql` below, so this module stays the only one that names
+ * the table. The same module works out which customers carry a number (#3021, `carriersOfNumbers`, and the numbers one
+ * customer carries, through `liveCustomerPhoneEntryValuesSql`).
+ *
  * Entries are never hard-deleted: `removed_at` keeps the history whole, and "live" means not removed.
  */
-import type { Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { requiredCustomerPhone } from './phone-schema';
 import { normalizePhone } from './customer-duplicate';
@@ -110,6 +117,36 @@ export const liveJobEntries = (db: Db, orgId: string, jobId: string) => liveEntr
 
 /** The lead's live entries, oldest first. */
 export const liveLeadEntries = (db: Db, orgId: string, leadId: string) => liveEntries(db, orgId, { kind: 'lead', id: leadId });
+
+/**
+ * The live PHONE entries of the company's leads and jobs whose value is one of `spellings`, as a subquery for a raw query:
+ * one row per entry, with its id, its value (as stored), the entry it was carried from, its lead or its job (and job
+ * number), that record's status (`lead_status` or `job_status`) and its customer. Phones
+ * are stored as digits (`requiredCustomerPhone`), so the caller passes every spelling it accepts.
+ */
+export function livePhoneEntriesSql(orgId: string, spellings: string[]): Prisma.Sql {
+  return Prisma.sql`
+    SELECT e.id, e.value, e.source_entry_id, e.lead_id, e.job_id, oj.job_number, COALESCE(ol.customer_id, oj.customer_id) AS customer_id,
+           ol.status::text AS lead_status, oj.status::text AS job_status
+      FROM record_contact_entries e
+      LEFT JOIN leads ol ON ol.id = e.lead_id
+      LEFT JOIN jobs oj ON oj.id = e.job_id
+     WHERE e.organization_id = ${orgId}::uuid AND e.kind = 'PHONE' AND e.removed_at IS NULL AND e.value = ANY(${spellings}::text[])`;
+}
+
+/**
+ * #3021: the values (as stored) of the live PHONE entries of one customer's leads and jobs, as a subquery for a raw query
+ * (`numbersCustomerCarries`, lib/comms-identity.ts: which conversations show on that customer's page).
+ */
+export function liveCustomerPhoneEntryValuesSql(orgId: string, customerId: string): Prisma.Sql {
+  return Prisma.sql`
+    SELECT e.value
+      FROM record_contact_entries e
+      LEFT JOIN leads l ON l.id = e.lead_id
+      LEFT JOIN jobs j ON j.id = e.job_id
+     WHERE e.organization_id = ${orgId}::uuid AND e.kind = 'PHONE' AND e.removed_at IS NULL
+       AND COALESCE(l.customer_id, j.customer_id) = ${customerId}::uuid`;
+}
 
 // ─── Adding ────────────────────────────────────────────
 

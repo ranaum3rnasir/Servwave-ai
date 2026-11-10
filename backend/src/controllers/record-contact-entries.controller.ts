@@ -56,6 +56,7 @@ import {
   type EntryKind,
   type EntryRecord,
 } from '../lib/record-contact-entries';
+import { NUMBER_ON_CUSTOMER_OUT_OF_REACH, numberCarryCheckForReq, type NumberCarryCheck } from '../lib/communication/numberGuard';
 
 export { addContactEntrySchema, changeContactEntrySchema, changeNameSchema, correctContactEntrySchema };
 
@@ -75,7 +76,7 @@ const valueOf = (e: { value: string; extension: string | null; label: string | n
 });
 
 /** The customer a record's entries are checked against: the columns and lists a change can name, and the names. */
-const CUSTOMER_SELECT = { ...CUSTOMER_CONTACT_ROWS_SELECT, ...CUSTOMER_NAME_SELECT };
+const CUSTOMER_SELECT = { id: true, ...CUSTOMER_CONTACT_ROWS_SELECT, ...CUSTOMER_NAME_SELECT };
 
 type OpenedRecord = { id: string; customer: NonNullable<Awaited<ReturnType<typeof findJob>>>['customer'] };
 
@@ -115,6 +116,18 @@ const LEAD: RecordKind = {
 };
 
 const noun = (input: { kind: string }) => (input.kind === 'PHONE' ? 'number' : 'email');
+
+/**
+ * Guard the number (lib/communication/numberGuard.ts): a phone put on a record makes its customer carry it, so one that a
+ * customer the person cannot open already carries is refused, unless they hold Communication "All".
+ */
+async function refuseNumberOutOfReach(
+  mayCarry: NumberCarryCheck, db: Parameters<NumberCarryCheck>[0], kind: string, value: string, customerId: string,
+): Promise<void> {
+  if (kind === 'PHONE' && !(await mayCarry(db, [value], customerId))) {
+    throw new ContactEntryRefusal(NUMBER_ON_CUSTOMER_OUT_OF_REACH, 409);
+  }
+}
 
 /** The handlers for one kind of record. */
 function contactEntryHandlers(record: RecordKind) {
@@ -171,6 +184,7 @@ function contactEntryHandlers(record: RecordKind) {
       if (!opened) return;
       const input = req.body as AddContactEntryInput;
       const { orgId } = actorOf(req);
+      const mayCarry = await numberCarryCheckForReq(req);
 
       const entries = await prisma.$transaction(async (tx) => {
         const live = await tx.recordContactEntry.findMany({
@@ -178,6 +192,7 @@ function contactEntryHandlers(record: RecordKind) {
           select: { kind: true, value: true },
         });
         refuseDuplicate(input, opened.customer, live, word);
+        await refuseNumberOutOfReach(mayCarry, tx, input.kind, input.value, opened.customer.id);
 
         const name = actorName(req);
         const created = await tx.recordContactEntry.create({
@@ -230,12 +245,14 @@ function contactEntryHandlers(record: RecordKind) {
         return;
       }
 
+      const mayCarry = await numberCarryCheckForReq(req);
       const entries = await prisma.$transaction(async (tx) => {
         const live = await tx.recordContactEntry.findMany({
           where: { organization_id: orgId, ...recordEntryKey(entryRecord(opened.id)), removed_at: null },
           select: { kind: true, value: true, intent: true, customer_value_at_change: true },
         });
         refuseChange(input, replaced, opened.customer, live, word);
+        await refuseNumberOutOfReach(mayCarry, tx, input.kind, input.value, opened.customer.id);
 
         const name = actorName(req);
         const created = await tx.recordContactEntry.create({
@@ -334,6 +351,7 @@ function contactEntryHandlers(record: RecordKind) {
       if (!entry) return;
       const input = req.body as CorrectContactEntryInput;
       const { orgId } = actorOf(req);
+      const mayCarry = await numberCarryCheckForReq(req);
 
       const entries = await prisma.$transaction(async (tx) => {
         const others = await tx.recordContactEntry.findMany({
@@ -341,6 +359,8 @@ function contactEntryHandlers(record: RecordKind) {
           select: { kind: true, value: true, intent: true, customer_value_at_change: true },
         });
         const next = applyCorrection(entry, input, opened.customer, others, word);
+        // Only a new value is asked about: a corrected label or extension leaves the record carrying what it carried.
+        if (next.value !== entry.value) await refuseNumberOutOfReach(mayCarry, tx, entry.kind, next.value, opened.customer.id);
         if (next.changed) {
           const name = actorName(req);
           await tx.recordContactEntry.update({

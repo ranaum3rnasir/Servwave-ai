@@ -21,6 +21,7 @@ import { ingestCall } from '../lib/ctm/ingest';
 import { clearTokenCache } from '../middleware/authenticate';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 import { ALPHA_ORG_ID, TEST_USERS, mockAuthAs, authHeader } from './helpers';
+import { numberBelongsTo, noNumberMatches } from './support/phone-match';
 
 vi.mock('../services/notifications/notificationService', () => ({
   emit: vi.fn().mockResolvedValue(undefined),
@@ -60,6 +61,7 @@ beforeEach(() => {
   // setup.ts defaults: platform unconfigured, allowlist inert.
   client.isCtmConfigured.mockReturnValue(false);
   client.isOutboundAllowed.mockReturnValue(true);
+  noNumberMatches(p);
 });
 
 // ─── POST /calls (CTM branch): stash the context before the bridge ──────────
@@ -580,17 +582,17 @@ describe('ingestCall — pending attribution consume', () => {
     expect(args.create.customer_id).toBeNull();
   });
 
-  it('resolver-vs-pending precedence: matchByPhone customer WINS; pending still fills the job', async () => {
+  // #3015 round 2: a call placed from a record stays entirely on that record and its customer; the number's own match never
+  // moves it to another customer (the database proof is comm-shared-number-fixed-order-db.test.ts).
+  it('resolver-vs-pending precedence: the placer\'s stash WINS entirely, customer and job, over the number\'s match', async () => {
     p.pendingCallAttribution.findFirst.mockResolvedValue(PENDING_ROW);
     p.pendingCallAttribution.updateMany.mockResolvedValue({ count: 1 });
-    p.customer.findFirst.mockResolvedValue({
-      id: 'cust-match', first_name: 'Ada', last_name: 'Match', company_name: null,
-    });
+    numberBelongsTo(p, { id: 'cust-match', first_name: 'Ada', last_name: 'Match', company_name: null });
 
     await ingestCall(prisma, ORG_ID, OUT_STARTS, 'starts');
 
     const args = p.callSession.upsert.mock.calls[0][0];
-    expect(args.create.customer_id).toBe('cust-match');
+    expect(args.create.customer_id).toBe(CUSTOMER_ID);
     expect(args.create.job_id).toBe(JOB_ID);
   });
 

@@ -287,7 +287,8 @@ describe('#2046 R1 — originating a new unanchored conversation by number requi
     mockPrisma.customer.findFirst.mockResolvedValue(null);
     mockPrisma.vendor.findFirst.mockResolvedValue(null);
     mockPrisma.messageThread.findFirst.mockResolvedValue(null);
-    mockPrisma.lead.findFirst.mockResolvedValue({ id: LEAD_ID, customer_id: CUSTOMER_ID });
+    // #3016: the number is the lead's customer's (a number the lead does not carry is refused).
+    mockPrisma.lead.findFirst.mockResolvedValue({ id: LEAD_ID, customer_id: CUSTOMER_ID, customer: { phone: NEW_NUMBER } });
     mockPrisma.messageThread.create.mockResolvedValue({
       id: 'thr-new-anchored', channel: 'sms', campaign_type: 'customer_care', unread: 0,
       customer_id: null, lead_id: null, vendor_id: null, kind: null, title: '+12015550199',

@@ -36,6 +36,7 @@ import * as ctmClient from '../lib/ctm/client';
 import { _resetCtmSmsDoubleFireGuard } from '../lib/ctm/sendSms';
 import { ALPHA_ORG_ID, TEST_USERS, mockAuthAs, mockRoleSwitches, authHeader, matchesScopeWhere, CUSTOMER_FIXTURE, LEAD_FIXTURE } from './helpers';
 import { dispatchAutomationEvent } from '../services/automations/dispatch';
+import { numberBelongsTo, noNumberMatches } from './support/phone-match';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 const p = prisma as any;
@@ -82,7 +83,8 @@ beforeEach(() => {
   // own for the stamp and the New -> Contacted move (#2618). The real client runs the callback;
   // setup.ts's bare `vi.fn()` would drop it, so the mock runs it against itself.
   p.$transaction.mockImplementation(async (fn: any) => fn(p));
-  // matchByPhone's four lookups — no phone match, so nothing is attributed by accident.
+  // matchByPhone's lookups — no phone match, so nothing is attributed by accident.
+  noNumberMatches(p);
   p.customer.findFirst.mockResolvedValue(null);
   p.lead.findFirst.mockResolvedValue(null);
   p.vendor.findFirst.mockResolvedValue(null);
@@ -325,13 +327,11 @@ const CALL_BODY = {
 };
 
 /**
- * The call door resolves an explicit `lead_id` through `lead.findFirst`, and so does matchByPhone
- * one statement later. They are told apart by matchByPhone's own `status: { notIn: [...] }` guard,
- * so the phone matcher still resolves nothing and only the EXPLICIT lead is attributed.
+ * The call door resolves an explicit `lead_id` through `lead.findFirst`; the phone match finds no customer for the
+ * number (and never carries a lead), so only the EXPLICIT lead is attributed.
  */
 function mockExplicitLeadOnly() {
-  p.lead.findFirst.mockImplementation((a: any) =>
-    Promise.resolve(a?.where?.status ? null : LEAD_ROW));
+  p.lead.findFirst.mockResolvedValue(LEAD_ROW);
 }
 
 function mockCallCreate(overrides: Record<string, unknown> = {}) {
@@ -585,10 +585,13 @@ describe('contact clock — email channel (POST /api/communication/emails)', () 
 const SID = 'CA-contact-clock-1';
 const MSG_SID = 'MSG-contact-clock-1';
 
-/** matchByPhone resolves the counterpart number to this lead, and to nothing else. */
-function mockPhoneMatchesLead() {
-  p.customer.findFirst.mockResolvedValue(null);
-  p.lead.findFirst.mockResolvedValue(LEAD_ROW);
+/**
+ * The counterpart number is this lead's own (its customer's, and the one open record carrying it as its own), so the
+ * call ingest files a call on the lead (#3015) and an incoming text with no recent text of ours is tied to it (#3020).
+ * A customer match never carries a lead itself (#3020 removed that unreachable branch).
+ */
+function mockNumberIsTheLeadsOwn() {
+  numberBelongsTo(p, CUSTOMER_FIXTURE, { leadId: LEAD_ID });
 }
 
 function mockIngestBaseline() {
@@ -616,8 +619,8 @@ describe('contact clock — calls ingested from the phone system', () => {
     mockIngestBaseline();
   });
 
-  it('stamps the clock for an OUTBOUND ingested call matched to a lead', async () => {
-    mockPhoneMatchesLead();
+  it('stamps the clock for an OUTBOUND ingested call on a lead carrying the number as its own', async () => {
+    mockNumberIsTheLeadsOwn();
 
     await ingestCall(prisma, ALPHA_ORG_ID, { ...CALL_ACTIVITY, direction: 'outbound' }, 'end');
 
@@ -630,8 +633,8 @@ describe('contact clock — calls ingested from the phone system', () => {
 
   // The lead ringing US is their effort. The same ingest handles both directions, so the filter is
   // the only thing keeping an inbound call off the clock — and inbound is the COMMON case here.
-  it('does NOT stamp the clock for an INBOUND ingested call matched to a lead', async () => {
-    mockPhoneMatchesLead();
+  it('does NOT stamp the clock for an INBOUND ingested call on a lead carrying the number as its own', async () => {
+    mockNumberIsTheLeadsOwn();
 
     await ingestCall(prisma, ALPHA_ORG_ID, { ...CALL_ACTIVITY, direction: 'inbound' }, 'end');
 
@@ -642,7 +645,7 @@ describe('contact clock — calls ingested from the phone system', () => {
   // The webhook fires twice for one call. First-touch-wins makes the second a no-op, and the
   // instant both carry is the call's own start rather than whenever the `end` payload arrived.
   it('does not move the stamp when the same call reports twice', async () => {
-    mockPhoneMatchesLead();
+    mockNumberIsTheLeadsOwn();
 
     await ingestCall(prisma, ALPHA_ORG_ID, { ...CALL_ACTIVITY, direction: 'outbound' }, 'starts');
     p.lead.updateMany.mockResolvedValue({ count: 0 }); // the clock is set now
@@ -676,19 +679,12 @@ describe('contact clock — texts ingested from the phone system', () => {
     p.messageThread.update.mockResolvedValue({});
   });
 
-  it('stamps the clock for an OUTBOUND text sent from outside the app', async () => {
-    mockPhoneMatchesLead();
+  // An outbound text the phone system reports (sent from outside the app) is tied to no lead (#3020: the tie rule is for
+  // incoming texts, and a phone match never carries a lead), so it stamps no clock: the case that stamped one here proved
+  // it only through a mocked lead match no customer number could reach.
 
-    await ingestSms(prisma, ALPHA_ORG_ID, { ...SMS_ACTIVITY, direction: 'outbound' });
-
-    expect(p.message.create.mock.calls[0][0].data).toMatchObject({ lead_id: LEAD_ID, automated: false });
-    expect(clockWrites()).toEqual([
-      { where: { id: LEAD_ID, organization_id: ALPHA_ORG_ID, contacted_at: null }, data: { contacted_at: expect.any(Date) } },
-    ]);
-  });
-
-  it('does NOT stamp the clock for an INBOUND text from the lead', async () => {
-    mockPhoneMatchesLead();
+  it('does NOT stamp the clock for an INBOUND text tied to the lead', async () => {
+    mockNumberIsTheLeadsOwn();
     p.blockedNumber.findFirst.mockResolvedValue(null);
 
     await ingestSms(prisma, ALPHA_ORG_ID, { ...SMS_ACTIVITY, direction: 'inbound' });
@@ -1011,7 +1007,7 @@ describe('contact clock — linking an existing communication to a lead (PATCH /
     const res = await attachText(null);
 
     expect(res.status).toBe(200);
-    expect(p.message.updateMany.mock.calls[0][0].data).toEqual({ lead_id: null });
+    expect(p.message.updateMany.mock.calls[0][0].data).toEqual({ lead_id: null, job_id: null, job_label: null });
     expectNoLeadWrite();
   });
 
@@ -1026,7 +1022,7 @@ describe('contact clock — linking an existing communication to a lead (PATCH /
 
     expect(res.status).toBe(200);
     expect(res.body.message.leadId).toBe(LEAD_ID);
-    expect(p.message.updateMany.mock.calls[0][0].data).toEqual({ lead_id: LEAD_ID });
+    expect(p.message.updateMany.mock.calls[0][0].data).toEqual({ lead_id: LEAD_ID, job_id: null, job_label: null });
     expect(logger.error).toHaveBeenCalledWith(expect.stringContaining(LEAD_ID), expect.any(Error));
   });
 
@@ -1096,10 +1092,10 @@ describe('contact clock — a text sent from the lead\'s Communication tab (POST
   it('on a company whose texts go out: the text is filed on the lead, stamps the clock and moves the lead', async () => {
     mockAuthAs('dispatcher');
     mockDeliveringOrg();
-    // The customer resolve and the destination read share this mock: one row answers both.
     p.customer.findFirst.mockResolvedValue({ id: CUSTOMER_FIXTURE.id, phone: '5551234567' });
     mockCustomerThread({ lead_id: null });
-    mockLeadResolve();
+    // #3016: a text sent from a lead goes to the lead's number, read off the lead's customer (the lead changed nothing here).
+    p.lead.findFirst.mockResolvedValue({ ...LEAD_ROW, customer: { phone: '5551234567' } });
     mockMessageCreate();
 
     const res = await sendFromLeadTab();
@@ -1612,7 +1608,7 @@ describe('D7 — an outbound entry leaves a Contacted lead (the text door, PATCH
     const res = await attachText(null);
 
     expect(res.status).toBe(200);
-    expect(p.message.updateMany.mock.calls[0][0].data).toEqual({ lead_id: null });
+    expect(p.message.updateMany.mock.calls[0][0].data).toEqual({ lead_id: null, job_id: null, job_label: null });
     expectMovedBack('text', MSG_ID);
     // Nothing is stamped: a move back writes no contact clock.
     expect(clockStamps()).toEqual([]);
@@ -1715,7 +1711,7 @@ describe('D7 — an outbound entry leaves a Contacted lead (the text door, PATCH
     const res = await attachText(null);
 
     expect(res.status).toBe(200);
-    expect(p.message.updateMany.mock.calls[0][0].data).toEqual({ lead_id: null });
+    expect(p.message.updateMany.mock.calls[0][0].data).toEqual({ lead_id: null, job_id: null, job_label: null });
     expect(logger.error).toHaveBeenCalledWith(expect.stringContaining(LEAD_A));
     // Nothing of the move back stands: the History row is never reached.
     expect(leadHistory()).toEqual([]);

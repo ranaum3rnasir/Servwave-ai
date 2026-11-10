@@ -69,6 +69,8 @@ async function modelsWrittenByPurge(): Promise<Set<string>> {
               // local_part: the stub row also stands in for a mailbox address, which the purge hashes.
               if (op === 'findMany') return async () => [{ id: 'stub-id', local_part: 'stub-address' }];
               if (op === 'count') return async () => 0;
+              // #3019: the customer purge reads which numbers its conversations' texts store (a grouping, read-only).
+              if (op === 'groupBy') return async () => [];
               return async () => null;
             },
           },

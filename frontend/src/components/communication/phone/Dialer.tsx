@@ -82,6 +82,7 @@ import { Modal } from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
 import { useScheduleTimezone } from '@/lib/schedule-tz';
 import { fieldKindProps } from '@/ui-kit/lib/fieldKind';
+import { TextingFromLine } from '@/components/communication/shared/TextingFromLine';
 
 /* ───────────────────────── Global dialer ─────────────────────────
  * The header button lives in ./GlobalDialer (mobile slice 61): it is imported by the staff
@@ -138,6 +139,7 @@ export function DialerWorkspace({
   surface,
   callerIdOverride,
   callerIdNumberId,
+  callerIdNumber,
 }: {
   calls: CallSession[];
   onToast: (m: string) => void;
@@ -165,6 +167,8 @@ export function DialerWorkspace({
   /** The same pick as ServWave's own phone_number_id - what the bridge call
    *  sends as from_number_id. Threaded straight to the softphone. */
   callerIdNumberId?: string;
+  /** How that picked number reads, for the call screen. Threaded straight to the softphone. */
+  callerIdNumber?: string | null;
 }) {
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
@@ -510,6 +514,7 @@ export function DialerWorkspace({
             surface={surface}
             callerIdOverride={callerIdOverride}
             callerIdNumberId={callerIdNumberId}
+            callerIdNumber={callerIdNumber}
             prefillNumber={prefill}
             onConsumedPrefill={() => setPrefill(null)}
             entityContext={prefillContext}
@@ -1086,6 +1091,8 @@ function MessagePanel({
           {sendError}
         </p>
       )}
+      {/* #3023: the numbers a text written here goes between. */}
+      <TextingFromLine target={customer ? { customerId: customer.id } : null} className="border-t border-border bg-surface-light px-3 pt-1.5" />
       <div className="flex items-center gap-2 border-t border-border bg-surface-light px-2 py-2">
         <input
           value={draft}

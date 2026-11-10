@@ -101,13 +101,19 @@ function mockComms({
   serverThreads = [] as MessageThread[],
   contacts = [] as PhoneCustomer[],
 } = {}) {
-  mockApi.get.mockImplementation(async (url: string) => {
+  mockApi.get.mockImplementation(async (url: string, config?: { params?: unknown }) => {
     if (url === MY_SWITCHES_URL) return VIEWS_CUSTOMERS_ANSWER;
     if (url === '/api/organization') return { data: { phone_connected: true, ctm_account_id: true, ctm_sms_ready: true } };
     if (url === '/api/communication/contacts') return { data: { contacts } };
     if (url === '/api/communication/agents') return { data: { agents: [] } };
     if (url === '/api/communication/threads') return { data: { threads: serverThreads } };
     if (url === '/api/communication/numbers') return { data: { numbers: [SMS_NUMBER] } };
+    // #3023: the line above a text box names the conversation it continues; for a customer, the server's choice (here the
+    // customer's one conversation), which Text on the customer opens.
+    if (url === '/api/communication/sms/numbers') {
+      const p = (config?.params ?? {}) as Record<string, string>;
+      return { data: { conversationId: p.threadId ?? serverThreads.find((t) => t.customerId === p.customerId)?.id ?? null } };
+    }
     return { data: {} };
   });
 }

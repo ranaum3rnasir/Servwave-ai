@@ -322,9 +322,11 @@ suite('re-audit pass 2 fixes, builder F (real database)', () => {
       it('keeps today\'s answers for a job the person is on, and for an Admin', async () => {
         const c = await company();
         const person = await personWith(c.org, NO_SECTION, ['access_communication']);
-        const ownJob = await fx.addJob(c.org, c.customer, { crew: [person.id] });
-        // A job-anchored compose to a number stays ungated (#2046: the job is already in the person's view).
-        const anchored = await (await person.api()).post('/api/communication/sms', { toNumber: freshNumber(), body: 'On my way', jobId: ownJob.id });
+        const phoned = await phonedCustomer(c.org);
+        const ownJob = await fx.addJob(c.org, phoned.id, { crew: [person.id] });
+        // A job-anchored compose to a number the job's customer carries stays ungated (#2046: the job is already in the
+        // person's view). Since #3016 a number the job does not carry is refused (anchored-text-destination-db.test.ts).
+        const anchored = await (await person.api()).post('/api/communication/sms', { toNumber: phoned.digits, body: 'On my way', jobId: ownJob.id });
         expect(anchored.status, text(anchored)).toBe(201);
         expect(anchored.body.message.jobId).toBe(ownJob.id);
         const admin = await (await fx.signedInAs(c.admin)).post('/api/communication/sms', { toNumber: freshNumber(), body: 'Hello' });

@@ -96,7 +96,7 @@ import { EmptyState } from '@/ui-kit/components/data/emptyState';
 import { DetailHeader, DetailDock, type DetailHeaderAction } from '@/components/detail/DetailHeader';
 import { Badge } from '@/ui-kit/components/ui/badge';
 import { EmailValue, PhoneValue } from '@/components/contact/CustomerContactBlock';
-import { customerEmailsOf, customerPhonesOf } from '@/components/contact/customerContactLists';
+import { customerEmailsOf, customerPhonesOf, recordEffectivePhone } from '@/components/contact/customerContactLists';
 import { useContactPolicyInput } from '@/components/contact/useContactPolicyInput';
 import { customerNameDisplay } from '@/components/contact/contactDisplayPolicy';
 import { Button } from '@/ui-kit/components/ui/button';
@@ -907,6 +907,9 @@ export default function JobDetailPage() {
   // The header shows the customer's primary phone and email, through the contact display policy.
   const customerNameLinks = customerNameDisplay(contactPolicy).link;
   const headerPhone = customerPhonesOf(job.customer).find((p) => p.is_primary) ?? customerPhonesOf(job.customer)[0];
+  // #3017: the job's effective number (its changed number for the customer's primary, else the primary). The customer's
+  // extension goes with the customer's own number only.
+  const headerNumber = recordEffectivePhone(headerPhone?.phone, job.contact_entries);
   const headerEmail = customerEmailsOf(job.customer).find((e) => e.is_primary) ?? customerEmailsOf(job.customer)[0];
   const loc = job.service_location;
 
@@ -1271,10 +1274,11 @@ export default function JobDetailPage() {
                     {/* The contact display policy decides what tapping or copying the number does. */}
                     <PhoneValue
                       kind="customer_phone"
-                      phone={headerPhone.phone}
-                      extension={headerPhone.extension}
+                      phone={headerNumber ?? headerPhone.phone}
+                      extension={headerNumber === headerPhone.phone ? headerPhone.extension : null}
                       name={customerName}
                       context={{ jobId: job.id, jobLabel: job.job_number, customerId: job.customer.id, customerName }}
+                      anchorOnJob
                     />
                   </p>
                 )}
@@ -1956,6 +1960,7 @@ export default function JobDetailPage() {
                 customerName={customerName}
                 customerEmail={job.customer.email ?? undefined}
                 customerPhone={job.customer.phone || undefined}
+                contactEntries={job.contact_entries}
                 canLogPast={actions.canLogCommunication}
               />
             </TabPanel>

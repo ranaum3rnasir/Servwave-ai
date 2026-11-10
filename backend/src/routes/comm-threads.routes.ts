@@ -41,10 +41,15 @@ router.post('/threads', canDo('create', 'Communication'), canDo('access_inbox', 
 // same org-wide-inbox action GET/POST /threads already gate. A reply into a thread the caller
 // can already see, or a lead/job-anchored compose, is unaffected.
 router.post('/sms', canDo('create', 'Communication'), validate(commController.sendMessageSchema), commController.sendMessage);
+// #3023: the line above a text box - the numbers a send with the same fields would go between. Read only.
+router.get('/sms/numbers', canDo('create', 'Communication'), commController.getSendingNumbers);
 // One-click reassign of a message's job attribution (job_id: null clears → Unrouted tray).
 router.patch('/sms/:id/job', canDo('attach', 'Communication'), messageId, validate(commController.reassignSmsJobSchema), commController.reassignMessageJob);
 // Lead mirror of the job attach (full job-parity ruling, 2026-07-22; lead_id: null clears).
 router.patch('/sms/:id/lead', canDo('attach', 'Communication'), messageId, validate(commController.reassignMessageLeadSchema), commController.reassignMessageLead);
+// #3024: what "Attach to a lead or job" offers for a text (the leads and jobs of every customer carrying its number). Same
+// switch as the change itself: no menu without Attach.
+router.get('/sms/:id/attach-targets', canDo('attach', 'Communication'), messageId, commController.messageAttachTargets);
 
 // ─── Templates ──────────────────────────────────────────
 // #2046 R2: GET /templates is also the compose window's signature source (ComposeWindow.tsx) -

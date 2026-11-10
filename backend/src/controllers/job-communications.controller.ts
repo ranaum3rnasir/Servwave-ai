@@ -3,10 +3,12 @@ import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { tenantWhere } from '../lib/tenant';
 import { canAccessRow } from '../lib/permissions/enforce';
-import { canReadCustomerById } from '../lib/permissions/customerScope';
+import { canReadCustomerById, resolveCustomerScope } from '../lib/permissions/customerScope';
 import { mayReadTranscript } from './comm-calls.controller';
-import { heldMailboxesFor, recordTabVisibilityForReq } from '../lib/communication/communicationScope';
+import { heldMailboxesFor, recordNumbersOpenedForReq, recordTabVisibilityForReq } from '../lib/communication/communicationScope';
 import { recordOpenersForReq, tiedRecordConversations } from '../lib/communication/recordConversations';
+import { numbersCustomerCarries } from '../lib/comms-identity';
+import { recordTextWindow } from '../lib/communication/recordTextWindow';
 import {
   emailHiddenFrom,
   getJobCommunications as aggregateJobCommunications,
@@ -15,14 +17,15 @@ import {
 } from '../lib/job-communications';
 
 // Communication ↔ Jobs (spec §4): job/customer comm timelines.
-// GET /api/jobs/:id/communications — everything attributed to this job, across channels.
+// GET /api/jobs/:id/communications — everything attributed to this job, across channels, and the texts with the job's
+// numbers from its creation until it closes (#3022).
 export async function getJobCommunications(req: Request, res: Response) {
   try {
     const id = req.params.id as string;
 
     const job = await prisma.job.findUnique({
       where: { id, ...tenantWhere(req) },
-      select: { id: true },
+      select: { id: true, customer_id: true },
     });
     if (!job) {
       res.status(404).json({ error: 'Job not found' });
@@ -39,11 +42,20 @@ export async function getJobCommunications(req: Request, res: Response) {
     }
 
     const organizationId = req.user!.organization_id;
-    const visibility = await recordTabVisibilityForReq(req);
+    // #3022: the texts with the job's numbers from its creation until it closes, beside the ones tied to it. Its customer
+    // carries each of those numbers, so its untied texts are read, wherever their conversation is filed, by a person who can
+    // open that customer or holds Communication "All" (#3013 decision 4); opening the job alone does not open its customer.
+    const textWindow = await recordTextWindow(prisma, organizationId, { kind: 'job', id });
+    const windowTexts = textWindow?.texts;
+    const carriedNumbers = await recordNumbersOpenedForReq(req, { customerId: job.customer_id, numbers: textWindow?.numbers ?? [] });
+    const visibility = await recordTabVisibilityForReq(req, { carriedNumbers });
     const items = await aggregateJobCommunications(prisma, {
       jobId: id,
       organizationId,
       visibility,
+      windowTexts,
+      // A text names only a customer the person can open (#3021 ruling).
+      naming: { recordCustomerId: job.customer_id, customerScope: await resolveCustomerScope(req) },
       withCallSummary: mayReadTranscript(req),
       // The record conversations tied to this job (its lead's too), for the estimates and invoices the person can open. None
       // are read while the tab shows no email.
@@ -59,16 +71,17 @@ export async function getJobCommunications(req: Request, res: Response) {
   }
 }
 
-// GET /api/leads/:id/communications — the lead timeline: strictly the rows
-// attributed to THIS lead by lead_id, matching the job handler above exactly
-// (full job-parity ruling, 2026-07-22 — no customer-history union).
+// GET /api/leads/:id/communications — the lead timeline: the rows attributed to
+// THIS lead by lead_id, matching the job handler above exactly (full job-parity
+// ruling, 2026-07-22 — no customer-history union), plus, on both, the texts with
+// the record's numbers from its creation until it closes (#3022).
 export async function getLeadCommunications(req: Request, res: Response) {
   try {
     const id = req.params.id as string;
 
     const lead = await prisma.lead.findUnique({
       where: { id, ...tenantWhere(req) },
-      select: { id: true },
+      select: { id: true, customer_id: true },
     });
     if (!lead) {
       res.status(404).json({ error: 'Lead not found' });
@@ -88,11 +101,20 @@ export async function getLeadCommunications(req: Request, res: Response) {
     // lead's lead_id AND a job the requester cannot see, and `job > lead`
     // precedence says the job decides. The row filter is what enforces that.
     const organizationId = req.user!.organization_id;
-    const visibility = await recordTabVisibilityForReq(req);
+    // #3022: the texts with the lead's numbers from its creation until it closes, beside the ones tied to it. Its customer
+    // carries each of those numbers, so its untied texts are read, wherever their conversation is filed, by a person who can
+    // open that customer or holds Communication "All" (#3013 decision 4); opening the lead alone does not open its customer.
+    const textWindow = await recordTextWindow(prisma, organizationId, { kind: 'lead', id });
+    const windowTexts = textWindow?.texts;
+    const carriedNumbers = await recordNumbersOpenedForReq(req, { customerId: lead.customer_id, numbers: textWindow?.numbers ?? [] });
+    const visibility = await recordTabVisibilityForReq(req, { carriedNumbers });
     const items = await aggregateLeadCommunications(prisma, {
       leadId: id,
       organizationId,
       visibility,
+      windowTexts,
+      // A text names only a customer the person can open (#3021 ruling).
+      naming: { recordCustomerId: lead.customer_id, customerScope: await resolveCustomerScope(req) },
       withCallSummary: mayReadTranscript(req),
       // The record conversations tied to this lead (its jobs' too), for the estimates and invoices the person can open. None
       // are read while the tab shows no email.
@@ -129,7 +151,7 @@ export async function getCustomerCommunications(req: Request, res: Response) {
     // existence) and never a 200 (that was #2041's live enumeration-oracle regression).
     const customer = await prisma.customer.findUnique({
       where: { id, ...tenantWhere(req) },
-      select: { id: true },
+      select: { id: true, first_name: true, last_name: true, company_name: true },
     });
     if (!customer || !(await canReadCustomerById(req, id))) {
       res.status(404).json({ error: 'Customer not found' });
@@ -142,12 +164,19 @@ export async function getCustomerCommunications(req: Request, res: Response) {
     // stamps customer_id, lead_id AND job_id on the same row, so that overlap is
     // the common case, not the exotic one.
     const mailboxes = await heldMailboxesFor(req);
+    const organizationId = req.user!.organization_id;
+    // #3021: the conversations on the customer's numbers, worked out now (#3013 decision 5). The person can open this
+    // customer, who carries every one of these numbers, so the texts of them tied to no lead or job are theirs to read
+    // (decision 4); a text tied to a lead or job still needs that record.
+    const carriedNumbers = await numbersCustomerCarries(prisma, organizationId, id);
     const items = await aggregateCustomerCommunications(prisma, {
       customerId: id,
-      organizationId: req.user!.organization_id,
+      organizationId,
       readMailboxIds: [...mailboxes.held, ...(mailboxes.main ? [mailboxes.main] : [])],
-      visibility: await recordTabVisibilityForReq(req),
+      visibility: await recordTabVisibilityForReq(req, { carriedNumbers }),
       withCallSummary: mayReadTranscript(req),
+      carriedNumbers,
+      customer,
     });
 
     res.json({ items });

@@ -30,6 +30,7 @@ import { SectionCard } from '@/components/jobs/overview/SectionCard';
 import { CommRow } from '@/components/communication/shared/CommRow';
 import { EntityCallDrawer } from '@/components/communication/shared/EntityCallDrawer';
 import { EntitySmsDrawer } from '@/components/communication/shared/EntitySmsDrawer';
+import { TextingFromLine } from '@/components/communication/shared/TextingFromLine';
 import { LogCommunicationDrawer } from '@/components/communication/shared/LogCommunicationDrawer';
 import {
   newestFirst,
@@ -40,6 +41,8 @@ import {
 import { useScheduleTimezone, formatInstant } from '@/lib/schedule-tz';
 import { canModifyLoggedEntry } from '@/lib/api/jobCommunications';
 import { useAuthStore } from '@/stores/auth.store';
+import { recordEffectivePhone } from '@/components/contact/customerContactLists';
+import type { RecordContactEntry } from '@/lib/api/recordContactEntries';
 
 interface JobCommunicationsTabProps {
   jobId: string;
@@ -48,8 +51,10 @@ interface JobCommunicationsTabProps {
   customerName: string;
   /** Customer's email — absent disables the Email compose mode. */
   customerEmail?: string;
-  /** Customer's phone — absent hides the "Call customer" header action. */
+  /** Customer's primary phone — absent hides the "Call customer" header action. "Call customer" dials the job's number in its place when the job changed it. */
   customerPhone?: string;
+  /** The job's own contact entries (the pencil's), from the job detail. */
+  contactEntries?: RecordContactEntry[];
   /** The server's per-record answer for Log past communications on this job; the person's switch decides when absent. */
   canLogPast?: boolean;
 }
@@ -75,6 +80,7 @@ export function JobCommunicationsTab({
   customerName,
   customerEmail,
   customerPhone,
+  contactEntries,
   canLogPast: canLogPastAnswer,
 }: JobCommunicationsTabProps) {
   const tz = useScheduleTimezone();
@@ -121,6 +127,8 @@ export function JobCommunicationsTab({
   const timeline = newestFirst(items);
 
   const sendPending = mode === 'sms' ? sendSms.isPending : sendEmail.isPending;
+  // #3016: the number the job shows. A text sent here names no number: the server takes it from the job.
+  const jobPhone = recordEffectivePhone(customerPhone, contactEntries);
 
   const handleSend = () => {
     const trimmed = body.trim();
@@ -151,7 +159,7 @@ export function JobCommunicationsTab({
            the logging ability. They sit side by side in the header where both apply, and each
            stands alone where the other does not - which is the whole placement decision. */
         meta={
-          canLogPast || (canCompose && customerPhone) ? (
+          canLogPast || (canCompose && jobPhone) ? (
             <>
               {canLogPast && (
                 <Button size="sm" variant="outline" onClick={() => setLogOpen(true)}>
@@ -159,12 +167,12 @@ export function JobCommunicationsTab({
                   Log communication
                 </Button>
               )}
-              {canCompose && customerPhone && (
+              {canCompose && jobPhone && (
                 // Interactive chrome → ocean (default), never sage.
                 <Button
                   size="sm"
                   onClick={() =>
-                    requestCall(customerPhone, {
+                    requestCall(jobPhone, {
                       jobId,
                       jobLabel: jobNumber,
                       customerId,
@@ -279,6 +287,10 @@ export function JobCommunicationsTab({
             )}
           </div>
 
+          {/* #3023: the numbers a text written here goes between, for the fields its send names. */}
+          {mode === 'sms' && (
+            <TextingFromLine target={customerId ? { customerId, jobId } : null} className="mb-2" />
+          )}
           {mode === 'email' && (
             <SendingAsLine
               address={sender.fromAddress}

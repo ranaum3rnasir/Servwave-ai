@@ -1033,12 +1033,15 @@ describe('executeAction - SEND_SMS addressed to staff', () => {
     expect(res.status).toBe('SENT');
     // The customer summary is still the NUMBER, not a name.
     expect(res.recipientSummary).toBe('+15551234567');
-    expect(mockPrisma.messageThread.create.mock.calls[0][0].data).toEqual({
+    // #3019: the customer's conversation, keyed by their number (and ours).
+    expect(mockPrisma.messageThread.create.mock.calls[0][0].data).toMatchObject({
       channel: 'sms',
       campaign_type: 'customer_care',
       customer_id: 'c0000000-0000-0000-0000-000000000001',
+      other_party_e164: '+15551234567',
       organization_id: ORG,
     });
+    expect(mockPrisma.messageThread.create.mock.calls[0][0].data).not.toHaveProperty('kind');
     expect(mockPrisma.message.create.mock.calls[0][0].data).toMatchObject({
       direction: 'out',
       body: 'Hi Sarah',

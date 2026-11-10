@@ -4,8 +4,10 @@
 //     switch, not Edit communication records) AND channel call|sms|email
 //     — any miss renders the static (nav/plain) pill. A missing customer is NOT
 //     a miss any more: those rows get the picker in search mode.
-//   • Attach: an unattributed row's menu lists the customer's OPEN jobs and
-//     leads; picking PATCHes the channel's reassign endpoint.
+//   • Attach: an unattributed row's menu lists OPEN jobs and leads; picking PATCHes the channel's reassign endpoint.
+//     A text's or a call's menu is "Attach to a lead or job" (#3024): what the server offers for its number (the
+//     leads and jobs of the customers carrying it, or a search of every one when none does). An email's lists the
+//     customer's own, with a search of the whole company.
 //   • Jobs and leads are targets for calls, texts and emails alike (S08.19), each with its own lead endpoint.
 //   • Move: an attributed row's menu lists the OTHER open jobs (never the
 //     currently attached one); picking PATCHes the new job_id.
@@ -74,6 +76,25 @@ const LEADS_FIXTURE = [
   { id: OPEN_LEAD, lead_number: 'L00055', status: 'NEW', service_request: 'No heat upstairs' },
   { id: DEAD_LEAD, lead_number: 'L00056', status: 'LOST', service_request: 'Went with a competitor' },
 ];
+
+/** A call from a number no customer carries (#3024: any lead or job, by search). */
+const UNKNOWN_CALLER_ID = 'ca000000-0000-0000-0000-000000000009';
+
+/** What "Attach to a lead or job" offers for a text or a call (#3024): the server leaves the cancelled job and the lost lead out. */
+const CARRIERS_ANSWER = {
+  rule: 'carriers',
+  groups: [{
+    customer: { id: CUSTOMER_ID, name: 'Pat Morgan' },
+    jobs: [
+      { id: OPEN_JOB_A, number: 'J00042', location: '665 Fifth Ave' },
+      { id: OPEN_JOB_B, number: 'J00043', location: '1 Madison Ave' },
+    ],
+    leads: [{ id: OPEN_LEAD, number: 'L00055', detail: 'No heat upstairs' }],
+  }],
+};
+
+/** The detach item: "No lead or job" in a text's or a call's menu (#3024), "No job or lead" in an email's. */
+const detachItem = (channel: string) => (channel === 'email' ? 'No job or lead' : 'No lead or job');
 
 const UNATTRIBUTED_CALL: CommItem = {
   id: 'ca000000-0000-0000-0000-000000000001',
@@ -169,6 +190,8 @@ beforeEach(() => {
   commAccess.value = true;
   mockApi.get.mockImplementation(async (url: string, config?: { params?: Record<string, unknown> }) => {
     if (url === MY_SWITCHES_URL) return VIEWS_CUSTOMERS_ANSWER;
+    if (url === `/api/communication/calls/${UNKNOWN_CALLER_ID}/attach-targets`) return { data: { rule: 'any', groups: [] } };
+    if (/^\/api\/communication\/(sms|calls)\/[^/]+\/attach-targets$/.test(url)) return { data: CARRIERS_ANSWER };
     if (url === `/api/customers/${CUSTOMER_ID}`)
       return { data: { customer: { jobs: CUSTOMER_JOBS_FIXTURE } } };
     // Serves both shapes: customer_id (the default list) and search (org-wide).
@@ -368,13 +391,13 @@ describe('CommRowJobControl — attach / move / detach', () => {
     );
   });
 
-  it('detach: "No job" PATCHes { job_id: null } and invalidates the timelines', async () => {
+  it('detach: "No lead or job" on a text PATCHes { job_id: null } and invalidates the timelines', async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     const { queryClient } = renderControl(ATTRIBUTED_SMS);
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
 
     await user.click(await screen.findByTitle('Attached to J00042 - click to move or detach'));
-    await user.click(await screen.findByRole('menuitem', { name: 'No job or lead' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'No lead or job' }));
 
     await waitFor(() =>
       expect(mockApi.patch).toHaveBeenCalledWith(
@@ -434,12 +457,13 @@ describe('CommRowJobControl — leads and unknown callers', () => {
     expect(mockApi.patch).not.toHaveBeenCalledWith(expect.stringMatching(/\/job$/), expect.anything());
   });
 
-  it('unknown caller: typing searches org-wide and the pick still PATCHes the job endpoint', async () => {
+  it('unknown caller (no customer carries the number): typing searches org-wide and the pick still PATCHes the job endpoint', async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
-    renderWithProviders(<CommRowJobControl item={UNATTRIBUTED_CALL} />, { ability: managerAbility });
+    const unknown = { ...UNATTRIBUTED_CALL, id: UNKNOWN_CALLER_ID };
+    renderWithProviders(<CommRowJobControl item={unknown} />, { ability: managerAbility });
 
     await user.click(await screen.findByTitle('Not attached - click to attach to a job or lead'));
-    await user.type(await screen.findByLabelText('Search jobs and leads'), 'J00043');
+    await user.type(await screen.findByLabelText('Search leads and jobs'), 'J00043');
 
     await waitFor(() =>
       expect(mockApi.get).toHaveBeenCalledWith('/api/jobs', {
@@ -452,58 +476,55 @@ describe('CommRowJobControl — leads and unknown callers', () => {
 
     await waitFor(() =>
       expect(mockApi.patch).toHaveBeenCalledWith(
-        `/api/communication/calls/${UNATTRIBUTED_CALL.id}/job`,
+        `/api/communication/calls/${UNKNOWN_CALLER_ID}/job`,
         { job_id: OPEN_JOB_B }
       )
     );
   });
 
-  // The picker used to fence a customer-scoped row into that customer's own
-  // jobs and leads, with no search box at all — so a call attributed to the
-  // wrong customer could never be moved, and the common case was the stuck one.
-  it('known customer: seeds the default list but still searches the whole org', async () => {
+  // #3024 (Ran, 2026-11-06, ruling 1): a call whose number some customer carries may be tied only to the leads and jobs of
+  // those customers; the menu lists them and its search stays within them (the server refuses anything else).
+  it('a call whose number customers carry: lists only their leads and jobs, and the search stays within them', async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     renderControl(UNATTRIBUTED_CALL);
 
     await user.click(await screen.findByTitle('Not attached - click to attach to a job or lead'));
-
-    // Default list = this customer's own open jobs, before anything is typed.
     expect(await screen.findByRole('menuitem', { name: /J00042/ })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Pat Morgan' })).toBeInTheDocument();
+
+    await user.type(await screen.findByLabelText('Search leads and jobs'), 'J00099');
+    expect(await screen.findByText('No matching leads or jobs')).toBeInTheDocument();
     expect(screen.queryByRole('menuitem', { name: /J00099/ })).not.toBeInTheDocument();
-
-    // ...and the search box is present, reaching past that customer.
-    await user.type(await screen.findByLabelText('Search jobs and leads'), 'J00099');
-
-    const orgHit = await screen.findByRole('menuitem', { name: /J00099/ });
-    expect(screen.queryByRole('menuitem', { name: /J00042/ })).not.toBeInTheDocument();
-
-    await user.click(orgHit);
-
-    await waitFor(() =>
-      expect(mockApi.patch).toHaveBeenCalledWith(
-        `/api/communication/calls/${UNATTRIBUTED_CALL.id}/job`,
-        { job_id: ORG_JOB }
-      )
-    );
+    expect(mockApi.get).not.toHaveBeenCalledWith('/api/jobs', expect.anything());
   });
 });
 
 describe('CommRowJobControl — detaching a text or an email that also sits on a lead', () => {
-  it.each([
-    ['sms', 'sms'],
-    ['email', 'emails'],
-  ] as const)('a %s row on a job and a lead clears both ends, the lead first', async (channel, segment) => {
+  it('an email row on a job and a lead clears both ends, the lead first', async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
-    const row = { ...ATTRIBUTED_SMS, channel, leadId: OPEN_LEAD, leadLabel: 'L00055' };
+    const row = { ...ATTRIBUTED_SMS, channel: 'email' as const, leadId: OPEN_LEAD, leadLabel: 'L00055' };
     renderControl(row);
 
     await user.click(await screen.findByTitle('Attached to J00042 - click to move or detach'));
-    await user.click(await screen.findByRole('menuitem', { name: 'No job or lead' }));
+    await user.click(await screen.findByRole('menuitem', { name: detachItem('email') }));
 
     await waitFor(() => expect(mockApi.patch).toHaveBeenCalledTimes(2));
-    expect(mockApi.patch.mock.calls[0]).toEqual([`/api/communication/${segment}/${row.id}/lead`, { lead_id: null }]);
-    expect(mockApi.patch.mock.calls[1]).toEqual([`/api/communication/${segment}/${row.id}/job`, { job_id: null }]);
+    expect(mockApi.patch.mock.calls[0]).toEqual([`/api/communication/emails/${row.id}/lead`, { lead_id: null }]);
+    expect(mockApi.patch.mock.calls[1]).toEqual([`/api/communication/emails/${row.id}/job`, { job_id: null }]);
     await waitFor(() => expect(toast).toHaveBeenLastCalledWith({ title: 'Link removed' }));
+  });
+
+  // #3024 (Ran, 2026-11-06): the server keeps a text on one record, so "No lead or job" is one change that clears both ends.
+  it('a text row on a job and a lead clears both ends in one change', async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const row = { ...ATTRIBUTED_SMS, leadId: OPEN_LEAD, leadLabel: 'L00055' };
+    renderControl(row);
+
+    await user.click(await screen.findByTitle('Attached to J00042 - click to move or detach'));
+    await user.click(await screen.findByRole('menuitem', { name: detachItem('sms') }));
+
+    await waitFor(() => expect(toast).toHaveBeenLastCalledWith({ title: 'Link removed' }));
+    expect(mockApi.patch.mock.calls).toEqual([[`/api/communication/sms/${row.id}/job`, { job_id: null }]]);
   });
 
   it('a row that sits on a lead only clears just the lead', async () => {
@@ -532,7 +553,7 @@ describe('CommRowJobControl — a detach that takes the row out of the person\'s
     renderControl(row);
 
     await user.click(await screen.findByTitle('Attached to J00042 - click to move or detach'));
-    await user.click(await screen.findByRole('menuitem', { name: 'No job or lead' }));
+    await user.click(await screen.findByRole('menuitem', { name: detachItem(channel) }));
 
     await waitFor(() => expect(mockApi.patch).toHaveBeenCalledWith(`/api/communication/${segment}/${row.id}/job`, { job_id: null }));
     await waitFor(() => expect(toast).toHaveBeenCalledTimes(1));

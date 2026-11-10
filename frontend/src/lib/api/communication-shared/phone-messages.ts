@@ -39,6 +39,9 @@ export type Message = {
   jobId?: string;
   /** Denormalized human job number (e.g. "J-1850") so badges render with no join. */
   jobLabel?: string;
+  /** Per-message lead attribution, and the lead's number (e.g. "L00012") for the inbox's grey text (#3024). */
+  leadId?: string;
+  leadLabel?: string;
 };
 
 /** How a thread is filed in the unified inbox directory (§14.17).
@@ -56,7 +59,9 @@ export type MessageThread = {
    *  by `userId`, a supplier thread by `vendorId`, a lead thread by `leadId`. */
   customerId?: string;
   /** The customer's display name, sent beside `customerId` so the conversation is titled for a person who cannot read
-   *  the customer directory. Only for a thread the person may see; no other customer field comes with it. */
+   *  the customer directory. Only for a thread the person may see; no other customer field comes with it. A conversation
+   *  keyed by its pair (`pair`) filed on a customer the person cannot open comes with neither this nor `customerId` (#3021):
+   *  it is named by `pair.customers` and replied to by its id. */
   linkedCustomer?: { id: string; name: string };
   channel: "sms";
   campaignType: CampaignType;
@@ -82,4 +87,22 @@ export type MessageThread = {
   /** The staff member's display name, sent alongside `userId` so a staff thread
    *  renders a name without a second call. */
   linkedUser?: { id: string; name: string };
+  /** #3019: the conversation's pair of numbers - the other party's and ours, with whose our number is (the main line,
+   *  or the person it belongs to; null when it is nobody's). Present only on a conversation keyed by its pair. */
+  pair?: ConversationPair;
+};
+
+export type OurLine = { kind: "main_line" } | { kind: "person"; name: string };
+
+/** #3021: a customer carrying a conversation's number, as the screens name them. */
+export type ConversationCustomer = { id: string; name: string };
+
+export type ConversationPair = {
+  otherPartyE164: string;
+  ourNumberE164: string | null;
+  ourLine: OurLine | null;
+  /** #3021: every customer carrying the other party's number, in the fixed order, worked out by the server at each read.
+   *  The conversation shows on each of their pages; empty when no customer carries it. The first is the conversation's one
+   *  customer (the inbox side panel's), whichever customer it is stored on (`customerId`). */
+  customers: ConversationCustomer[];
 };

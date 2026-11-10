@@ -37,8 +37,11 @@
 import { prisma } from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { normalizeNAPhone } from '../../lib/comms-identity';
+import { otherPartyE164 } from '../../lib/communication/otherPartyNumber';
 import { isCtmConfigured } from '../../lib/ctm/client';
 import { markMessageNotDelivered, sendCtmSms, type CtmSmsSendResult } from '../../lib/ctm/sendSms';
+import { findOrCreatePairConversation, mainLineE164 } from '../../lib/ctm/smsThread';
+import { resolveOutboundNumber } from '../../lib/communication/resolveOutboundNumber';
 
 /**
  * WHO an automated text is addressed to.
@@ -57,7 +60,16 @@ import { markMessageNotDelivered, sendCtmSms, type CtmSmsSendResult } from '../.
  * deliberately, and matches how the codebase already treats an unanchored thread.
  */
 export type OutboundSmsCounterparty =
-  | { type: 'customer'; customerId: string; job?: { id: string; label: string | null } | null }
+  | {
+      type: 'customer';
+      customerId: string;
+      job?: { id: string; label: string | null } | null;
+      /**
+       * The lead the text is sent for (a step on a lead trigger), stored on the text like a job (#3020): a reply to it then
+       * takes that lead while it is open. The text is `automated`, so it never marks the lead contacted (lead-contact.service).
+       */
+      lead?: { id: string } | null;
+    }
   /**
    * A member of staff. `toE164` is the number the CALLER already holds (it rides on the
    * resolved recipient), so this path performs no lookup of its own; `name` titles the
@@ -74,7 +86,12 @@ export interface RecordOutboundSmsParams {
 export async function recordOutboundSms(
   params: RecordOutboundSmsParams,
 ): Promise<{ threadId: string; messageId: string; delivery: CtmSmsSendResult }> {
-  const thread = await findOrCreateThread(params.organizationId, params.to);
+  // #3014: the destination is resolved before the row is written, so the row stores the number the text goes to as its
+  // other party (normalized E.164; none when there is no number or it is one of our own) and delivery uses that same number.
+  // #3019: it also keys the customer's conversation.
+  const toE164 = await resolveDestination(params.organizationId, params.to);
+  const otherParty = await otherPartyE164(prisma, params.organizationId, toE164);
+  const thread = await findOrCreateThread(params.organizationId, params.to, otherParty);
 
   const message = await prisma.message.create({
     data: {
@@ -92,6 +109,8 @@ export async function recordOutboundSms(
       ...(params.to.type === 'customer' && params.to.job
         ? { job_id: params.to.job.id, job_label: params.to.job.label }
         : {}),
+      ...(params.to.type === 'customer' && params.to.lead ? { lead_id: params.to.lead.id } : {}),
+      other_party_e164: otherParty,
       organization_id: params.organizationId,
     },
   });
@@ -117,7 +136,7 @@ export async function recordOutboundSms(
   // deliverViaCtm never throws, so awaiting it cannot break the run).
   const delivery = await deliverViaCtm({
     organizationId: params.organizationId,
-    to: params.to,
+    toE164,
     threadId: thread.id,
     messageId: message.id,
     body: params.body,
@@ -129,12 +148,26 @@ export async function recordOutboundSms(
 async function findOrCreateThread(
   organizationId: string,
   to: OutboundSmsCounterparty,
+  otherParty: string | null,
 ): Promise<{ id: string }> {
+  if (to.type === 'customer' && otherParty) {
+    // #3019: the customer's conversation is their number plus ours - the number an automated text leaves from (no sender:
+    // the company's default, else its oldest active number), else the main line.
+    const { thread } = await findOrCreatePairConversation(
+      prisma,
+      organizationId,
+      { otherPartyE164: otherParty, ourNumberE164: await automatedTextNumber(organizationId) },
+      { customerId: to.customerId, leadId: null, title: null },
+    );
+    return thread;
+  }
   if (to.type === 'customer') {
+    // A customer with no number to text keeps the conversation it always had (nothing can be delivered on it).
     const existing = await prisma.messageThread.findFirst({
       where: {
         customer_id: to.customerId,
         channel: 'sms',
+        other_party_e164: null,
         organization_id: organizationId,
       },
     });
@@ -170,9 +203,23 @@ async function findOrCreateThread(
   });
 }
 
+/** The number an automated text leaves from (resolveOutboundNumber with no sender), as E.164, else the main line. */
+async function automatedTextNumber(organizationId: string): Promise<string | null> {
+  const resolved = await resolveOutboundNumber(prisma, { orgId: organizationId, requireSms: true });
+  if (resolved) {
+    const row = await prisma.phoneNumber.findFirst({
+      where: { id: resolved.phone_number_id, organization_id: organizationId },
+      select: { e164: true },
+    });
+    if (row?.e164) return row.e164;
+  }
+  return mainLineE164(prisma, organizationId);
+}
+
 async function deliverViaCtm(p: {
   organizationId: string;
-  to: OutboundSmsCounterparty;
+  /** The destination resolveDestination gave, before the row was written. */
+  toE164: string | null;
   threadId: string;
   messageId: string;
   body: string;
@@ -185,7 +232,7 @@ async function deliverViaCtm(p: {
       await markMessageNotDelivered(prisma, p.messageId, 'skipped', 'NOT_CONNECTED');
       return { delivered: false, reason: 'NOT_CONNECTED' };
     }
-    const toE164 = await resolveDestination(p.organizationId, p.to);
+    const toE164 = p.toE164;
     if (!toE164) {
       await markMessageNotDelivered(prisma, p.messageId, 'skipped', 'NO_SMS_NUMBER');
       return { delivered: false, reason: 'NO_SMS_NUMBER' };

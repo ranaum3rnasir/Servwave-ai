@@ -1,10 +1,12 @@
 /**
  * Lead page Communication tab (slice E4-FE + verification follow-up) — a unified
- * timeline over GET /api/leads/:id/communications: STRICTLY the rows attributed
- * to this lead by lead_id, matching the Job tab's job_id scoping exactly (full
- * job-parity ruling, 2026-07-22 — no customer-history union). A row whose
- * lead_id is null — e.g. a phone-matched call never explicitly tied to THIS
- * lead — will not surface here, same as an unattributed row on a job's timeline.
+ * timeline over GET /api/leads/:id/communications: the rows attributed to this
+ * lead by lead_id, matching the Job tab's job_id scoping exactly (full job-parity
+ * ruling, 2026-07-22 — no customer-history union). A call or email whose lead_id
+ * is null — e.g. a phone-matched call never explicitly tied to THIS lead — will
+ * not surface here, same as an unattributed row on a job's timeline. Texts are
+ * the exception on both tabs (#3022, Q39): the server adds every text with the
+ * numbers the record's card shows, from its creation until it closes, tied or not.
  *
  * Rendering rides the shared CommRow (E6): navigable job chips + the gated
  * attach/move/detach menu on call/sms/email rows, and the lead chip suppressed for
@@ -42,6 +44,7 @@ import { requestCall } from '@/lib/communication/phoneTabHandoff';
 import { CommRow } from '@/components/communication/shared/CommRow';
 import { EntityCallDrawer } from '@/components/communication/shared/EntityCallDrawer';
 import { EntitySmsDrawer } from '@/components/communication/shared/EntitySmsDrawer';
+import { TextingFromLine } from '@/components/communication/shared/TextingFromLine';
 import { LogCommunicationDrawer } from '@/components/communication/shared/LogCommunicationDrawer';
 import { EmptyState } from '@/components/ui/empty-state';
 import {
@@ -53,6 +56,8 @@ import {
 } from '@/lib/api/jobCommunications';
 import { useAuthStore } from '@/stores/auth.store';
 import { useScheduleTimezone, formatInstant } from '@/lib/schedule-tz';
+import { recordEffectivePhone } from '@/components/contact/customerContactLists';
+import type { RecordContactEntry } from '@/lib/api/recordContactEntries';
 
 type ComposeMode = 'sms' | 'email';
 
@@ -66,6 +71,7 @@ export function LeadCommunicationsTab({
   customerId,
   customerName,
   customerPhone,
+  contactEntries,
   customerEmail,
   initialMessage,
   onSent,
@@ -76,7 +82,10 @@ export function LeadCommunicationsTab({
   /** The lead's customer — powers the open-jobs attach menu, SMS routing + call. */
   customerId?: string;
   customerName?: string;
+  /** The customer's primary phone. "Call customer" dials the lead's number in its place when the lead changed it. */
   customerPhone?: string;
+  /** The lead's own contact entries (the pencil's), from the lead detail. */
+  contactEntries?: RecordContactEntry[];
   /** Customer's email — absent disables the Email compose mode. */
   customerEmail?: string;
   /**
@@ -135,6 +144,8 @@ export function LeadCommunicationsTab({
   const [selectedSmsThreadId, setSelectedSmsThreadId] = useState<string | null>(null);
 
   const sendPending = mode === 'sms' ? sendSms.isPending : sendEmail.isPending;
+  // #3016: the number the lead shows. A text sent here names no number: the server takes it from the lead.
+  const leadPhone = recordEffectivePhone(customerPhone, contactEntries);
 
   const handleSend = () => {
     const trimmed = body.trim();
@@ -183,7 +194,7 @@ export function LeadCommunicationsTab({
           entitlement, the create ability and a customer with a phone number; "Log communication"
           needs only the logging ability. They sit side by side where both apply, and each stands
           alone where the other does not - which is the whole placement decision. */}
-      {(canLogPast || (canCompose && customerPhone)) && (
+      {(canLogPast || (canCompose && leadPhone)) && (
         <div className="mb-3 flex items-center justify-end gap-2">
           {canLogPast && (
             <Button size="sm" variant="outline" onClick={() => setLogOpen(true)}>
@@ -191,12 +202,12 @@ export function LeadCommunicationsTab({
               Log communication
             </Button>
           )}
-          {canCompose && customerPhone && (
+          {canCompose && leadPhone && (
             /* Interactive chrome → ocean (default), never sage. */
             <Button
               size="sm"
               onClick={() =>
-                requestCall(customerPhone, {
+                requestCall(leadPhone, {
                   leadId,
                   leadLabel,
                   customerId,
@@ -317,6 +328,10 @@ export function LeadCommunicationsTab({
             )}
           </div>
 
+          {/* #3023: the numbers a text written here goes between, for the fields its send names. */}
+          {mode === 'sms' && (
+            <TextingFromLine target={customerId ? { customerId, leadId } : null} className="mb-2" />
+          )}
           {mode === 'email' && (
             <SendingAsLine
               address={sender.fromAddress}

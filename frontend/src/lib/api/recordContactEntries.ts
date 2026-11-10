@@ -75,6 +75,8 @@ function useCacheEntries(record: ContactRecordRef) {
     // Each write is one entry on the record's history; the readers of its timeline pick it up.
     queryClient.invalidateQueries({ queryKey: [`${record.kind}-timeline`, record.id] });
     queryClient.invalidateQueries({ queryKey: ['timeline', record.kind.toUpperCase(), record.id] });
+    // The record's Communication tab lists the texts with the numbers its card shows (#3022), so a changed card changes it.
+    queryClient.invalidateQueries({ queryKey: [`${record.kind}-communications`, record.id] });
   };
 }
 

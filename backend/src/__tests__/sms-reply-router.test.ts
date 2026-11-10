@@ -1,11 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { JobStatus } from '@prisma/client';
 import {
-  resolveInboundSmsJob,
+  pickReplyTie,
   SMS_ROUTER_RECENCY_WINDOW_DAYS,
   CLOSED_JOB_STATUSES,
-  type JobTextCandidate,
+  CLOSED_LEAD_STATUSES,
+  type ReplyTextCandidate,
 } from '../lib/sms-reply-router';
+
+// The rule over the texts it is handed. Which texts are read, and the whole rule through the incoming-text webhook on a
+// real database, is sms-reply-tie-db.test.ts.
 
 // Fixed "now" so every case is deterministic.
 const NOW = new Date('2026-06-10T12:00:00Z');
@@ -15,142 +18,97 @@ function daysAgo(days: number): Date {
   return new Date(NOW.getTime() - days * DAY_MS);
 }
 
-function candidate(overrides: Partial<JobTextCandidate> = {}): JobTextCandidate {
-  return {
-    jobId: 'j0000000-0000-0000-0000-000000000001',
-    jobLabel: 'J-1850 · 665 Fifth Ave',
-    lastOutboundAt: daysAgo(1),
-    jobStatus: 'SCHEDULED',
-    ...overrides,
-  };
-}
+const fromJob = (id: string, sentAt: Date, status = 'SCHEDULED', label: string | null = `J-${id}`): ReplyTextCandidate =>
+  ({ sentAt, lead: null, job: { id, label, status } });
+const fromLead = (id: string, sentAt: Date, status = 'CONTACTED'): ReplyTextCandidate => ({ sentAt, lead: { id, status }, job: null });
+
+const tie = (t: { leadId?: string; jobId?: string; jobLabel?: string | null }) =>
+  ({ leadId: t.leadId ?? null, jobId: t.jobId ?? null, jobLabel: t.jobLabel ?? (t.jobId ? `J-${t.jobId}` : null) });
 
 describe('sms-reply-router constants', () => {
   it('exposes the 30-day recency window', () => {
     expect(SMS_ROUTER_RECENCY_WINDOW_DAYS).toBe(30);
   });
 
-  // Read from the job status enum (everything from Completed on), not from the set under test: PRD 6 puts a finished
-  // job through Office review and Ready to close to Done, and all of those are closed to an inbound text.
-  it('treats Completed, every close-out status after it, and Cancelled as closed', () => {
-    const order = Object.values(JobStatus);
-    expect([...CLOSED_JOB_STATUSES].sort()).toEqual(order.slice(order.indexOf('COMPLETED')).sort());
+  // Ran, 2026-11-05: a job is closed only when Done or Cancelled; a lead when converted (Won) or Lost.
+  it('treats Done and Cancelled as a closed job, and Won and Lost as a closed lead', () => {
+    expect([...CLOSED_JOB_STATUSES].sort()).toEqual(['CANCELLED', 'DONE']);
+    expect([...CLOSED_LEAD_STATUSES].sort()).toEqual(['LOST', 'WON']);
   });
 });
 
-describe('resolveInboundSmsJob — best-effort recency-gated routing', () => {
-  // PRD hard cases, table-driven.
-  const cases: Array<{
-    name: string;
-    recentJobTexts: JobTextCandidate[];
-    expected: { jobId: string; jobLabel: string | null } | null;
-  }> = [
+describe('pickReplyTie: the latest text we sent with an open lead or job, within the window', () => {
+  const cases: Array<{ name: string; sentTexts: ReplyTextCandidate[]; expected: ReturnType<typeof tie> | null }> = [
     {
-      name: 'two live jobs → the most-recently-texted-from job wins',
-      recentJobTexts: [
-        candidate({ jobId: 'job-1850', jobLabel: 'J-1850 · 665 Fifth Ave', lastOutboundAt: daysAgo(5), jobStatus: 'IN_PROGRESS' }),
-        candidate({ jobId: 'job-1872', jobLabel: 'J-1872 · 12 Bleecker St', lastOutboundAt: daysAgo(1), jobStatus: 'SCHEDULED' }),
-      ],
-      expected: { jobId: 'job-1872', jobLabel: 'J-1872 · 12 Bleecker St' },
+      name: 'two live jobs: the most recently texted-from job wins',
+      sentTexts: [fromJob('job-1850', daysAgo(5), 'IN_PROGRESS'), fromJob('job-1872', daysAgo(1))],
+      expected: tie({ jobId: 'job-1872' }),
     },
     {
-      name: 'all candidates stale (outside the recency window) → null (Unrouted tray)',
-      recentJobTexts: [
-        candidate({ jobId: 'job-old-1', lastOutboundAt: daysAgo(31), jobStatus: 'SCHEDULED' }),
-        candidate({ jobId: 'job-old-2', lastOutboundAt: daysAgo(90), jobStatus: 'IN_PROGRESS' }),
-      ],
+      name: 'a lead texted after a job: the lead wins',
+      sentTexts: [fromJob('job-1850', daysAgo(5)), fromLead('lead-7', daysAgo(1))],
+      expected: tie({ leadId: 'lead-7' }),
+    },
+    {
+      name: 'a text carrying a lead and a job ties the reply to both',
+      sentTexts: [{ sentAt: daysAgo(1), lead: { id: 'lead-7', status: 'ESTIMATED' }, job: { id: 'job-9', label: 'J-9', status: 'SCHEDULED' } }],
+      expected: tie({ leadId: 'lead-7', jobId: 'job-9', jobLabel: 'J-9' }),
+    },
+    {
+      name: 'a text carrying a Won lead and an open job ties the reply to the job only',
+      sentTexts: [{ sentAt: daysAgo(1), lead: { id: 'lead-7', status: 'WON' }, job: { id: 'job-9', label: 'J-9', status: 'SCHEDULED' } }],
+      expected: tie({ jobId: 'job-9', jobLabel: 'J-9' }),
+    },
+    {
+      name: 'every text outside the recency window: nothing',
+      sentTexts: [fromJob('job-old-1', daysAgo(31)), fromLead('lead-old', daysAgo(90))],
       expected: null,
     },
     {
-      name: 'all candidate jobs closed → null (Unrouted tray)',
-      recentJobTexts: [
-        candidate({ jobId: 'job-done', lastOutboundAt: daysAgo(1), jobStatus: 'COMPLETED' }),
-        candidate({ jobId: 'job-cancelled', lastOutboundAt: daysAgo(2), jobStatus: 'CANCELLED' }),
-      ],
+      name: 'every record closed: nothing',
+      sentTexts: [fromJob('job-done', daysAgo(1), 'DONE'), fromJob('job-cancelled', daysAgo(2), 'CANCELLED'), fromLead('lead-lost', daysAgo(3), 'LOST')],
       expected: null,
     },
     {
-      name: 'no prior job texts (cold inbound) → null (Unrouted tray)',
-      recentJobTexts: [],
+      name: 'no texts we sent: nothing',
+      sentTexts: [],
       expected: null,
     },
     {
-      name: 'single live candidate → that job',
-      recentJobTexts: [
-        candidate({ jobId: 'job-solo', jobLabel: 'J-1900 · 9 Pine St', lastOutboundAt: daysAgo(10), jobStatus: 'ON_SITE' }),
-      ],
-      expected: { jobId: 'job-solo', jobLabel: 'J-1900 · 9 Pine St' },
-    },
-    {
-      name: 'a closed-but-recent job loses to an older-but-live one',
-      recentJobTexts: [
-        candidate({ jobId: 'job-closed-recent', lastOutboundAt: daysAgo(1), jobStatus: 'COMPLETED' }),
-        candidate({ jobId: 'job-live-older', jobLabel: 'J-1860 · 4 Oak Ln', lastOutboundAt: daysAgo(20), jobStatus: 'EN_ROUTE' }),
-      ],
-      expected: { jobId: 'job-live-older', jobLabel: 'J-1860 · 4 Oak Ln' },
+      name: 'a closed-but-recent record loses to an older open one',
+      sentTexts: [fromLead('lead-lost', daysAgo(1), 'LOST'), fromJob('job-live-older', daysAgo(20), 'COMPLETED')],
+      expected: tie({ jobId: 'job-live-older' }),
     },
     {
       name: 'boundary: exactly at the window edge counts as inside',
-      recentJobTexts: [
-        candidate({
-          jobId: 'job-edge',
-          jobLabel: 'J-1880 · 77 Elm St',
-          lastOutboundAt: daysAgo(SMS_ROUTER_RECENCY_WINDOW_DAYS),
-          jobStatus: 'UNSCHEDULED',
-        }),
-      ],
-      expected: { jobId: 'job-edge', jobLabel: 'J-1880 · 77 Elm St' },
+      sentTexts: [fromJob('job-edge', daysAgo(SMS_ROUTER_RECENCY_WINDOW_DAYS), 'UNSCHEDULED')],
+      expected: tie({ jobId: 'job-edge' }),
+    },
+    {
+      name: 'a null job label is passed through',
+      sentTexts: [fromJob('job-no-label', daysAgo(1), 'SCHEDULED', null)],
+      expected: { leadId: null, jobId: 'job-no-label', jobLabel: null },
     },
   ];
 
-  it.each(cases)('$name', ({ recentJobTexts, expected }) => {
-    expect(resolveInboundSmsJob({ now: NOW, recentJobTexts })).toEqual(expected);
+  it.each(cases)('$name', ({ sentTexts, expected }) => {
+    expect(pickReplyTie({ at: NOW, sentTexts })).toEqual(expected);
   });
 
-  // PRD 6: a job in Office review, Ready to close or Done is finished work, so a reply never lands on it (the statuses
-  // are read from the enum, not from the set under test).
-  const ORDER = Object.values(JobStatus);
-  const FINISHED = ORDER.slice(ORDER.indexOf('COMPLETED'));
-
-  it.each(FINISHED)('a lone recent candidate in %s goes to the Unrouted tray', (jobStatus) => {
-    expect(resolveInboundSmsJob({ now: NOW, recentJobTexts: [candidate({ jobId: 'job-finished', jobStatus })] })).toBeNull();
+  // Completed, Office review and Ready to close are open work: a reply still lands on the job.
+  it.each(['COMPLETED', 'OFFICE_REVIEW', 'READY_TO_CLOSE'])('a job in %s still takes the reply', (status) => {
+    expect(pickReplyTie({ at: NOW, sentTexts: [fromJob('job-x', daysAgo(1), status)] })).toEqual(tie({ jobId: 'job-x' }));
   });
 
-  it.each(FINISHED)('a recent job in %s loses to an older live one', (jobStatus) => {
-    const result = resolveInboundSmsJob({
-      now: NOW,
-      recentJobTexts: [
-        candidate({ jobId: 'job-finished', lastOutboundAt: daysAgo(1), jobStatus }),
-        candidate({ jobId: 'job-live', jobLabel: 'J-1860 · 4 Oak Ln', lastOutboundAt: daysAgo(20), jobStatus: 'IN_PROGRESS' }),
-      ],
-    });
-    expect(result).toEqual({ jobId: 'job-live', jobLabel: 'J-1860 · 4 Oak Ln' });
-  });
-
-  it('passes a null jobLabel through unchanged on the winning candidate', () => {
-    const result = resolveInboundSmsJob({
-      now: NOW,
-      recentJobTexts: [candidate({ jobId: 'job-no-label', jobLabel: null })],
-    });
-    expect(result).toEqual({ jobId: 'job-no-label', jobLabel: null });
-  });
-
-  it('one millisecond past the window edge is outside → null', () => {
+  it('one millisecond past the window edge is outside: nothing', () => {
     const justPast = new Date(NOW.getTime() - SMS_ROUTER_RECENCY_WINDOW_DAYS * DAY_MS - 1);
-    const result = resolveInboundSmsJob({
-      now: NOW,
-      recentJobTexts: [candidate({ jobId: 'job-just-past', lastOutboundAt: justPast })],
-    });
-    expect(result).toBeNull();
+    expect(pickReplyTie({ at: NOW, sentTexts: [fromJob('job-just-past', justPast)] })).toBeNull();
   });
 
-  it('does not mutate the input candidate array', () => {
-    const input = [
-      candidate({ jobId: 'job-a', lastOutboundAt: daysAgo(3) }),
-      candidate({ jobId: 'job-b', lastOutboundAt: daysAgo(1) }),
-    ];
-    const snapshot = input.map((c) => ({ ...c }));
-    resolveInboundSmsJob({ now: NOW, recentJobTexts: input });
+  it('does not mutate the input', () => {
+    const input = [fromJob('job-a', daysAgo(3)), fromJob('job-b', daysAgo(1))];
+    const snapshot = structuredClone(input);
+    pickReplyTie({ at: NOW, sentTexts: input });
     expect(input).toEqual(snapshot);
   });
 });

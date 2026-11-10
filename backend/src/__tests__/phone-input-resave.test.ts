@@ -39,12 +39,16 @@ const digits = (s: string) => s.replace(/\D/g, '');
 const sent = CASES.typing.filter((c) => digits(c.emits).length >= 7);
 const usCases = sent.filter((c) => c.format === 'us' && digits(c.emits).length === 10);
 
-/** The customer row the stub prisma holds, matched exactly like Postgres would match `phone IN (...)`. */
+/**
+ * The customer row the stub prisma holds, matched exactly like Postgres would match `phone = ANY(<spellings>)`: the
+ * identity match's one query (#3015) passes the spellings it accepts as an array.
+ */
 function prismaHolding(storedPhone: string) {
-  const hit = (where: { OR?: Array<{ phone?: { in: string[] } }> }) =>
-    where.OR?.some((c) => c.phone?.in.includes(storedPhone)) ? { id: 'cust-1', first_name: 'Ann', last_name: 'Lee', company_name: null } : null;
+  const row = { id: 'cust-1', first_name: 'Ann', last_name: 'Lee', company_name: null, own_lead_id: null };
   return {
-    customer: { findFirst: vi.fn(async ({ where }) => hit(where)) },
+    $queryRaw: vi.fn(async (_sql: unknown, ...values: unknown[]) =>
+      values.some((v) => Array.isArray(v) && v.includes(storedPhone)) ? [row] : []),
+    customer: { findFirst: vi.fn(async () => null) },
     lead: { findFirst: vi.fn(async () => null) },
     vendor: { findFirst: vi.fn(async () => null) },
     vendorContact: { findFirst: vi.fn(async () => null) },

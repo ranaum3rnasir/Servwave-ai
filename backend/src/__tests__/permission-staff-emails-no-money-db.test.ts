@@ -53,6 +53,13 @@ import { BILLING_ALERT_VERBS } from '../services/notifications/invoiceBillingAle
 const suite = realClient ? describe : describe.skip;
 const SRC = join(__dirname, '..');
 const SENTINEL = 8675.31;
+/**
+ * The sentinel however a template could print it: 8675.31, 8,675.31, 8.675,31, 8675.3, 8,675, 8675, or 867531 (cents).
+ * Only as a standalone figure: the characters an id or token is made of (letters, digits, _ - + / @ # .) may not touch it,
+ * so a random uuid, provider id or token that happens to hold the digits 8675 can never match. (A bare substring check on
+ * '8675' failed at random whenever an invoice id or `re_<uuid>` contained them.)
+ */
+const PRINTED_SENTINEL = /(?<![\w+/@#.-])(?:8[,.\s ]?675(?:[.,]\d{1,2})?|867531)(?![\w+/@#-]|[.,]\d)/;
 
 type Audience = 'customer' | 'staff-no-money' | 'staff-money-removed' | 'internal';
 /**
@@ -139,6 +146,22 @@ describe('M4: every email sender is decided (source guard)', () => {
       expect(money, `${name} takes ${money.join(', ')}`).toEqual([]);
     }
   });
+
+  it('the money check finds the amount however it is printed, and never inside an id', () => {
+    for (const printed of ['8675.31', '8,675.31', '8.675,31', '8675.3', '8,675', '8675', '867531', '$8,675.31', 'USD 8675.31', '(8675.31)', '<b>8675.31</b>', 'of 8675.31.', 'amount=8675.31']) {
+      expect(`Deposit ${printed} received`, printed).toMatch(PRINTED_SENTINEL);
+    }
+    const uuid = '1b4e28ba-2fa1-11d2-883f-0016a3c4f1e2';
+    for (const at of [0, 3, 9, 14, 19, 24, 32]) {
+      const id = uuid.slice(0, at) + '8675' + uuid.slice(at + 4);
+      for (const shown of [id, `re_${id}`, `/invoices/${id}`, `INV-${id}`, `reply+${id}@reply.test.com`, `#${id}`]) {
+        expect(`Open ${shown} now`, shown).not.toMatch(PRINTED_SENTINEL);
+      }
+    }
+    for (const token of ['a8675b', '18675', '86751', 'x-8675-y', 'cl8675z9', 'tok/8675+e', 'v1.8675']) {
+      expect(`Open ${token} now`, token).not.toMatch(PRINTED_SENTINEL);
+    }
+  });
 });
 
 suite('M4: the emails to the company\'s people name no amount (real dispatcher, real database)', () => {
@@ -166,7 +189,7 @@ suite('M4: the emails to the company\'s people name no amount (real dispatcher, 
   const sentTo = (address: string) => resendSend.mock.calls.map((c) => c[0] as Sent).filter((m) => m.to === address);
   const noFigure = (mail: Sent, label: string) => {
     const all = `${mail.subject}\n${mail.text ?? ''}\n${mail.html ?? ''}`;
-    expect(all, label).not.toContain('8675');
+    expect(all, label).not.toMatch(PRINTED_SENTINEL);
     expect(all, label).not.toMatch(/\$\s*\d/);
     expect(all, label).not.toMatch(/\bAmount\b|\bBalance due\b/);
     expect(all, label).not.toContain('()');

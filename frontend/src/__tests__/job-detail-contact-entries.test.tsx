@@ -275,7 +275,7 @@ describe('a job-only entry on the block', () => {
     expect(requestCall).toHaveBeenCalledWith('5550001111', expect.objectContaining({ jobId: JOB_ID, jobLabel: 'J00001' }));
   });
 
-  it('opens the text composer by its number, not by the customer', async () => {
+  it('opens the text composer by its number, with the job, so the text stays on the job (#3018)', async () => {
     const user = userEvent.setup();
     renderJobPage({}, jobWith({ contact_entries: [ENTRY] }));
     const c = await card();
@@ -283,10 +283,11 @@ describe('a job-only entry on the block', () => {
     await user.click(within(c).getByRole('button', { name: '(555) 000-1111' }));
     await user.click(await screen.findByRole('menuitem', { name: 'Text' }));
 
-    // By the number, marked as the customer's so the composer draws it under the copy rule; no customer id, no job.
+    // By the number, marked as the customer's so the composer draws it under the copy rule, and carrying the job: the
+    // server checks the number is the job's and files the text on the job. No customer id.
     const target = new URL(mockNavigate.mock.calls[0]![0] as string, 'https://app.test');
     expect(target.pathname).toBe('/communication/text');
-    expect(Object.fromEntries(target.searchParams)).toEqual({ to: '5550001111', owner: 'customer', name: 'John Doe' });
+    expect(Object.fromEntries(target.searchParams)).toEqual({ to: '5550001111', owner: 'customer', name: 'John Doe', jobId: JOB_ID });
   });
 });
 

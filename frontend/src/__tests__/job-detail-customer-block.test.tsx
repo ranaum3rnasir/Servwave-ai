@@ -183,7 +183,8 @@ describe('the job page customer details with the phone service', () => {
 
     await user.click(within(card).getByRole('button', { name: 'Text' }));
 
-    expect(mockNavigate).toHaveBeenCalledWith(`/communication/text?customerId=${JOB.customer.id}`);
+    // #3017: addressed to the number the job shows, with the job attached, so the text is filed on the job.
+    expect(mockNavigate).toHaveBeenCalledWith(`/communication/text?to=5551234567&owner=customer&name=John+Doe&jobId=${JOB.id}`);
     expect(document.querySelector('a[href^="sms:"]')).toBeNull();
   });
 

@@ -50,6 +50,9 @@ router.patch('/calls/:id/job', callId, canDo('attach', 'Communication'), validat
 // Lead mirror of the job attach (lead_id: null clears) — ingest is otherwise
 // the only writer of lead_id, so missed attributions need this to be fixable.
 router.patch('/calls/:id/lead', callId, canDo('attach', 'Communication'), validate(commCallsController.reassignCallLeadSchema), commCallsController.reassignCallLead);
+// #3024: what "Attach to a lead or job" offers for a call (the leads and jobs of every customer carrying its number). Same
+// switch as the change itself: no menu without Attach.
+router.get('/calls/:id/attach-targets', callId, canDo('attach', 'Communication'), commCallsController.callAttachTargets);
 
 // Dialer search — canonical customers/jobs/identity lookup (#666/#357).
 router.get('/dialer-search', canDo('read', 'Communication'), commCallsController.dialerSearch);

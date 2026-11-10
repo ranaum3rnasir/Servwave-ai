@@ -392,6 +392,9 @@ export default function StandaloneInvoiceFormPage() {
       if (dup) {
         setDupExisting(dup);
         setDupMatched(computeMatchedCustomerFields({ email: contact.email, phone: contact.phone }, dup));
+      } else {
+        // Any other answer (a number refused after Create anyway) closes the dialog, so the form's error line shows it.
+        setDupExisting(null);
       }
     },
   });

@@ -1,11 +1,12 @@
 import { Prisma } from '@prisma/client';
 import type { PrismaClient } from '@prisma/client';
-import { matchByPhone, normalizeNAPhone } from '../comms-identity';
+import { customerName, matchByPhone, matchCallerByPhone, normalizeNAPhone, type IdentityMatch, type OwnRecord } from '../comms-identity';
 import { findBlockedNumber } from '../communication/blockedNumbers';
-import { findOrCreateSmsThreadByNumber } from './smsThread';
+import { findOrCreateSmsThreadByNumber, mainLineE164 } from './smsThread';
 import { resolveCompanyNumberId } from './companyNumber';
+import { otherPartyE164 } from '../communication/otherPartyNumber';
 import { lookupReceivingNumber } from './receivingNumbers';
-import { resolveInboundSmsJob } from '../sms-reply-router';
+import { tieIncomingText, UNTIED } from '../sms-reply-router';
 import { emit } from '../../services/notifications/notificationService';
 import { logger } from '../logger';
 import { recordLeadOutboundContact, type LeadContactDb } from '../../services/lead-contact.service';
@@ -87,19 +88,37 @@ export function unwrapActivity(payload: Record<string, any>): Record<string, any
   return payload ?? {};
 }
 
+/** The way an activity (a call or a text) says it went, or null when it names no direction at all. */
+export function activityDirection(a: Record<string, any>): 'in' | 'out' | null {
+  const raw = String(a.direction ?? '').trim().toLowerCase();
+  if (!raw) return null;
+  return raw.includes('out') ? 'out' : 'in';
+}
+
+/** The way a call went: anything the phone system marks outbound is ours; the rest (a direction-less call included) came in. */
 function callDirection(a: Record<string, any>): 'in' | 'out' {
-  return String(a.direction ?? '').toLowerCase().includes('out') ? 'out' : 'in';
+  return activityDirection(a) ?? 'in';
+}
+
+/** The way a text went, by the same rule: a text the phone system does not mark outbound came in. */
+function textDirection(a: Record<string, any>): 'in' | 'out' {
+  return activityDirection(a) ?? 'in';
 }
 
 // Maps CTM dial/call statuses into the FE CallStatus union
 // (ringing|active|completed|voicemail|missed — communication-shared/phone-calls.ts).
+// #3025: "no answer" also comes spelled with a space, and "failed" is a call that never connected: both are missed, never
+// completed. An outbound end with zero talk time and no answered leg never reached anyone, whatever status it reports, so
+// it is missed too (the call history reads it "Not connected"; an outbound call raises no missed-call alert).
 function callStatus(a: Record<string, any>, position: string): string {
   if (position === 'starts') return 'ringing';
   const raw = String(a.dial_status ?? a.call_status ?? '').toLowerCase();
+  // Separators dropped, so "no answer", "no-answer", "no_answer" and "noanswer" read alike.
+  const word = raw.replace(/[\s_-]+/g, '');
   if (raw.includes('voicemail')) return 'voicemail';
   if (
-    raw.includes('no-answer') || raw.includes('no_answer') || raw.includes('noanswer') ||
-    raw.includes('busy') || raw.includes('missed') || raw.includes('abandon') || raw.includes('cancel')
+    word.includes('noanswer') || raw.includes('busy') || raw.includes('missed') || raw.includes('abandon') ||
+    raw.includes('cancel') || raw.includes('fail')
   ) {
     return 'missed';
   }
@@ -111,8 +130,19 @@ function callStatus(a: Record<string, any>, position: string): string {
     const talk = Number(a.talk_time ?? a.duration);
     return Number.isFinite(talk) && talk > 0 ? 'completed' : 'missed';
   }
-  if (raw.includes('answer') || raw.includes('complete')) return 'completed';
+  if (callDirection(a) === 'out' && !talkedOn(a) && !hasAnsweredLeg(a)) return 'missed';
   return 'completed';
+}
+
+/** Whether the call had a conversation: talk time above zero. `duration` is not talk: it counts the ringing too. */
+function talkedOn(a: Record<string, any>): boolean {
+  const talk = Number(a.talk_time);
+  return Number.isFinite(talk) && talk > 0;
+}
+
+/** Whether a leg of the call was answered: the phone service names the agent who picked up (the agent leg). */
+function hasAnsweredLeg(a: Record<string, any>): boolean {
+  return a.agent !== null && typeof a.agent === 'object';
 }
 
 // caller_number is not guaranteed E.164; caller_number_complete carries the
@@ -489,6 +519,88 @@ function activityTime(a: Record<string, any>): Date {
   return new Date();
 }
 
+/**
+ * Whether the event that filed a stored call knew nobody placed it (#3015), read from what that event stored. Claiming a
+ * click-to-call stash names the placer: the agent leg, or the stash's requester when the leg is missing, lands in `agent_id`
+ * and makes `answered_by` a csr. A row with neither was filed before any stash or agent leg was seen, so its placer's stash
+ * may still turn up at a later event; a row with a placer already ran both stash tiers when it was filed.
+ */
+function filedWithoutPlacer(row: { agent_id: string | null; answered_by: Prisma.JsonValue }): boolean {
+  const answeredBy = row.answered_by && typeof row.answered_by === 'object' && !Array.isArray(row.answered_by)
+    ? (row.answered_by as Record<string, unknown>)
+    : null;
+  return row.agent_id == null && answeredBy?.kind !== 'csr';
+}
+
+/**
+ * Takes one call's lock (#3015) until the transaction `db` runs in ends: the call ingest takes it for each event of the
+ * call, and the phone-history repair (scripts/phone-history-repair.ts, #3028) for each call it re-files or deletes, so the
+ * two never write the same call at once. The ONE place the lock's key is spelled.
+ */
+export async function lockCallEvents(db: Db, sid: string): Promise<void> {
+  await db.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`ctm-call:${sid}`}, 0))`;
+}
+
+export type CallFiling = { customer_id: string | null; lead_id: string | null; job_id: string | null; job_label: string | null };
+
+/**
+ * Where the fixed order files a call on its number (#3015), when nobody placed it from a record: the number's customer, and
+ * the one lead or job carrying the number as its own when that record decided the pick. The call ingest files a new call
+ * by it; the phone-history repair (scripts/phone-history-repair.ts, #3028) re-files an old one by the same rule.
+ */
+export function callFilingByFixedOrder({ match, ownRecord }: { match: IdentityMatch | null; ownRecord: OwnRecord | null }): CallFiling {
+  return {
+    customer_id: match?.customerId ?? null,
+    lead_id: ownRecord?.kind === 'lead' ? ownRecord.id : null,
+    job_id: ownRecord?.kind === 'job' ? ownRecord.id : null,
+    job_label: ownRecord?.kind === 'job' ? ownRecord.jobNumber : null,
+  };
+}
+
+/**
+ * What a later event of a call may write to where the call is filed (#3015). A call is filed once, by the event that
+ * creates its row: on the record it was placed from (the click-to-call stash), else by the number's fixed order. A later
+ * event never moves it to another customer, lead or job, whatever the data says by then; it only fills what is empty:
+ *  - a row filed on nothing yet takes this event's filing in full (a caller nobody carried when the call rang);
+ *  - a row on a customer alone takes the lead or job of a stash claimed now for that same customer (the placer's stash,
+ *    found only once the agent leg named the placer);
+ *  - anything else keeps its filing. A person's re-tie is kept the same way.
+ * Only keys with a value are written, so a populated column is never blanked out. With no stored row (a `starts`/`end`
+ * race), the update gets the full filing, as the create does.
+ */
+function fillEmptyFiling(
+  row: { customer_id: string | null; lead_id: string | null; job_id: string | null; vendor_id: string | null } | null,
+  filing: CallFiling,
+  fromStash: boolean,
+  vendorId: string | null,
+): Record<string, unknown> {
+  const filled: Record<string, unknown> = {};
+  const unfiled = !row || (!row.customer_id && !row.lead_id && !row.job_id && !row.vendor_id);
+  const sameCustomerStash = fromStash && row != null && row.customer_id != null && row.customer_id === filing.customer_id
+    && row.lead_id == null && row.job_id == null;
+  if (unfiled) {
+    if (filing.customer_id) filled.customer_id = filing.customer_id;
+    if (vendorId) filled.vendor_id = vendorId;
+  }
+  if (unfiled || sameCustomerStash) {
+    if (filing.lead_id) filled.lead_id = filing.lead_id;
+    if (filing.job_id) {
+      filled.job_id = filing.job_id;
+      filled.job_label = filing.job_label;
+    }
+  }
+  return filled;
+}
+
+/** The name of the customer a call is filed on, as the identity match labels a customer. */
+async function filedCustomerName(db: Db, orgId: string, customerId: string): Promise<string | null> {
+  const filed = await db.customer.findFirst({
+    where: { id: customerId, organization_id: orgId },
+    select: { first_name: true, last_name: true, company_name: true },
+  });
+  return filed ? customerName(filed) : null;
+}
+
 export interface IngestCallResult {
   callSessionId: string;
   sid: string;
@@ -511,18 +623,32 @@ export async function ingestCall(
   opts: IngestOptions = {},
 ): Promise<IngestCallResult | null> {
   const a = unwrapActivity(payload);
+  // A text reported on a call hook is not a call (#3025): it would leave a "ringing" call behind. Texts are ingested by the
+  // text hooks.
+  if (isTextActivity(a)) return null;
   const sid = String(a.sid ?? '');
   if (!sid) {
     logger.warn('[ctm] call activity without sid — skipped');
     return null;
   }
 
+  // One call's events one at a time (#3015). The phone service can deliver a call's `starts` and `end` together; in two
+  // parallel transactions both would read "no stored row" below, and the `end` would file over what the `starts` just
+  // created (the stash's record replaced by the fixed order). A transaction lock on the sid makes the second event wait
+  // for the first to commit, so `existingCall` is current. The webhook passes its transaction, which holds no provider HTTP
+  // call (the receiving-number roster is warmed before it opens). On a plain client (the backfill, one call at a time)
+  // the lock ends with its own statement and changes nothing.
+  await lockCallEvents(db, sid);
+
   // Org assert: ctm_call_id is globally unique, so an upsert keyed on it could
   // otherwise UPDATE another org's row if a forged/misrouted payload reuses a
   // stored sid. A cross-org collision is warned + skipped, never written.
   const existingCall = await db.callSession.findFirst({
     where: { ctm_call_id: sid },
-    select: { organization_id: true, job_id: true, call_tracking_provider: true, attribution: true },
+    select: {
+      organization_id: true, customer_id: true, lead_id: true, job_id: true, vendor_id: true, agent_id: true, answered_by: true,
+      call_tracking_provider: true, attribution: true,
+    },
   });
   if (existingCall && existingCall.organization_id !== orgId) {
     logger.warn(`[ctm] call sid already stored for a different organization — skipped (sid=${sid})`);
@@ -537,7 +663,9 @@ export async function ingestCall(
   const toNumber = direction === 'in' ? tracking : String(a.called_number ?? a.call_number ?? caller);
   const customerSide = direction === 'in' ? caller : toNumber;
 
-  const match = customerSide ? await matchByPhone(db, orgId, customerSide) : null;
+  const { match, ownRecord } = customerSide
+    ? await matchCallerByPhone(db, orgId, customerSide)
+    : { match: null, ownRecord: null };
   // The company number the call went through (S08.1), as a link to the org's own number.
   const companyNumberId = await resolveCompanyNumberId(db, orgId, tracking);
 
@@ -571,7 +699,9 @@ export async function ingestCall(
   //   1. the newest stash for THIS destination number — the unedited path, and
   //      it disambiguates when the placer has several open stashes; else
   //   2. the placer's newest stash regardless of number — the edited-number path.
-  // Outbound only; skipped once the row already carries a job.
+  // Outbound only. Skipped when this event cannot use the stash (#3015): a row already on a lead or a job keeps it; a late
+  // `starts` never writes the filing; and a row filed with its placer known already ran both tiers when it was filed. In
+  // each case claiming here would only take the stash of the NEXT call placed to the number.
   let pending: {
     id: string;
     job_id: string | null;
@@ -580,7 +710,9 @@ export async function ingestCall(
     customer_id: string | null;
     requested_by: string | null;
   } | null = null;
-  if (direction === 'out' && (!existingCall || existingCall.job_id == null)) {
+  const stashUsable = !existingCall
+    || (position !== 'starts' && existingCall.lead_id == null && existingCall.job_id == null && filedWithoutPlacer(existingCall));
+  if (direction === 'out' && stashUsable) {
     const windowStart = new Date(Date.now() - PENDING_ATTRIBUTION_WINDOW_MS);
     const claimStash = async (
       selector: { to_number: string } | { requested_by: string },
@@ -720,6 +852,14 @@ export async function ingestCall(
   const ctmTags: Prisma.InputJsonValue[] = Array.isArray(a.tag_list) ? a.tag_list : [];
   const tagsWithMarker = [...new Set([...ctmTags, ...(blockedCaller ? [BLOCKED_CALL_TAG] : [])])];
 
+  // Where the call is filed (#3015). A call placed from a lead, a job or a customer (the click-to-call stash) stays
+  // ENTIRELY on that record and its customer. Otherwise the number decides, by the fixed order: its customer, and the one
+  // lead or job carrying the number as its own when that record decided the pick. The event that creates the row files it;
+  // a later event of the same call only fills what is still empty (`fillEmptyFiling`).
+  const filedOn: CallFiling = pending
+    ? { customer_id: pending.customer_id, lead_id: pending.lead_id, job_id: pending.job_id, job_label: pending.job_label }
+    : callFilingByFixedOrder({ match, ownRecord });
+
   const createData = {
     ctm_call_id: sid,
     direction,
@@ -740,12 +880,8 @@ export async function ingestCall(
     started_at: activityTime(a),
     duration_sec: durationSec,
     connected_sec: connectedSec,
-    // Phone-match resolver WINS; the pending stash fills the nulls.
-    customer_id: match?.customerId ?? pending?.customer_id ?? null,
-    lead_id: match?.leadId ?? pending?.lead_id ?? null,
+    ...filedOn,
     vendor_id: match?.vendorId ?? null,
-    job_id: pending?.job_id ?? null,
-    job_label: pending?.job_label ?? null,
     has_recording: recUrl ? true : null,
     summary,
     transcript_preview: transcript,
@@ -782,19 +918,7 @@ export async function ingestCall(
     // NOT become monotonic); the marker is only re-appended so a CTM tag write
     // on `end` cannot erase it.
     if (ctmTags.length > 0) updateData.tags = tagsWithMarker;
-    // Resolver-vs-stash precedence mirrors createData; keys are only written
-    // when a value exists (populated columns are never blanked out).
-    const updCustomerId = match?.customerId ?? pending?.customer_id;
-    const updLeadId = match?.leadId ?? pending?.lead_id;
-    if (updCustomerId) updateData.customer_id = updCustomerId;
-    if (updLeadId) updateData.lead_id = updLeadId;
-    if (match?.vendorId) updateData.vendor_id = match.vendorId;
-    // Pending is only ever claimed when the stored row has no job (or there is
-    // no stored row), so this stamps a blank column — never a reassign.
-    if (pending?.job_id) {
-      updateData.job_id = pending.job_id;
-      updateData.job_label = pending.job_label;
-    }
+    Object.assign(updateData, fillEmptyFiling(existingCall, filedOn, pending !== null, match?.vendorId ?? null));
   }
 
   // A stash claimed on the update path (the row was created before the vendor
@@ -844,17 +968,21 @@ export async function ingestCall(
   // skips unknown verbs until then and never throws). Backfill suppresses.
   // No call_incoming bell: inbound rings the forwarded cell, never the app
   // (ingest-only model, #870) — only the missed-call outcome is notified.
-  const label = match?.label ?? caller ?? 'Unknown caller';
   // A blocked caller raises no bell - the row above is still written and tagged.
   // The ring itself cannot be stopped (lib/communication/blockedNumbers.ts).
   if (!opts.suppressNotifications && !blockedCaller && position !== 'starts' && direction === 'in' && (status === 'missed' || status === 'voicemail')) {
+    // The alert names the customer the call is filed on (#3015), which this event's match may no longer be.
+    const filedName = row.customer_id && row.customer_id !== match?.customerId
+      ? await filedCustomerName(db, orgId, row.customer_id)
+      : match?.label ?? null;
+    const label = filedName ?? caller ?? 'Unknown caller';
     raiseAlert(opts, {
       verb: 'communication.call_missed',
       organizationId: orgId,
       actorId: null,
       object: { type: 'CALL', id: row.id, label },
       entity: {},
-      data: { customer_name: match?.label ?? null, caller_number: caller, call_status: status },
+      data: { customer_name: filedName, caller_number: caller, call_status: status },
       dedupKey: `ctm:${sid}:missed`,
     });
   }
@@ -873,6 +1001,17 @@ function smsBody(a: Record<string, any>): string {
     .map((m: any) => (typeof m === 'string' ? m : m && typeof m === 'object' ? m.url : null))
     .filter((u: unknown): u is string => typeof u === 'string' && u.length > 0);
   return urls.length > 0 ? [base, ...urls].filter(Boolean).join('\n') : base;
+}
+
+/**
+ * Is this activity a text rather than a call (#3025)? A text carries a message id, or a message direction
+ * (`msg_inbound` / `msg_outbound`); a call carries neither. Call ingest skips every such activity, whatever hook it came
+ * on, so a text never makes a call.
+ */
+export function isTextActivity(a: Record<string, any>): boolean {
+  const messageId = a?.message_id;
+  if (messageId !== undefined && messageId !== null && String(messageId).length > 0) return true;
+  return String(a?.direction ?? '').trim().toLowerCase().startsWith('msg');
 }
 
 /**
@@ -915,6 +1054,23 @@ export function smsDeliveryStatus(a: Record<string, any>): 'sent' | 'delivered' 
   return null;
 }
 
+/**
+ * The OTHER party's number on a text activity, as the phone system spells it: the sender of an inbound text, the
+ * destination of an outbound one. It is what a text row stores as its other party (#3014), and nothing else: the
+ * conversation a text joins is keyed by ingestSms's own reading. The one reading of the payload for both the live ingest
+ * below and the fill-in of older texts from their stored events (scripts/text-other-party-number-fill-in.ts), so the two
+ * never disagree. The fill-in passes the direction of the stored text itself; the live ingest the activity's.
+ */
+export function smsOtherPartyNumber(a: Record<string, any>, direction: 'in' | 'out'): string {
+  const caller = callerNumber(a);
+  if (direction === 'in') return caller;
+  // An outbound report names the customer as its CONTACT. On the live outbound report (measured 2026-08-01, the fixture
+  // in ctm-webhook.test.ts) the caller and the contact are both the customer texted and the called number is another
+  // party, so the contact comes first; reports without one keep the older reading.
+  const named = [a.contact_number, a.called_number, a.to].find((v) => v != null && String(v).trim() !== '');
+  return named == null ? caller : String(named);
+}
+
 export interface IngestSmsResult {
   messageId: string;
   threadId: string;
@@ -934,9 +1090,13 @@ export async function ingestSms(
     return null;
   }
 
-  const direction: 'in' | 'out' = String(a.direction ?? '').toLowerCase().includes('out') ? 'out' : 'in';
-  const caller = callerNumber(a);
-  const counterpart = direction === 'in' ? caller : String(a.called_number ?? a.to ?? caller);
+  const direction = textDirection(a);
+  // The number as it has always been read: the sender of an inbound text, the called number of an outbound one. #3019
+  // keys the conversation (and its customer) by the stored other party below instead; this stays only for a report whose
+  // other party is one of our own numbers, the blocked-number check and the alert's label.
+  const conversationNumber = direction === 'in' ? callerNumber(a) : String(a.called_number ?? a.to ?? callerNumber(a));
+  // The other party the text row stores (#3014), which on an outbound report is the contact the phone system names.
+  const otherParty = smsOtherPartyNumber(a, direction);
   const body = smsBody(a);
   // The company number the text went through (S08.1): the number the customer texted, or the
   // number the text was sent from.
@@ -959,37 +1119,17 @@ export async function ingestSms(
   // Compose-to-number deliberately does NOT pass it - see the option's own
   // note in smsThread.ts.
   // Nobody is signed in here: the number resolves for the whole company.
-  const { thread, match } = await findOrCreateSmsThreadByNumber(db, orgId, counterpart, (n) => matchByPhone(db, orgId, n), {
+  //
+  // #3019: a customer's or an unknown number's conversation is the pair of numbers - the other party's number this text
+  // stores (below; on an outbound report, the contact the phone system names) and ours, the company number it went
+  // through, else the main line. The conversation's customer is the one carrying that very number, so the conversation
+  // and its default customer never disagree; a report naming only our own numbers keeps today's keying.
+  const storedOtherParty = await otherPartyE164(db, orgId, otherParty);
+  const ourNumber = companyNumberId ? (normalizeNAPhone(String(a.tracking_number)) ?? String(a.tracking_number)) : await mainLineE164(db, orgId);
+  const { thread, match } = await findOrCreateSmsThreadByNumber(db, orgId, storedOtherParty ?? conversationNumber, ourNumber, (n) => matchByPhone(db, orgId, n), {
     matchStaff: true,
+    otherPartyE164: storedOtherParty,
   });
-
-  // Inbound job auto-route: most recent open job this thread was texted-from
-  // within the recency window (lib/sms-reply-router.ts).
-  let jobId: string | null = null;
-  let jobLabel: string | null = null;
-  if (direction === 'in') {
-    const recent = await db.message.findMany({
-      where: { organization_id: orgId, thread_id: thread.id, direction: 'out', job_id: { not: null } },
-      orderBy: { ts: 'desc' },
-      take: 20,
-      select: { job_id: true, job_label: true, ts: true, job: { select: { status: true } } },
-    });
-    const routed = resolveInboundSmsJob({
-      now: new Date(),
-      recentJobTexts: recent
-        .filter((m: any) => m.job_id && m.job)
-        .map((m: any) => ({
-          jobId: m.job_id as string,
-          jobLabel: (m.job_label as string | null) ?? null,
-          jobStatus: m.job.status as string,
-          lastOutboundAt: m.ts as Date,
-        })),
-    });
-    if (routed) {
-      jobId = routed.jobId;
-      jobLabel = routed.jobLabel;
-    }
-  }
 
   // Outbound honours the carrier state the payload actually carries - a
   // `status_change` saying "delivered" must land as delivered, not be flattened
@@ -1011,7 +1151,7 @@ export async function ingestSms(
   // a redelivered/duplicate webhook for an existing row never reads it.
   const blockedCaller =
     direction === 'in' && !existing && !opts.suppressNotifications
-      ? (await findBlockedNumber(db, orgId, counterpart)) !== null
+      ? (await findBlockedNumber(db, orgId, conversationNumber)) !== null
       : false;
 
   let messageRow: { id: string; thread_id: string };
@@ -1049,6 +1189,9 @@ export async function ingestSms(
         return { messageId: messageRow.id, threadId: messageRow.thread_id, direction };
       }
     }
+    // #3020: an incoming text takes the lead or job of the latest text we sent in its conversation (lib/sms-reply-router.ts,
+    // the one rule). A text the phone system reports sending is ours, not a reply, and is tied to nothing here.
+    const tie = direction === 'in' ? await tieIncomingText(db, orgId, { threadId: thread.id, at: new Date(), from: storedOtherParty }) : UNTIED;
     messageRow = await db.message.create({
       data: {
         ctm_sms_id: sid,
@@ -1058,40 +1201,21 @@ export async function ingestSms(
         ts: activityTime(a),
         status,
         automated: false,
-        job_id: jobId,
-        job_label: jobLabel,
-        // Full job-parity ruling (2026-07-22): stamp the same phone-match
-        // lead_id already used to key/create the thread (above) onto this
-        // message row too — getLeadCommunications filters strictly on
-        // Message.lead_id, so without this an inbound reply would never
-        // surface on the lead's Communication tab.
-        lead_id: match?.leadId ?? null,
+        job_id: tie.jobId,
+        job_label: tie.jobLabel,
+        lead_id: tie.leadId,
         phone_number_id: companyNumberId,
+        // #3014: the sender of an inbound text, the destination of an outbound one; normalized E.164, never one of
+        // our own numbers, or none.
+        other_party_e164: storedOtherParty,
         organization_id: orgId,
       },
       select: { id: true, thread_id: true },
     });
 
-    // Spec #1751 D5: an outbound text ingested from the phone system - one a rep sent from the
-    // vendor console or from their own handset - counts exactly as one composed in the app does.
-    // Only on the CREATE branch: the update branch above is a delivery-status delta on a row whose
-    // send was already accounted for, and the shell-reconcile branch returns early because the
-    // composer door (comm-threads.controller.ts) already stamped that one.
-    //
-    // `automated: false` mirrors what the create above writes literally two statements up, rather
-    // than re-reading the row: this path has no automated sender behind it at all - CTM does not
-    // originate messages on its own - and the two must not be able to drift.
-    //
-    // #2618: on a NEW lead this also moves it to Contacted. No actor: a phone-system text carries
-    // no ServWave user, so the move is recorded as a system move.
-    await recordLeadOutboundContact(leadContactDb(db, opts), {
-      leadId: match?.leadId ?? null,
-      orgId,
-      channel: 'text',
-      direction,
-      automated: false,
-      at: activityTime(a),
-    });
+    // No lead moves New -> Contacted here (#2618 moves one on OUR outbound contact only): an incoming text is the
+    // customer's, even when it is tied to a lead (#3020), and a text the phone system reports sending is tied to no lead.
+    // (A customer match never carried a lead, so the move this place used to ask for could never happen.)
 
     // A blocked sender never marks the thread unread (blockedNumbers.ts).
     if (direction === 'in' && !opts.suppressNotifications && !blockedCaller) {
@@ -1108,7 +1232,7 @@ export async function ingestSms(
       verb: 'communication.sms_inbound',
       organizationId: orgId,
       actorId: null,
-      object: { type: 'MESSAGE_THREAD', id: thread.id, label: match?.label ?? counterpart },
+      object: { type: 'MESSAGE_THREAD', id: thread.id, label: match?.label ?? conversationNumber },
       // The alert's people are found from this text (its record, its company number, who it answers): S08.23.
       entity: { message_id: messageRow.id },
       // The first 80 characters of what the customer WROTE (a picture's link is no preview). The alert row stores it, and the

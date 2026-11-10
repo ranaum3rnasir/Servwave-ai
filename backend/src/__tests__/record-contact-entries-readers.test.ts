@@ -4,6 +4,10 @@
  * The documents, public pages, send recipients, automated messages and lists keep using the customer record
  * until the office review adds a value to the customer (PRD 6). The simplest way that stays true is that
  * nothing else reads the entries table, so this walks the source and names every file that does.
+ *
+ * #3016 adds one reader on purpose: a text a PERSON sends from a lead or a job goes to the number that record shows
+ * (4 October Q34), so the destination of that one send reads the record's entries. Automated texts are not among
+ * the readers: they keep the customer record's number.
  */
 import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -23,6 +27,8 @@ function sourceFiles(dir: string): string[] {
 const MAY_READ = [
   'lib/record-contact-entries.ts',
   'controllers/record-contact-entries.controller.ts',
+  // #3016: where a text sent by a person from a lead or a job goes. Reads through the entries module.
+  'lib/communication/recordTextDestination.ts',
 ];
 
 describe('who reads a job\'s or a lead\'s own contact entries', () => {

@@ -429,6 +429,8 @@ suite('the Communication and Automations groups follow switches (real database)'
       { switchKey: 'attach_conversations', check: 'email-attach-lead', also: { view_communication: true }, run: (api) => api.patch(`/api/communication/emails/${missing}/lead`, { lead_id: null }) },
       { switchKey: 'attach_conversations', check: 'text-attach-job', also: { view_communication: true }, run: (api) => api.patch(`/api/communication/sms/${missing}/job`, { job_id: null }) },
       { switchKey: 'attach_conversations', check: 'text-attach-lead', also: { view_communication: true }, run: (api) => api.patch(`/api/communication/sms/${missing}/lead`, { lead_id: null }) },
+      { switchKey: 'attach_conversations', check: 'text-attach-targets', also: { view_communication: true }, run: (api) => api.get(`/api/communication/sms/${missing}/attach-targets`) },
+      { switchKey: 'attach_conversations', check: 'call-attach-targets', also: { view_communication: true }, run: (api) => api.get(`/api/communication/calls/${missing}/attach-targets`) },
       { switchKey: 'edit_communication_records', check: 'email-thread-assign', also: { view_communication: true, show_email: true }, run: (api) => api.patch(`/api/communication/emails/threads/${missing}/assign`, {}) },
       { switchKey: 'edit_communication_records', check: 'email-thread-archive', also: { view_communication: true, show_email: true }, run: (api) => api.patch(`/api/communication/emails/threads/${missing}/archive`, {}) },
       { switchKey: 'edit_communication_records', check: 'email-thread-snooze', also: { view_communication: true, show_email: true }, run: (api) => api.patch(`/api/communication/emails/threads/${missing}/snooze`, {}) },

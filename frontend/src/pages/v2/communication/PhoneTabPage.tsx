@@ -217,9 +217,8 @@ function PhoneTabWorkspace({
   const [selectedTpnId, setSelectedTpnId] = useState<string | undefined>(undefined);
   // The same pick as ServWave's own number id, for the bridge call (a phone
   // never boots the browser phone, so its calls go out as the bridge).
-  const selectedNumberId = selectedTpnId
-    ? numbers.find((n) => n.providerId === selectedTpnId)?.phone_number_id
-    : undefined;
+  const selectedNumber = selectedTpnId ? numbers.find((n) => n.providerId === selectedTpnId) : undefined;
+  const selectedNumberId = selectedNumber?.phone_number_id;
 
   // The dial the workspace should seed + auto-pick. `nonce` bumps per dial so
   // re-dialing the SAME number still re-fires the workspace's seed/auto-pick
@@ -342,6 +341,7 @@ function PhoneTabWorkspace({
           surface="phone-tab"
           callerIdOverride={selectedTpnId}
           callerIdNumberId={selectedNumberId}
+          callerIdNumber={selectedNumber?.formatted}
           calls={calls}
           onToast={onToast}
           openNumber={dial?.number ?? null}

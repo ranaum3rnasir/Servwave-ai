@@ -6,7 +6,8 @@ import { isSuperUser } from '../permissions/effectiveRole';
 import { MATCH_NOTHING, type ScopeResource } from '../permissions/scopeWhereFor';
 import { resolveSwitchesForPeople } from '../permissions/switches/store';
 import type { ResolvedSwitches } from '../permissions/switches/cache';
-import { readersWithEntityAccess } from '../tasks/entityAccessCohort';
+import { readersWithAccessToEach, readersWithEntityAccess } from '../tasks/entityAccessCohort';
+import { carriersOfNumbers } from '../comms-identity';
 import {
   callReadWhere,
   emailReadWhere,
@@ -260,6 +261,7 @@ async function askInTwoSteps(
   readers: Reader[],
   records: () => RecordRef[],
   readable: (r: Reader, reaches: Reaches) => boolean,
+  beforeStepTwo?: (left: Reader[]) => Promise<void>,
 ): Promise<Set<string>> {
   const out = new Set<string>();
   const left: Reader[] = [];
@@ -268,6 +270,7 @@ async function askInTwoSteps(
     else left.push(r);
   }
   if (left.length === 0) return out;
+  await beforeStepTwo?.(left);
 
   const reach = recordReach(left);
   const refs = new Map(records().map((ref) => [refKey(ref), ref]));
@@ -308,7 +311,7 @@ async function textReaders(people: PermissionUser[], id: string, organizationId:
   const thread = await prisma.messageThread.findFirst({
     where: { id, organization_id: organizationId },
     select: {
-      customer_id: true, vendor_id: true, user_id: true,
+      customer_id: true, vendor_id: true, user_id: true, other_party_e164: true,
       messages: {
         select: { id: true, thread_id: true, direction: true, ts: true, created_at: true, phone_number_id: true, sent_by_user_id: true, job_id: true, lead_id: true },
       },
@@ -317,7 +320,13 @@ async function textReaders(people: PermissionUser[], id: string, organizationId:
   if (!thread) return new Set();
   const readers = await readersInSection(people);
   const numbers = await numberInputsFor(readers, organizationId);
-  const threadRow = { user_id: thread.user_id, customer_id: thread.customer_id, vendor_id: thread.vendor_id };
+  const threadRow = { user_id: thread.user_id, customer_id: thread.customer_id, vendor_id: thread.vendor_id, other_party_e164: thread.other_party_e164 };
+  // #3021 (#3013 decision 4): a conversation keyed by its pair is reached through any customer carrying its number. Who among the
+  // people the conversation's own ties leave out reaches one of them is asked once, for all of them (`carrierReadersOf`).
+  const number = thread.other_party_e164;
+  let reachesACarrier = new Set<string>();
+  const carrierNumbers = (r: Reader, reaches: Reaches) =>
+    number !== null && reaches !== reachesNothing && reachesACarrier.has(r.person.id) ? [number] : [];
   const recordOfMessage = (m: { job_id: string | null; lead_id: string | null }) =>
     recordOf({ job_id: m.job_id, lead_id: m.lead_id, customer_id: thread.customer_id });
 
@@ -335,10 +344,36 @@ async function textReaders(people: PermissionUser[], id: string, organizationId:
       const inputs = scopeInputs(r, reachOf(r, recordOfMessage(m), reaches), {
         ...numberRest(r, numbers),
         repliedMessageIds: repliedTo !== null && r.people.includes(repliedTo) ? [m.id] : [],
+        carrierNumbers: carrierNumbers(r, reaches),
       });
       return rowMatchesWhere({ ...m, thread: threadRow }, textReadWhere(inputs));
     }),
+    async (left) => {
+      if (number !== null) reachesACarrier = await carrierReadersOf(left, organizationId, number);
+    },
   );
+}
+
+/**
+ * Who among these people reaches at least one customer carrying the number (#3021): one read of the carriers
+ * (`carriersOfNumbers`), then, for the people whose customer scope does not open every customer, one cohort look for all the
+ * carriers at once (`readersWithAccessToEach`). Nothing is read per person or per customer.
+ */
+async function carrierReadersOf(readers: Reader[], organizationId: string, numberE164: string): Promise<Set<string>> {
+  const carriers = (await carriersOfNumbers(prisma, organizationId, [numberE164])).get(numberE164) ?? [];
+  const out = new Set<string>();
+  if (carriers.length === 0) return out;
+  const asked: PermissionUser[] = [];
+  for (const r of readers) {
+    const scope = await scopeWhereForUser(r.person, 'Customer');
+    if (Object.keys(scope).length === 0) out.add(r.person.id);
+    else asked.push(r.person);
+  }
+  if (asked.length > 0) {
+    const { readersOf } = await readersWithAccessToEach(asked, 'CUSTOMER', carriers.map((c) => c.id));
+    for (const ids of readersOf.values()) ids.forEach((id) => out.add(id));
+  }
+  return out;
 }
 
 // ─── An email conversation ──────────────────────────────────────────────────────────────────

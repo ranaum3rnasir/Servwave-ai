@@ -13,9 +13,9 @@ import { NOT_SELECTABLE, blockCopy } from './ContactText';
 import type { ContactRecordRef, RecordContactEntry } from '@/lib/api/recordContactEntries';
 import { ContactEntryDialog, type ContactEntryTarget } from './ContactEntryDialog';
 import { NameEntryDialog, type NameField, type NameKind } from './NameEntryDialog';
-import { smsHref, telHref, textPath } from './contactHrefs';
+import { numberTextPath, smsHref, telHref, textPath } from './contactHrefs';
 import { useContactPolicyInput } from './useContactPolicyInput';
-import { customerEmailsOf, customerPhonesOf, type BlockCustomer } from './customerContactLists';
+import { customerEmailsOf, customerPhonesOf, recordEffectivePhone, type BlockCustomer } from './customerContactLists';
 import {
   CALL_NOT_SET_UP_MESSAGE,
   CLOSED_LEAD_LINE,
@@ -91,8 +91,17 @@ interface PhoneValueProps {
   name?: string;
   /** The record the number is tapped from, so the call lands on it. */
   context?: DialerEntityContext;
-  /** A number that belongs to the job only, not to the customer: Text opens the composer by the number itself. */
-  recordOnly?: boolean;
+  /**
+   * On a lead's or job's card, a number other than the customer's primary as it stands: the record's own number, a number
+   * the record changed one of the customer's to, the customer's own number under it, or the customer's other phones. Text
+   * opens the composer addressed to this number with the record, so the text goes to it (or to the record's changed
+   * number for a customer phone the record changed) and stays on the record (#3018).
+   * On the customer's own page (no record), the customer's Secondary: Text opens the text box for this number, so the text
+   * goes to it, in its own conversation, never by the customer, which would text the primary (#3018).
+   */
+  extraNumber?: boolean;
+  /** The number a job's own page shows for its customer: Text opens the composer by it, with the job attached (#3017). */
+  anchorOnJob?: boolean;
   className?: string;
   /**
    * A value in a table cell: it clips with an ellipsis when the column is narrow (the full number on hover) and its
@@ -102,7 +111,7 @@ interface PhoneValueProps {
 }
 
 /** A phone number as the policy allows: tappable, copyable and selectable only as far as it says. */
-export function PhoneValue({ kind, phone, extension, name, context, recordOnly, className, inCell = false }: PhoneValueProps) {
+export function PhoneValue({ kind, phone, extension, name, context, extraNumber, anchorOnJob, className, inCell = false }: PhoneValueProps) {
   const policy = useContactPolicyInput();
   const navigate = useNavigate();
   const d = phoneDisplay(kind, phone, extension, policy);
@@ -144,11 +153,8 @@ export function PhoneValue({ kind, phone, extension, name, context, recordOnly, 
             key: 'text',
             label: 'Text',
             icon: <MessageSquare className="size-4" aria-hidden />,
-            // A job-only number is the job's, not the customer's: Text goes by the number, with no customer record.
             onSelect: () =>
-              navigate(
-                textPath(phone, recordOnly ? { customerName: name } : context, { viewCustomers: policy.switches.viewCustomers }),
-              ),
+              navigate(extraNumber ? numberTextPath(phone, context) : textPath(phone, context, { viewCustomers: policy.switches.viewCustomers, anchorOnJob })),
           },
         ]}
       />
@@ -378,7 +384,14 @@ export function CustomerContactBlock({ customer, context, serviceAddress, showAc
           return (
             <p key={p.phone} className="text-text-secondary flex flex-wrap items-center gap-x-1.5 text-sm">
               <Phone className="size-3.5 shrink-0" aria-hidden />
-              <PhoneValue kind="customer_phone" phone={p.phone} extension={p.extension} name={name} context={callContext} />
+              <PhoneValue
+                kind="customer_phone"
+                phone={p.phone}
+                extension={p.extension}
+                name={name}
+                context={callContext}
+                extraNumber={Boolean(record) && !p.is_primary}
+              />
               {p.label && <span className="text-xs">{p.label}</span>}
               {p.is_primary && phones.length > 1 && <span className="text-xs">Primary</span>}
               {pencil && (
@@ -473,8 +486,10 @@ export function CustomerContactBlock({ customer, context, serviceAddress, showAc
         <ContactActions
           policy={policy}
           context={callContext}
-          phone={primaryPhone?.phone}
+          // #3017: the record's effective number (its changed number for the customer's primary, else the primary).
+          phone={recordEffectivePhone(primaryPhone?.phone, contactEntries)}
           email={primaryEmail?.email}
+          anchorOnJob={record?.kind === 'job'}
         />
       )}
 
@@ -554,7 +569,7 @@ function RecordEntryLine({
     <div className="text-text-secondary flex min-w-0 flex-wrap items-center gap-x-1.5 text-sm">
       {isPhone ? <Phone className="size-3.5 shrink-0" aria-hidden /> : <Mail className="size-3.5 shrink-0" aria-hidden />}
       {isPhone ? (
-        <PhoneValue kind="customer_phone" phone={entry.value} extension={entry.extension} name={name} context={context} recordOnly />
+        <PhoneValue kind="customer_phone" phone={entry.value} extension={entry.extension} name={name} context={context} extraNumber />
       ) : (
         <EmailValue email={entry.value} />
       )}
@@ -571,7 +586,7 @@ function RecordEntryLine({
         <span className="flex basis-full min-w-0 flex-wrap items-center gap-x-1.5 pl-5 text-xs">
           Customer record:
           {isPhone ? (
-            <PhoneValue kind="customer_phone" phone={customerValue} name={name} context={context} />
+            <PhoneValue kind="customer_phone" phone={customerValue} name={name} context={context} extraNumber />
           ) : (
             <EmailValue email={customerValue} />
           )}
@@ -582,12 +597,14 @@ function RecordEntryLine({
 }
 
 function ContactActions({
-  policy, context, phone, email,
+  policy, context, phone, email, anchorOnJob,
 }: {
   policy: ContactPolicyInput;
   context: DialerEntityContext;
   phone?: string;
   email?: string;
+  /** On a job: Text opens the composer by the number with the job attached, so the server texts the job's number. */
+  anchorOnJob?: boolean;
 }) {
   const navigate = useNavigate();
   const noticeId = useId();
@@ -613,7 +630,7 @@ function ContactActions({
 
   const text =
     !d || !phone ? null : d.textAction === 'in_app_text' ? (
-      <Button variant="outline" size="sm" onClick={() => navigate(textPath(phone, context, { viewCustomers: policy.switches.viewCustomers }))}>
+      <Button variant="outline" size="sm" onClick={() => navigate(textPath(phone, context, { viewCustomers: policy.switches.viewCustomers, anchorOnJob }))}>
         <MessageSquare aria-hidden /> Text
       </Button>
     ) : d.textAction === 'native_link' ? (

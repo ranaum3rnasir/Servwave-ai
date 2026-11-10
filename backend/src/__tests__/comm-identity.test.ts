@@ -8,20 +8,21 @@ import {
 import { withDependantsOff } from './support/switchDependants';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 import { clearTokenCache } from '../middleware/authenticate';
+import { numberBelongsTo, noNumberMatches } from './support/phone-match';
 
 const mockPrisma = prisma as any;
 // clearTokenCache is not optional: authenticate caches the resolved user per
 // bearer token for 60s, so without it the org a test passes to mockAuthAs (the
 // demo flag the WhatsApp cases below depend on) is silently ignored in favour of
 // whatever the first test in the file resolved.
-beforeEach(() => { vi.clearAllMocks(); clearPermissionCache(); clearTokenCache(); });
+beforeEach(() => { vi.clearAllMocks(); clearPermissionCache(); clearTokenCache(); noNumberMatches(mockPrisma); });
 
 describe('POST /api/communication/calls', () => {
   const base = { direction: 'in', from_number: '(555) 123-4567', to_number: '+15550000000', status: 'completed' };
 
   it('links to the Customer on phone match (DEC6)', async () => {
     mockAuthAs('dispatcher');
-    mockPrisma.customer.findFirst.mockResolvedValue(CUSTOMER_FIXTURE);
+    numberBelongsTo(mockPrisma, CUSTOMER_FIXTURE);
     mockPrisma.callSession.create.mockImplementation((args: any) =>
       Promise.resolve({ id: 'call-1', started_at: new Date(), answered_by: { kind: 'none' }, ...args.data }));
     const res = await request(app).post('/api/communication/calls').set(authHeader('dispatcher')).send(base);
@@ -31,20 +32,8 @@ describe('POST /api/communication/calls', () => {
     expect(data.lead_id).toBeNull();
     expect(data.vendor_id).toBeNull();
     expect(data.organization_id).toBe(ALPHA_ORG_ID);
-    // matchByPhone covers all three phone storage places (scalar, legacy
-    // secondary_phone, phones[] relation) — see comms-identity.test.ts.
-    const phoneIn = { in: ['+15551234567', '5551234567', '(555) 123-4567'] };
-    expect(mockPrisma.customer.findFirst).toHaveBeenCalledWith({
-      where: {
-        organization_id: ALPHA_ORG_ID,
-        OR: [
-          { phone: phoneIn },
-          { secondary_phone: phoneIn },
-          { phones: { some: { phone: phoneIn } } },
-        ],
-      },
-      select: { id: true, first_name: true, last_name: true, company_name: true },
-    });
+    // Which customer a shared number picks, across the three places a customer keeps a number, is proven on a real
+    // database (comm-shared-number-fixed-order-db.test.ts).
   });
 
   it('links to a Vendor when the caller is a vendor, not a customer/lead (DEC6)', async () => {
@@ -132,7 +121,7 @@ describe('POST /api/communication/threads', () => {
 
   it('links to the Customer on match', async () => {
     mockAuthAs('dispatcher');
-    mockPrisma.customer.findFirst.mockResolvedValue(CUSTOMER_FIXTURE);
+    numberBelongsTo(mockPrisma, CUSTOMER_FIXTURE);
     mockPrisma.messageThread.create.mockImplementation((args: any) =>
       Promise.resolve({ id: 'thr-1', channel: 'sms', campaign_type: 'customer_care', unread: 0, messages: [], ...args.data }));
     const res = await request(app).post('/api/communication/threads').set(authHeader('dispatcher')).send(base);
@@ -202,7 +191,7 @@ describe('POST /api/communication/whatsapp-chats', () => {
   // authenticates as a demo org to reach the controller at all.
   it('links to the Customer on phone match', async () => {
     mockAuthAs('dispatcher', { is_demo: true });
-    mockPrisma.customer.findFirst.mockResolvedValue(CUSTOMER_FIXTURE);
+    numberBelongsTo(mockPrisma, CUSTOMER_FIXTURE);
     mockPrisma.whatsAppChat.create.mockImplementation((args: any) =>
       Promise.resolve({ id: 'wac-1', unread: 0, messages: [], ...args.data }));
     const res = await request(app).post('/api/communication/whatsapp-chats').set(authHeader('dispatcher')).send(base);

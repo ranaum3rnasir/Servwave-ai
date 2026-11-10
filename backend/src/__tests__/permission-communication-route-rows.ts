@@ -51,6 +51,7 @@ export const COMMUNICATION_ROUTE_ROWS: RouteRow[] = [
   row('get', '/calls/:id/transcript', [V, 'view_transcript']),
   row('patch', '/calls/:id/job', [ATT]),
   row('patch', '/calls/:id/lead', [ATT]),
+  row('get', '/calls/:id/attach-targets', [ATT]),
   row('get', '/dialer-search', [V]),
   // The phone customer directory reads customers, so the handler also asks for Customers View.
   row('get', '/contacts', [V], { view_customers: true }),
@@ -96,8 +97,11 @@ export const COMMUNICATION_ROUTE_ROWS: RouteRow[] = [
   row('patch', '/threads/:id/unread', [V]),
   row('post', '/threads', [C, A]),
   row('post', '/sms', [C]),
+  // #3023: the line above a text box, gated like the send it describes.
+  row('get', '/sms/numbers', [C]),
   row('patch', '/sms/:id/job', [ATT]),
   row('patch', '/sms/:id/lead', [ATT]),
+  row('get', '/sms/:id/attach-targets', [ATT]),
   row('get', '/whatsapp', [V, A]),
   row('post', '/whatsapp', [C, A]),
   row('get', '/whatsapp/:id', [V, A]),

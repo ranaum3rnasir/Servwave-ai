@@ -179,10 +179,24 @@ type Props = {
    *  to the caller. Unset = no field, and the server picks the default. Never
    *  the phone service's id - that one stays on the browser-phone path. */
   callerIdNumberId?: string;
+  /** How that picked number reads (its formatted number), for the call screen's "Answer the call from" line. Passed with
+   *  `callerIdNumberId`, by the same host. */
+  callerIdNumber?: string | null;
 };
 
 // The company has no number a call could go out from (the server refuses the same way).
 const NO_COMPANY_NUMBER_COPY = "No company number is set up for calls. Contact your admin.";
+
+/**
+ * The call screen once a bridge call is placed (#3025): ServWave rings the caller's own phone first, from the number the call
+ * goes out from, and dials the customer only once they answer. Then where the call is logged, when it has a record.
+ */
+function placedCallCopy(fromNumber: string | null, record: string | undefined): string {
+  const answer = fromNumber
+    ? `Your phone will ring first. Answer the call from ${fromNumber} to connect.`
+    : "Your phone will ring first.";
+  return record ? `${answer} It will be logged to ${record}.` : answer;
+}
 
 /** What the dialer calls the number a call goes out from: its label and the number, or the number. */
 function fromNumberName(n: Exclude<MyOutboundNumber, { none: true }>): string {
@@ -224,6 +238,7 @@ export function Softphone({
   surface,
   callerIdOverride,
   callerIdNumberId,
+  callerIdNumber,
 }: Props) {
   const { data: customers = [] } = usePhoneCustomers();
   const placeCall = usePlaceCall();
@@ -364,6 +379,16 @@ export function Softphone({
     resolvedOutboundNumber && !("none" in resolvedOutboundNumber)
       ? providerNumberIdOf(resolvedOutboundNumber)
       : undefined;
+  // The number a placed bridge call rings the caller's phone from, for the call screen (#3025): the number picked on the
+  // /phone page (callerIdNumber, which that page reads off the caller's own allow-list with the pick), else the resolved
+  // default above, which is the server's own choice for a call with no pick.
+  const placedFromNumber =
+    (callerIdNumberId
+      ? callerIdNumber
+      : resolvedOutboundNumber && !("none" in resolvedOutboundNumber)
+        ? resolvedOutboundNumber.formatted
+        : null
+    )?.trim() || null;
   // Task B3 - an explicit per-call pick (PhoneTabPage's caller-ID picker) wins
   // over the resolved default; falls back to it when unset (every other host
   // of <Softphone/> never passes callerIdOverride, so this is a no-op there).
@@ -1028,11 +1053,7 @@ export function Softphone({
                   : placedContext?.leadLabel
                     ? `Call ended. Logged to ${placedContext.leadLabel}.`
                     : "Call ended and logged to the call history."
-                : placedContext?.jobLabel
-                  ? `Your phone will ring first - this call will be logged to ${placedContext.jobLabel}.`
-                  : placedContext?.leadLabel
-                    ? `Your phone will ring first - this call will be logged to ${placedContext.leadLabel}.`
-                    : "Your phone will ring first - answer to connect."}
+                : placedCallCopy(placedFromNumber, placedContext?.jobLabel ?? placedContext?.leadLabel)}
             </p>
             <button
               onClick={hangUp}

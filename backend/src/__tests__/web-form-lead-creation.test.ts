@@ -17,6 +17,7 @@ import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { processWebFormSubmission } from '../lib/web-form/process';
 import { alertLead } from '../services/notifications/leadEstimateAlerts';
+import { numberBelongsTo, noNumberMatches } from './support/phone-match';
 
 // The alert itself is built and delivered elsewhere (permission-lead-estimate-alerts-db.test.ts walks the chain for a form lead
 // against a real database); here only WHETHER and for WHICH lead it is sent.
@@ -83,6 +84,7 @@ beforeEach(() => {
   p.$transaction.mockImplementation((fn: (tx: unknown) => unknown) => fn(p));
   // Nobody matches by default: no customer, no open lead, no vendor.
   p.customer.findFirst.mockResolvedValue(null);
+  noNumberMatches(p);
   p.lead.findFirst.mockResolvedValue(null);
   p.vendor.findFirst.mockResolvedValue(null);
   p.vendorContact.findFirst.mockResolvedValue(null);
@@ -224,24 +226,26 @@ describe('a submission matching an existing customer', () => {
   });
 
   it('matches on PHONE before email, the handle the office searches on', async () => {
+    numberBelongsTo(p, existing());
+    await post(SUBMISSION);
+    await flush();
+
+    // The first customer lookup is the phone one, for this org: bare, E.164 and raw forms (the identity match's one query,
+    // across the scalar, the legacy secondary and the phones[] relation). The email is never asked.
+    const values = p.$queryRaw.mock.calls[0].slice(1);
+    expect(values).toContain(ORG_ID);
+    expect(JSON.stringify(values)).toContain('6095550123');
+    expect(JSON.stringify(values)).not.toContain('dana.okafor@example.test');
+    expect(p.customer.findFirst).not.toHaveBeenCalled();
+    expect(createData(p.lead)).toMatchObject({ customer_id: EXISTING_ID });
+  });
+
+  it('falls back to the lowercased email when no phone matches', async () => {
     p.customer.findFirst.mockResolvedValue(existing());
     await post(SUBMISSION);
     await flush();
 
-    // The first customer lookup is the phone one: bare, E.164 and raw forms,
-    // across the scalar, the legacy secondary and the phones[] relation.
-    const where = p.customer.findFirst.mock.calls[0][0].where;
-    expect(where.organization_id).toBe(ORG_ID);
-    expect(JSON.stringify(where)).toContain('6095550123');
-    expect(JSON.stringify(where)).not.toContain('dana.okafor@example.test');
-  });
-
-  it('falls back to the lowercased email when no phone matches', async () => {
-    p.customer.findFirst.mockResolvedValueOnce(null).mockResolvedValueOnce(existing());
-    await post(SUBMISSION);
-    await flush();
-
-    expect(p.customer.findFirst.mock.calls[1][0].where).toMatchObject({
+    expect(p.customer.findFirst.mock.calls[0][0].where).toMatchObject({
       organization_id: ORG_ID,
       email: 'dana.okafor@example.test',
     });

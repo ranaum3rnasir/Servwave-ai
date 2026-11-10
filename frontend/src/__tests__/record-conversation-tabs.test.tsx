@@ -136,7 +136,11 @@ describe('the routed job page\'s Communication tab', () => {
     expect(screen.queryByText(INVOICE_EMAIL_TITLE)).not.toBeInTheDocument();
     expect(screen.queryByText(/Re: Invoice/)).not.toBeInTheDocument();
     const asked = mockApi.get.mock.calls.map(([url]) => String(url));
-    expect([...new Set(asked.filter((url) => url.includes('/communication')))]).toEqual([`/api/jobs/${JOB_ID}/communications`]);
+    // The text box's number line (#3023) reads which numbers a text would go between; it carries no conversation.
+    expect([...new Set(asked.filter((url) => url.includes('/communication')))].sort()).toEqual([
+      '/api/communication/sms/numbers',
+      `/api/jobs/${JOB_ID}/communications`,
+    ]);
   });
 });
 
@@ -170,6 +174,10 @@ describe('the routed lead page\'s Communication tab', () => {
 
     expect(screen.queryByText(INVOICE_EMAIL_TITLE)).not.toBeInTheDocument();
     const asked = mockApi.get.mock.calls.map(([url]) => String(url));
-    expect([...new Set(asked.filter((url) => url.includes('/communication')))]).toEqual([`/api/leads/${LEAD_ID}/communications`]);
+    // The text box's number line (#3023) reads which numbers a text would go between; it carries no conversation.
+    expect([...new Set(asked.filter((url) => url.includes('/communication')))].sort()).toEqual([
+      '/api/communication/sms/numbers',
+      `/api/leads/${LEAD_ID}/communications`,
+    ]);
   });
 });

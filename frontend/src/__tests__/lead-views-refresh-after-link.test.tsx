@@ -21,7 +21,7 @@ import { renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import api from '@/lib/axios';
-import { useReassignSmsLead } from '@/lib/api/communication';
+import { useReassignSmsJob, useReassignSmsLead } from '@/lib/api/communication';
 import { useReassignEmailLead } from '@/lib/api/communication';
 import { useReassignCallJob, useReassignCallLead } from '@/lib/api/callJob';
 import { useDeleteCommunicationLog, useUpdateCommunicationLog } from '@/lib/api/jobCommunications';
@@ -200,9 +200,9 @@ describe('the lead views refresh after a logged entry is saved onto a lead', () 
   });
 });
 
-// D7 (slice 4.5): filing a call on a job re-points (or clears) its lead, and deleting a logged entry
+// D7 (slice 4.5): filing a call (and, #3024, a text) on a job re-points (or clears) its lead, and deleting a logged entry
 // takes it off its lead. Either can move the lead it left back to New.
-describe('the lead views refresh after a call is filed on a job or a logged entry is deleted', () => {
+describe('the lead views refresh after a call or a text is filed on a job or a logged entry is deleted', () => {
   it.each([
     ['filing a call on a job', 'j1'],
     ['detaching a call from its job', null],
@@ -215,6 +215,21 @@ describe('the lead views refresh after a call is filed on a job or a logged entr
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(patch).toHaveBeenCalledWith('/api/communication/calls/c1/job', { job_id: jobId });
+    for (const key of [...LEAD_VIEWS(LEAD), ...LEAD_VIEWS(OTHER_LEAD)]) expect(isStale(key)).toBe(true);
+  });
+
+  // #3024 (Ran, 2026-11-06): a text filed on a job takes the job's own lead, or none, as a call does.
+  it.each([
+    ['filing a text on a job', 'j1'],
+    ['detaching a text from its job', null],
+  ] as const)('%s refreshes every lead\'s views', async (_label, jobId) => {
+    seed(...LEAD_VIEWS(LEAD), ...LEAD_VIEWS(OTHER_LEAD));
+    const { result } = renderHook(() => useReassignSmsJob(), { wrapper });
+
+    result.current.mutate({ messageId: 'm1', jobId });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(patch).toHaveBeenCalledWith('/api/communication/sms/m1/job', { job_id: jobId });
     for (const key of [...LEAD_VIEWS(LEAD), ...LEAD_VIEWS(OTHER_LEAD)]) expect(isStale(key)).toBe(true);
   });
 

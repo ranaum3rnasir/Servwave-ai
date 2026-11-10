@@ -33,15 +33,10 @@ import {
   Users,
   UsersRound,
 } from "lucide-react";
-import { JobBadge } from "@/components/communication/shared/atoms";
+import { AttachMenu } from "@/components/communication/shared/AttachMenu";
+import type { AttachPick } from "@/components/communication/shared/CommJobMenu";
+import { useRetieText } from "@/components/communication/shared/useRetieText";
 import { customerById, InfoRow, shortTime } from "@/components/communication/phone/shared";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { CustomerEmailText, CustomerNameText, CustomerPhoneText } from "@/components/contact/ContactText";
 import { CUSTOMER_PHONE_OWNER } from "@/components/contact/contactHrefs";
 import { phoneDisplay } from "@/components/contact/contactDisplayPolicy";
@@ -59,8 +54,8 @@ import {
   useMessageThread,
   useMessageThreads,
   usePhoneCustomers,
-  useReassignSmsJob,
   useSendSms,
+  useSendingNumbers,
   type ConversationLinkResult,
   smsSendErrorMessage,
   fmtPhone,
@@ -70,19 +65,27 @@ import {
   outboundBubbleClass,
 } from "@/lib/api/communication";
 import type {
+  ConversationPair,
   CustomerJobNav,
   Message,
   MessageThread,
   ThreadKind,
   PhoneCustomer,
   SendSmsResult,
+  SmsSendTarget,
 } from "@/lib/api/communication";
+import { TextingFromLine } from "@/components/communication/shared/TextingFromLine";
 import { useScheduleTimezone } from '@/lib/schedule-tz';
 import { useRoutedPane } from '@/lib/communication/useRoutedPane';
 import { useUnknownNumberCreate } from '@/components/communication/phone/useUnknownNumberCreate';
 import { fieldKindProps } from '@/ui-kit/lib/fieldKind';
 import { canAutoFocus } from '@/ui-kit/lib/autoFocus';
 import { useIsAdmin } from '@/lib/useIsAdmin';
+import {
+  ConversationCustomersHeading,
+  conversationCustomersTitle,
+  ourLineLabel,
+} from '@/components/communication/shared/ConversationCustomers';
 
 /** Below md a list that can run to hundreds of rows is drawn a page at a time (mobile slice 69,
  *  PERF-04): the directory rows and a thread's bubbles are the bulk of the page's DOM. */
@@ -135,6 +138,10 @@ function threadKind(t: MessageThread): ThreadKind {
  * Unknown-number threads are titled by their E.164 key — pretty-print those
  * (team/group name titles don't normalize and pass through untouched). */
 function threadTitle(t: MessageThread, customers: PhoneCustomer[]): string {
+  // #3021: a conversation keyed by its pair is titled with the customers carrying its number (none: the number itself).
+  if (t.pair && threadKind(t) === "customer") {
+    return t.pair.customers.length > 0 ? conversationCustomersTitle(t.pair.customers) : fmtPhone(t.pair.otherPartyE164);
+  }
   if (t.title) {
     const e164 = normalizeNAPhone(t.title);
     return e164 ? fmtPhone(e164) : t.title;
@@ -156,6 +163,7 @@ function ThreadTitle({
   customers: PhoneCustomer[];
   linkCustomer?: boolean;
 }) {
+  if (thread.pair && threadKind(thread) === "customer") return <>{threadTitle(thread, customers)}</>;
   if (thread.title) {
     const e164 = threadKind(thread) === "customer" ? normalizeNAPhone(thread.title) : null;
     return e164 ? <CustomerPhoneText phone={e164}>{fmtPhone(e164)}</CustomerPhoneText> : <>{threadTitle(thread, customers)}</>;
@@ -165,6 +173,28 @@ function ThreadTitle({
   const customer = customerById(customers, thread.customerId) ?? thread.linkedCustomer;
   if (!customer || !linkCustomer) return <>{threadTitle(thread, customers)}</>;
   return <CustomerNameText customerId={customer.id} name={customer.name} />;
+}
+
+/**
+ * The one customer a customer conversation is about, for the side panel (whole-diff ruling, Ran 2026-11-07; #3013
+ * decision 5): for a conversation keyed by its pair, the first of the customers the server names it by (`pair.customers`:
+ * those carrying its number that the person can open, in the fixed order, worked out at each read), never the customer it
+ * happens to be stored on; for any other conversation, the customer it is filed on.
+ */
+function conversationCustomerId(t: MessageThread): string | undefined {
+  if (t.pair) return t.pair.customers[0]?.id;
+  return t.customerId || undefined;
+}
+
+/** A pair-keyed conversation's second line: the customer's number, then our number, "(555) 010-3002 · Main line". */
+function ConversationPairLine({ pair }: { pair: ConversationPair }) {
+  const ours = ourLineLabel(pair);
+  return (
+    <span className="truncate text-[11px] tabular-nums text-text-secondary">
+      <CustomerPhoneText phone={pair.otherPartyE164}>{fmtPhone(pair.otherPartyE164)}</CustomerPhoneText>
+      {ours && ` · ${ours}`}
+    </span>
+  );
 }
 
 /** Small uppercase meta line under each row / in the conversation header. */
@@ -294,7 +324,7 @@ export function SmsInboxView({
   const threadsQuery = useMessageThreads();
   const threadDir = useMemo(() => threadsQuery.data ?? [], [threadsQuery.data]);
   const sendSms = useSendSms();
-  const reassignSms = useReassignSmsJob();
+  const retieText = useRetieText();
   // Attach conversations to jobs and leads decides who can tag a text to a job here; Edit communication records plays
   // no part in it. Without it the inbox still shows where each text is filed.
   const mayAttach = useAppAbility().can("attach", "Communication");
@@ -360,7 +390,27 @@ export function SmsInboxView({
   // is about), and the notification bell links straight to it. A link to a thread the list does not hold is
   // therefore read by id: the single read decides whether the person may open it, and the list never has to.
   const [searchParams] = useSearchParams();
-  const linkedThreadId = searchParams.get("threadId");
+  // #3023 (#3013 decision 2): Text on a customer (?customerId=, with the lead it was tapped on) opens the conversation the
+  // customer's own text box continues, as the server names it with the line above that box - the latest conversation with
+  // the customer's number the person may continue - never the customer's most recently updated one.
+  const linkCustomerId = searchParams.get("customerId");
+  const linkLeadId = searchParams.get("leadId");
+  // #3018: Text on a customer's phone tapped with no lead or job (the customer page's Secondary, `numberTextPath`) opens the
+  // conversation the server names for THAT number the same way - the one the inbox and a lead's card continue for it (#3019,
+  // #3023) - else New message to the number. A number tapped on a lead or a job keeps opening New message with the record.
+  const linkNumberE164 =
+    searchParams.get("owner") === CUSTOMER_PHONE_OWNER && !searchParams.get("threadId") && !searchParams.get("jobId") && !linkLeadId
+      ? normalizeNAPhone(searchParams.get("to") ?? "")
+      : null;
+  const customerDoor = useSendingNumbers(
+    linkCustomerId && !searchParams.get("threadId") && !searchParams.get("to")
+      ? { customerId: linkCustomerId, ...(linkLeadId && { leadId: linkLeadId }) }
+      : linkNumberE164
+        ? { toNumber: linkNumberE164 }
+        : null,
+  );
+  const customerConversationId = customerDoor.data?.conversationId ?? null;
+  const linkedThreadId = searchParams.get("threadId") ?? customerConversationId;
   const unlisted = Boolean(linkedThreadId) && threadsQuery.isFetched && !findListed(linkedThreadId!);
   const linkedRead = useMessageThread(unlisted ? linkedThreadId! : undefined);
   const findThread = (id: string): MessageThread | undefined =>
@@ -438,6 +488,25 @@ export function SmsInboxView({
     ? threadKind(open) !== "customer" && !openStaffUserId
     : false;
 
+  // The first reply on the conversation a lead page sent the person to is filed on that lead (SPEC-4 §6.8), whichever
+  // customer it is filed on (#3023: a shared number's conversation is filed on one of the customers carrying it; the server
+  // keeps the lead when the lead carries the conversation's number).
+  const openReplyLeadId = open && replyLead?.threadId === open.id ? replyLead.leadId : undefined;
+  // What a reply in the open conversation is sent with, and what the line above its text box asks about (#3023).
+  // Unknown-number AND staff threads carry no customerId - reply by
+  // threadId (their id is always the server's; they only enter local state
+  // server-first). A staff thread's customerId is the legacy `""` sentinel,
+  // which would fail the send schema outright.
+  // #3019: a conversation keyed by its pair of numbers is replied to by its id too, so the reply stays in it: it goes to
+  // that conversation's number from our number in it, never to the customer's phone in whichever conversation is latest.
+  const openReplyTarget: SmsSendTarget | null =
+    open && !openHasNoRecipient
+      ? {
+          ...(openUnknownNumber || openStaffUserId || open.pair ? { threadId: open.id } : { customerId: open.customerId }),
+          ...(openReplyLeadId && { leadId: openReplyLeadId }),
+        }
+      : null;
+
   // Deep links — resolved once. ?threadId=… opens the exact thread
   // (notification bell); ?customerId=… opens that customer's thread (job page
   // link, dialer Text action) or, when no thread exists yet, the composer with
@@ -455,22 +524,31 @@ export function SmsInboxView({
       deepLinked.current = true;
       return;
     }
-    if (to) {
+    const composeToNumber = () => {
       deepLinked.current = true;
-      setComposeSeed({ number: to });
+      setComposeSeed({ number: to! });
       // ...then whose number it is and where it was tapped, when the link says.
       setComposeSeed((seed) => ({ ...seed, ...composeSeedExtras(searchParams) }));
       setComposeOpen(true);
+    };
+    if (to && !linkNumberE164) {
+      composeToNumber();
       return;
     }
-    const byParam = (t: MessageThread) =>
-      (threadId ? t.id === threadId : false) ||
-      (customerId ? t.customerId === customerId : false);
-    const target = threads.find(byParam) ?? threadDir.find(byParam);
+    // A customer's link, or a customer's number with no record, waits for the server to name the conversation its text box
+    // continues.
+    const byDoor = Boolean(customerId || linkNumberE164) && !threadId;
+    if (byDoor && customerDoor.isPending) return;
+    const opening = threadId ?? (byDoor ? customerConversationId : null);
+    const target = opening ? findThread(opening) : undefined;
+    // A conversation the list does not hold is read by id first (linkedRead, above).
+    if (opening && !target && linkedRead.isPending && !linkRefused) return;
     const leadId = searchParams.get("leadId");
     if (target) {
       deepLinked.current = true;
-      if (customerId && leadId && target.customerId === customerId) {
+      // #3023 (Ran, 2026-11-06): a text from a lead keeps the lead. The conversation the server named for the customer's
+      // text box takes it even when it is filed on another customer carrying the number.
+      if (customerId && leadId && (target.customerId === customerId || (!threadId && target.id === customerConversationId))) {
         setReplyLead({ customerId, leadId, threadId: target.id });
       }
       setOpenId(target.id);
@@ -479,15 +557,19 @@ export function SmsInboxView({
       if (pane.paneId !== target.id) pane.open(target.id, { replace: true });
       return;
     }
-    // Directory fully loaded and still no thread for this customer → start
-    // one: open the composer with the customer preselected.
-    if (customerId && threadsQuery.isFetched) {
+    // No conversation to continue with the number → start one: New message to the number...
+    if (linkNumberE164 && threadsQuery.isFetched) {
+      composeToNumber();
+      return;
+    }
+    // ...or, for the customer's number, with the customer preselected.
+    if (customerId && !threadId && threadsQuery.isFetched) {
       deepLinked.current = true;
       if (leadId) setReplyLead({ customerId, leadId });
       setComposeSeed({ customerId });
       setComposeOpen(true);
     }
-  }, [threads, threadDir, threadsQuery.isFetched, searchParams, pane]);
+  }, [threads, threadDir, threadsQuery.isFetched, searchParams, linkNumberE164, pane, customerDoor.isPending, customerConversationId, linkedRead.data, linkedRead.isPending, linkRefused]);
 
   // A phone whose URL names a conversation that does not exist (a stale link, a thread that was
   // archived away) shows the list instead of an empty pane, and drops the dead id from the URL.
@@ -497,59 +579,48 @@ export function SmsInboxView({
     if (onPhone && routedId && !paneThread && directoryReady && !awaitingRead) backToList({ replace: true });
   }, [onPhone, routedId, paneThread, directoryReady, awaitingRead, backToList]);
 
-  // The open thread's customer jobs — feed the right-rail navigation list and
-  // the one-click reassign menus (open jobs only as targets). Scoped to
+  // The open thread's customer jobs — feed the right-rail navigation list. Scoped to
   // CUSTOMER threads only: team/group internal lanes never load job context.
   const { data: customerJobs = [] } = useCustomerJobs(
-    open && threadKind(open) === "customer" ? open.customerId || undefined : undefined,
+    open && threadKind(open) === "customer" ? conversationCustomerId(open) : undefined,
   );
-  const openJobs = useMemo(() => customerJobs.filter((j) => j.open), [customerJobs]);
 
-  // One-click reassign — commit on confirmation: the local thread update and
-  // the success toast run only after the PATCH resolves; a failed PATCH leaves
-  // local state untouched (the hook refetches ['communication'] to resync) and
-  // surfaces an error toast. null clears the tag (back to the Unrouted tray).
-  function reassignMessage(
-    threadId: string,
-    messageId: string,
-    job: { id: string; number: string } | null,
-  ) {
-    reassignSms.mutate(
-      { messageId, jobId: job?.id ?? null },
-      {
-        onSuccess: (result?: ConversationLinkResult) => {
-          // Removing a job tag can take the text out of the person's reach (they could read it only through that
-          // job). The server says so in a success: the text leaves the conversation, and the conversation leaves the
-          // list when it was the last text they could read in it.
-          if (result?.left) {
-            setThreads((prev) =>
-              prev
-                .map((t) => (t.id === threadId ? { ...t, messages: t.messages.filter((m) => m.id !== messageId) } : t))
-                .filter((t) => t.id !== threadId || t.messages.length > 0),
-            );
-            onToast("Job tag removed. This text is no longer in your list.");
-            return;
-          }
+  // "Attach to a lead or job" (#3024) - commit on confirmation: the local thread update and the success toast run only after
+  // the server agrees; a refused change leaves local state untouched (the hooks refetch ['communication'] to resync) and says
+  // so. The menu offers the leads and jobs of every customer carrying the conversation's number; each pick is one change and
+  // the server keeps the text on one record (a job pick sets its lead to the job's own lead or none, a lead pick takes it off
+  // its job, "No lead or job" clears both; useRetieText).
+  function reassignMessage(threadId: string, message: Message, pick: AttachPick | null) {
+    retieText(message, pick).then(
+      (result?: ConversationLinkResult) => {
+        // Taking a text off its lead or job can take it out of the person's reach (they could read it only through that
+        // record). The server says so in a success: the text leaves the conversation, and the conversation leaves the list
+        // when it was the last text they could read in it.
+        if (result?.left) {
           setThreads((prev) =>
-            prev.map((t) =>
-              t.id === threadId
-                ? {
-                    ...t,
-                    messages: t.messages.map((m) =>
-                      m.id === messageId
-                        ? { ...m, jobId: job?.id, jobLabel: job?.number }
-                        : m,
-                    ),
-                  }
-                : t,
-            ),
+            prev
+              .map((t) => (t.id === threadId ? { ...t, messages: t.messages.filter((m) => m.id !== message.id) } : t))
+              .filter((t) => t.id !== threadId || t.messages.length > 0),
           );
-          onToast(job ? `Tagged to ${job.number}` : "Job tag removed");
-        },
-        onError: () => {
-          onToast("Couldn't update the job tag - try again");
-        },
+          onToast("Link removed. This text is no longer in your list.");
+          return;
+        }
+        const tie =
+          pick?.kind === "job"
+            ? { jobId: pick.id, jobLabel: pick.label, leadId: result?.message?.leadId, leadLabel: result?.message?.leadLabel }
+            : pick?.kind === "lead"
+              ? { jobId: undefined, jobLabel: undefined, leadId: pick.id, leadLabel: pick.label }
+              : { jobId: undefined, jobLabel: undefined, leadId: undefined, leadLabel: undefined };
+        setThreads((prev) =>
+          prev.map((t) =>
+            t.id === threadId
+              ? { ...t, messages: t.messages.map((m) => (m.id === message.id ? { ...m, ...tie } : m)) }
+              : t,
+          ),
+        );
+        onToast(pick ? `Attached to ${pick.label}` : "Link removed");
       },
+      () => onToast("Couldn't update the link - try again"),
     );
   }
 
@@ -603,6 +674,25 @@ export function SmsInboxView({
     setOpenId(first?.id ?? "");
   }
 
+  // What a first text to a customer from the New-message composer is sent with, and what its line asks about (#3023).
+  // A first text to the customer a lead page sent the person here for, with no conversation yet, is filed on that lead
+  // (SPEC-4 §6.8).
+  function customerSendTarget(customerId: string): SmsSendTarget {
+    const leadId = replyLead && !replyLead.threadId && replyLead.customerId === customerId ? replyLead.leadId : undefined;
+    return { customerId, ...(leadId && { leadId }) };
+  }
+
+  // The same for a number (slice H7). The job or lead the number was tapped from files the text on that record, but only
+  // for the number the person was sent here with: a different number picked after "Change" has no record behind it.
+  function numberSendTarget(e164: string): SmsSendTarget {
+    const seeded = composeSeed?.number ? normalizeNAPhone(composeSeed.number) === e164 : false;
+    return {
+      toNumber: e164,
+      ...(seeded && composeSeed?.jobId && { jobId: composeSeed.jobId }),
+      ...(seeded && composeSeed?.leadId && { leadId: composeSeed.leadId }),
+    };
+  }
+
   // Start (or jump to) a conversation with a customer from the New-message
   // composer — select (or create) the thread, and commit the outbound bubble
   // only after the server confirms the send. A failed send opens the thread
@@ -612,9 +702,14 @@ export function SmsInboxView({
     if (text && sendSms.isPending) return;
     setFilter("conversations");
     setSendError(null);
-    const existing = threads.find((t) => t.customerId === customerId);
+    // #3023: the conversation the server filed the text in, when it names one (decision 2 continues the latest conversation
+    // with the number, which need not be the first one listed for the customer; decision 3 files it on the main line).
+    let filedIn: string | undefined;
+    const existingFor = () =>
+      filedIn ? threads.find((t) => t.id === filedIn) : threads.find((t) => t.customerId === customerId);
 
     function selectThread(msg?: Message) {
+      const existing = existingFor();
       if (existing) {
         setThreads((prev) =>
           prev.map((t) =>
@@ -632,7 +727,7 @@ export function SmsInboxView({
         // below has none yet, so there is nothing to persist.
         markThreadRead.mutate(existing.id);
       } else {
-        const id = `thr_${Date.now()}`;
+        const id = filedIn ?? `thr_${Date.now()}`;
         setThreads((prev) => [
           {
             id,
@@ -659,14 +754,13 @@ export function SmsInboxView({
       return;
     }
 
-    // A first text to the customer a lead page sent the person here for, with no conversation yet, is filed on that
-    // lead (SPEC-4 §6.8).
-    const leadId = replyLead && !replyLead.threadId && replyLead.customerId === customerId ? replyLead.leadId : undefined;
+    const target = customerSendTarget(customerId);
     sendSms.mutate(
-      { customerId, body: text, ...(leadId && { leadId }) },
+      { ...target, body: text },
       {
         onSuccess: (data) => {
-          if (leadId) setReplyLead(null);
+          if (target.leadId) setReplyLead(null);
+          filedIn = data?.threadId;
           selectThread(buildOutMessage(data, text));
           closeCompose();
           if (data?.delivery !== "failed") {
@@ -697,16 +791,8 @@ export function SmsInboxView({
     const text = body.trim();
     if (!text || sendSms.isPending) return;
     setComposeError(null);
-    // The job or lead the number was tapped from files the text on that record, but only for the number the person
-    // was sent here with: a different number picked after "Change" has no record behind it.
-    const seeded = composeSeed?.number ? normalizeNAPhone(composeSeed.number) === e164 : false;
     sendSms.mutate(
-      {
-        toNumber: e164,
-        body: text,
-        ...(seeded && composeSeed?.jobId && { jobId: composeSeed.jobId }),
-        ...(seeded && composeSeed?.leadId && { leadId: composeSeed.leadId }),
-      },
+      { ...numberSendTarget(e164), body: text },
       {
         onSuccess: (data) => {
           setFilter("conversations");
@@ -746,8 +832,11 @@ export function SmsInboxView({
           if (data?.threadId) markThreadRead.mutate(data.threadId);
           closeCompose();
           if (data?.delivery !== "failed") {
-            const mayShowNumber = phoneDisplay("customer_phone", e164, null, contactPolicy).selectable;
-            onToast(mayShowNumber ? `✉️ Message sent to ${fmtPhone(e164)}` : "✉️ Message sent");
+            // #3023: the number the text went to - on a lead or a job, the number the record shows (#3016), which need not
+            // be the one tapped.
+            const textedTo = data?.to ?? e164;
+            const mayShowNumber = phoneDisplay("customer_phone", textedTo, null, contactPolicy).selectable;
+            onToast(mayShowNumber ? `✉️ Message sent to ${fmtPhone(textedTo)}` : "✉️ Message sent");
           }
         },
         onError: (err) => setComposeError(smsSendErrorMessage(err)),
@@ -762,35 +851,47 @@ export function SmsInboxView({
   }
 
   function send() {
-    if (smsBlocked || openHasNoRecipient || !draft.trim() || !open || sendSms.isPending) return;
+    if (smsBlocked || !openReplyTarget || !draft.trim() || !open || sendSms.isPending) return;
     const body = draft.trim();
     setSendError(null);
-    // The first reply on the conversation a lead page sent the person to is filed on that lead (SPEC-4 §6.8).
-    const leadId =
-      replyLead?.threadId === open.id && open.customerId === replyLead.customerId ? replyLead.leadId : undefined;
+    const leadId = openReplyLeadId;
     sendSms.mutate(
-      // Unknown-number AND staff threads carry no customerId - reply by
-      // threadId (their id is always the server's; they only enter local state
-      // server-first). A staff thread's customerId is the legacy `""` sentinel,
-      // which would fail the send schema outright.
-      openUnknownNumber || openStaffUserId
-        ? { threadId: open.id, body }
-        : { customerId: open.customerId, body, ...(leadId && { leadId }) },
+      { ...openReplyTarget, body },
       {
         onSuccess: (data) => {
           if (leadId) setReplyLead(null);
           // Commit the bubble on confirmation only; a delivery:'failed' 201
           // renders the failed bubble (danger) and NO success toast.
           const msg = buildOutMessage(data, body);
+          // #3023 (#3013 decision 3): a reply from a number no longer in use is filed in the main-line conversation; the
+          // bubble goes there and the screen opens it. Until the next poll brings it, it stands in with the same number.
+          const filedIn = data?.threadId ?? open.id;
           setThreads((prev) =>
-            prev.map((t) =>
-              t.id === open.id ? { ...t, messages: [...t.messages, msg], unread: 0 } : t,
-            ),
+            prev.some((t) => t.id === filedIn)
+              ? prev.map((t) => (t.id === filedIn ? { ...t, messages: [...t.messages, msg], unread: 0 } : t))
+              : [
+                  {
+                    ...open,
+                    id: filedIn,
+                    messages: [msg],
+                    unread: 0,
+                    // #3021: the same number, so the same customers carry it.
+                    ...(open.pair && {
+                      pair: { otherPartyE164: open.pair.otherPartyE164, ourNumberE164: null, ourLine: null, customers: open.pair.customers },
+                    }),
+                  },
+                  ...prev,
+                ],
           );
+          if (filedIn !== open.id) {
+            leaveLeadArrival(filedIn);
+            setOpenId(filedIn);
+            pane.open(filedIn);
+          }
           // #2049 - replying to an already-open thread; it is always a real
           // server thread by this point (openUnknownNumber's own doc: "their
           // id is always the server's").
-          markThreadRead.mutate(open.id);
+          markThreadRead.mutate(filedIn);
           setDraft("");
           if (data?.delivery !== "failed") onToast("✉️ Message sent");
         },
@@ -941,10 +1042,20 @@ export function SmsInboxView({
                   </span>
                 )}
               </div>
-              <span className="truncate text-[11px] text-text-secondary">{last?.body}</span>
-              <span className="truncate text-[10px] uppercase tracking-wide text-text-secondary">
-                {threadMeta(t)}
-              </span>
+              {/* #3019: a conversation keyed by its pair names our number on its second line, in place of the meta line. */}
+              {t.pair && kind === "customer" ? (
+                <>
+                  <ConversationPairLine pair={t.pair} />
+                  <span className="truncate text-[11px] text-text-secondary">{last?.body}</span>
+                </>
+              ) : (
+                <>
+                  <span className="truncate text-[11px] text-text-secondary">{last?.body}</span>
+                  <span className="truncate text-[10px] uppercase tracking-wide text-text-secondary">
+                    {threadMeta(t)}
+                  </span>
+                </>
+              )}
             </button>
           );
         })
@@ -991,14 +1102,19 @@ export function SmsInboxView({
                 {threadKind(open) === "group" && (
                   <UsersRound className="h-4 w-4 flex-shrink-0 text-text-secondary" />
                 )}
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-semibold text-text-primary">
-                    <ThreadTitle thread={open} customers={customers} linkCustomer />
-                  </p>
-                  <p className="truncate text-[11px] text-text-secondary">
-                    {threadMeta(open)}
-                  </p>
-                </div>
+                {/* #3021: a conversation on a number customers carry gives the number, the customers it is on, and our number. */}
+                {open.pair && threadKind(open) === "customer" && open.pair.customers.length > 0 ? (
+                  <ConversationCustomersHeading pair={open.pair} />
+                ) : (
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold text-text-primary">
+                      <ThreadTitle thread={open} customers={customers} linkCustomer />
+                    </p>
+                    <p className="truncate text-[11px] text-text-secondary">
+                      {threadMeta(open)}
+                    </p>
+                  </div>
+                )}
               </div>
               <div className="flex min-w-0 flex-shrink flex-wrap items-center justify-end gap-2">
               {/* #2049 (AC3) - the SMS parity for email's reading-pane "Mark as
@@ -1084,23 +1200,24 @@ export function SmsInboxView({
                         m.direction === "out" ? "justify-end" : "",
                       ].join(" ")}
                     >
-                      {threadKind(open) === "customer" &&
-                        (mayAttach ? (
-                          <JobAssignMenu
-                            jobs={openJobs}
-                            onPick={(job) => reassignMessage(open.id, m.id, job)}
-                          >
-                            <button
-                              type="button"
-                              title={m.jobLabel ? `Tagged to ${m.jobLabel} - click to reassign` : "No job - click to assign"}
-                              className="rounded-pill transition hover:opacity-80"
+                      {/* #3024: the lead or job the text is on, as grey text, then "Change" (Attach conversations to jobs
+                          and leads only), which opens "Attach to a lead or job". */}
+                      {threadKind(open) === "customer" && (
+                        <span className="flex items-center gap-1.5 text-[11px]">
+                          <span className="text-text-secondary">{textTieLabel(m)}</span>
+                          {mayAttach && (
+                            <AttachMenu
+                              target={{ kind: "sms", id: m.id }}
+                              current={{ jobId: m.jobId, leadId: m.leadId }}
+                              onPick={(pick) => reassignMessage(open.id, m, pick)}
                             >
-                              <JobBadge job={m.jobLabel} />
-                            </button>
-                          </JobAssignMenu>
-                        ) : (
-                          <JobBadge job={m.jobLabel} />
-                        ))}
+                              <button type="button" className="font-semibold text-primary transition hover:underline">
+                                Change
+                              </button>
+                            </AttachMenu>
+                          )}
+                        </span>
+                      )}
                       {(() => {
                         // A row that was never sent must say so - the whole point
                         // of the honest-status work is that the bubble stops
@@ -1157,6 +1274,8 @@ export function SmsInboxView({
                   {sendError}
                 </p>
               )}
+              {/* #3023: the numbers this reply goes between. */}
+              <TextingFromLine target={openReplyTarget} className="px-3 pt-2" />
               <div className="flex items-center gap-2 px-3 py-2.5">
                 <input
                   value={draft}
@@ -1205,13 +1324,13 @@ export function SmsInboxView({
               // Unrouted tray) renders ONLY for kind === 'customer' threads —
               // group/internal lanes never expose job UI.
               open && threadKind(open) === "customer"
-                ? customerById(customers, open.customerId)
+                ? customerById(customers, conversationCustomerId(open))
                 : undefined
             }
             thread={open && threadKind(open) === "customer" ? open : undefined}
             jobs={customerJobs}
             canAttach={mayAttach}
-            onReassign={(messageId, job) => open && reassignMessage(open.id, messageId, job)}
+            onReassign={(message, pick) => open && reassignMessage(open.id, message, pick)}
           />
         )}
       </aside>
@@ -1221,6 +1340,7 @@ export function SmsInboxView({
           onClose={closeCompose}
           onSendToCustomer={startCustomerThread}
           onSendToNumber={startNumberThread}
+          sendTargetFor={(r) => (r.customerId ? customerSendTarget(r.customerId) : r.number ? numberSendTarget(r.number) : null)}
           customers={customers}
           initialNumber={composeSeed?.number}
           initialCustomerPhone={composeSeed?.customerPhone ? { name: composeSeed.name } : undefined}
@@ -1311,6 +1431,7 @@ function NewMessageDialog({
   onClose,
   onSendToCustomer,
   onSendToNumber,
+  sendTargetFor,
   customers,
   initialNumber,
   initialCustomerPhone,
@@ -1321,6 +1442,8 @@ function NewMessageDialog({
   onClose: () => void;
   onSendToCustomer: (customerId: string, body: string) => void;
   onSendToNumber: (e164: string, body: string) => void;
+  /** What a text to this recipient is sent with, for the line above the text box (#3023). */
+  sendTargetFor: (recipient: Recipient) => SmsSendTarget | null;
   customers: PhoneCustomer[];
   /** Deep-link seed ( ?to= ): a valid NA number jumps straight to the compose
    *  pane; an unnormalizable one prefills the number field for correction. */
@@ -1511,6 +1634,8 @@ function NewMessageDialog({
                 Change
               </button>
             </div>
+            {/* #3023: the numbers this text goes between. */}
+            <TextingFromLine target={sendTargetFor(selected)} className="px-6 pt-3" />
             <div className="flex-1 px-6 py-4">
               <textarea
                 value={body}
@@ -1539,47 +1664,9 @@ function NewMessageDialog({
   );
 }
 
-/* One-click job (re)assign menu — lists the customer's OPEN jobs as
- * "number · location" plus an explicit "No job" reset. Wraps any trigger
- * (a message's pill, the Unrouted tray's Assign button). */
-function JobAssignMenu({
-  jobs,
-  onPick,
-  children,
-}: {
-  jobs: CustomerJobNav[];
-  onPick: (job: { id: string; number: string } | null) => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-60">
-        {jobs.length === 0 ? (
-          <DropdownMenuItem disabled tone="muted" className="text-[12px]">
-            No open jobs
-          </DropdownMenuItem>
-        ) : (
-          jobs.map((j) => (
-            <DropdownMenuItem
-              key={j.id}
-              onClick={() => onPick({ id: j.id, number: j.number })}
-              className="cursor-pointer"
-            >
-              <span className="truncate text-[12px]">
-                <span className="font-semibold text-primary">{j.number}</span>
-                {j.location ? <span className="text-text-secondary"> · {j.location}</span> : null}
-              </span>
-            </DropdownMenuItem>
-          ))
-        )}
-        <DropdownMenuSeparator />
-        <DropdownMenuItem onClick={() => onPick(null)} className="cursor-pointer">
-          <span className="text-[12px] text-text-secondary">No job</span>
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
+/** #3024: the grey text under a text in a customer conversation: its job's number, else its lead's, else "No lead or job". */
+function textTieLabel(m: Message): string {
+  return m.jobLabel ?? m.leadLabel ?? "No lead or job";
 }
 
 function ContextPanel({
@@ -1595,17 +1682,16 @@ function ContextPanel({
   jobs: CustomerJobNav[];
   /** Holds Attach conversations to jobs and leads: the Unrouted tray exists only to assign, so it shows to them alone. */
   canAttach: boolean;
-  onReassign: (messageId: string, job: { id: string; number: string } | null) => void;
+  onReassign: (message: Message, pick: AttachPick | null) => void;
 }) {
   const navigate = useNavigate();
   if (!customer) {
     return <div className="p-4 text-sm text-text-secondary">Select a conversation.</div>;
   }
   const contact = customer.contacts[0];
-  const openJobs = jobs.filter((j) => j.open);
-  // The per-customer Unrouted tray — inbound messages with no job attribution.
+  // The per-customer Unrouted tray — inbound messages tied to no lead or job.
   // Leaving them here IS a valid resolution ("no job"); assigning is one click.
-  const unrouted = (thread?.messages ?? []).filter((m) => m.direction === "in" && !m.jobId);
+  const unrouted = (thread?.messages ?? []).filter((m) => m.direction === "in" && !m.jobId && !m.leadId);
   return (
     <div className="space-y-3 p-4">
       <div className="flex items-center gap-2">
@@ -1678,14 +1764,14 @@ function ContextPanel({
             {unrouted.map((m) => (
               <div key={m.id} className="flex items-center gap-2">
                 <p className="min-w-0 flex-1 truncate text-[11px] text-text-secondary">{m.body}</p>
-                <JobAssignMenu jobs={openJobs} onPick={(job) => onReassign(m.id, job)}>
+                <AttachMenu target={{ kind: "sms", id: m.id }} onPick={(pick) => onReassign(m, pick)}>
                   <button
                     type="button"
                     className="flex-shrink-0 rounded-md border border-border px-1.5 py-0.5 text-[10px] font-semibold text-primary transition hover:bg-primary/10"
                   >
                     Assign
                   </button>
-                </JobAssignMenu>
+                </AttachMenu>
               </div>
             ))}
           </div>
