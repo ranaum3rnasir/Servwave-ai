@@ -508,18 +508,26 @@ export const BeeAgentsTab: React.FC = () => {
     }
 
     if (voice.previewUrl) {
+      let fallbackTriggered = false;
+      const triggerFallback = () => {
+        if (!fallbackTriggered) {
+          fallbackTriggered = true;
+          playFallbackSpeech(voice);
+        }
+      };
+
       const audio = new Audio(voice.previewUrl);
       audioPreviewRef.current = audio;
       setPlayingVoiceId(voice.id);
-      audio.play().catch(() => {
-        playFallbackSpeech(voice);
-      });
       audio.onended = () => {
         setPlayingVoiceId(null);
       };
       audio.onerror = () => {
-        playFallbackSpeech(voice);
+        triggerFallback();
       };
+      audio.play().catch(() => {
+        triggerFallback();
+      });
     } else {
       playFallbackSpeech(voice);
     }
@@ -536,7 +544,11 @@ export const BeeAgentsTab: React.FC = () => {
       utterance.rate = 1.0;
       setPlayingVoiceId(voice.id);
       utterance.onend = () => setPlayingVoiceId(null);
-      utterance.onerror = () => setPlayingVoiceId(null);
+      utterance.onerror = (e) => {
+        if (e.error !== 'interrupted' && e.error !== 'canceled') {
+          setPlayingVoiceId(null);
+        }
+      };
       window.speechSynthesis.speak(utterance);
     }
   };
