@@ -166,7 +166,6 @@ export const BeeSetupTab: React.FC = () => {
 
   // Step 2: Warranty terms
   const [warrantyStartsOn, setWarrantyStartsOn] = useState('Job Complete');
-  const [applyToPastJobs, setApplyToPastJobs] = useState('Only jobs completed after go-live');
 
   // Step 3: Agent selection & fallbacks
   const [defaultAgentId, setDefaultAgentId] = useState<string>('');
@@ -304,7 +303,6 @@ export const BeeSetupTab: React.FC = () => {
       setOfficeHours(cfg.officeHours || 'Mon-Fri 8:00 AM - 6:00 PM');
       const loadedStartsOn = cfg.warrantyStartsOn ? (String(cfg.warrantyStartsOn).toLowerCase().includes('invoice') ? 'Invoice Sent' : 'Job Complete') : 'Job Complete';
       setWarrantyStartsOn(loadedStartsOn);
-      setApplyToPastJobs(cfg.applyToPastJobs || 'Only jobs completed after go-live');
       setDaysBeforeEnd(cfg.daysBeforeEnd !== undefined ? cfg.daysBeforeEnd : 30);
       setWinBackDays(cfg.winBackDays !== undefined ? cfg.winBackDays : 15);
       setTriggerBeforeEnd(cfg.triggerBeforeEnd !== undefined ? cfg.triggerBeforeEnd : true);
@@ -729,7 +727,6 @@ export const BeeSetupTab: React.FC = () => {
         textingStatus,
         officeHours,
         warrantyStartsOn,
-        applyToPastJobs,
         defaultAgentId,
         defaultPhoneNumber: defaultPhoneNumber || callerId,
         triggerBeforeEnd,
@@ -1499,35 +1496,17 @@ export const BeeSetupTab: React.FC = () => {
                 </div>
 
                 {/* 3. General Warranty Rules */}
-                <div className="grid grid-cols-2 gap-4 pt-1">
-                  <div className="space-y-1.5">
-                    <Label>Warranty starts on</Label>
-                    <Select value={warrantyStartsOn} onValueChange={setWarrantyStartsOn}>
-                      <SelectTrigger className="h-8">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="Job Complete">Job Complete</SelectItem>
-                        <SelectItem value="Invoice Sent">Invoice Sent</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <Label>Apply to past jobs?</Label>
-                    <Select value={applyToPastJobs} onValueChange={setApplyToPastJobs}>
-                      <SelectTrigger className="h-8">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="Only jobs completed after go-live">
-                          Only jobs completed after go-live
-                        </SelectItem>
-                        <SelectItem value="Last 12 months too">Last 12 months too</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <span className="text-[11px] text-muted-foreground">Including past jobs fills the queue on day one.</span>
-                  </div>
+                <div className="max-w-xs space-y-1.5 pt-1">
+                  <Label>Warranty starts on</Label>
+                  <Select value={warrantyStartsOn} onValueChange={setWarrantyStartsOn}>
+                    <SelectTrigger className="h-8">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="Job Complete">Job Complete</SelectItem>
+                      <SelectItem value="Invoice Sent">Invoice Sent</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
               </div>
             )}
