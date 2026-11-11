@@ -150,8 +150,12 @@ describe('useStripeAccountLink', () => {
 
     const response = await result.current.mutateAsync();
 
-    expect(api.post).toHaveBeenCalledWith('/api/organization/stripe/account-link');
+    // By default the link collects only what is due now; 'all' also asks for what is due later.
+    expect(api.post).toHaveBeenCalledWith('/api/organization/stripe/account-link', { collect: 'now' });
     expect(response).toEqual({ url: 'https://connect.stripe.com/setup/xyz' });
+
+    await result.current.mutateAsync({ collect: 'all' });
+    expect(api.post).toHaveBeenLastCalledWith('/api/organization/stripe/account-link', { collect: 'all' });
   });
 });
 

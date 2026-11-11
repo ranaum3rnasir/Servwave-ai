@@ -153,9 +153,16 @@ export async function checkPlatformKey(): Promise<void> {
   await _platformStripe().accounts.retrieveCurrent();
 }
 
-export async function createAccountLink(accountId: string, refreshUrl: string, returnUrl: string): Promise<string> {
+/**
+ * 'now' collects only what is due now (the default setup); 'all' also collects what will be asked for later, so an
+ * owner can hand over a co-owner's details before a volume threshold makes them due and payouts pause.
+ */
+export type AccountLinkCollect = 'now' | 'all';
+
+export async function createAccountLink(accountId: string, refreshUrl: string, returnUrl: string, collect: AccountLinkCollect = 'now'): Promise<string> {
   const link = await _platformStripe().accountLinks.create({
     account: accountId, refresh_url: refreshUrl, return_url: returnUrl, type: 'account_onboarding',
+    ...(collect === 'all' ? { collection_options: { fields: 'eventually_due', future_requirements: 'include' } } : {}),
   });
   return link.url;
 }

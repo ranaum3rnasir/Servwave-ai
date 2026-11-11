@@ -135,7 +135,9 @@ export function payoutSummaryOf(acct: Stripe.Account): PayoutSummary {
 }
 
 /** Payouts slice BE-3 (V7-02a): the four verification rows of the payout account page. */
-export type VerificationValue = 'verified' | 'pending' | 'not_started' | 'action_needed' | 'restricted';
+// due_later: nothing is asked now, but the processor will ask for more in this area later (a co-owner's date of birth
+// once sales pass a volume threshold, say). Reading "verified" there hid what the processor's own dashboard lists.
+export type VerificationValue = 'verified' | 'pending' | 'not_started' | 'due_later' | 'action_needed' | 'restricted';
 export type VerificationArea = 'business_details' | 'owner_identity' | 'bank_account' | 'tax_id';
 export type Verification = Record<VerificationArea, VerificationValue>;
 
@@ -182,6 +184,13 @@ export function verificationOf(acct: Stripe.Account): Verification {
   const due = areasOf(dueNow);
   const pending = areasOf(acct.requirements?.pending_verification);
   const eventually = areasOf(acct.requirements?.eventually_due);
+  // Asked for later: everything eventually due (a superset of what is due now, which is checked first), plus what an
+  // upcoming rule change will ask for. Onboarding collects only what is due now, so these are never asked during setup.
+  const future = acct.future_requirements;
+  const later = areasOf([
+    ...(acct.requirements?.eventually_due ?? []),
+    ...(future?.past_due ?? []), ...(future?.currently_due ?? []), ...(future?.eventually_due ?? []),
+  ]);
   const hasBank = !!acct.external_accounts?.data?.some((e) => e.object === 'bank_account');
 
   const out = {} as Verification;
@@ -190,9 +199,10 @@ export function verificationOf(acct: Stripe.Account): Verification {
     if (due.has(area)) value = 'action_needed';
     else if (pending.has(area)) value = 'pending';
     else if (!submitted && eventually.has(area)) value = 'not_started';
+    else if (later.has(area)) value = 'due_later';
     else value = 'verified';
-    // C-6: with no bank account on file the bank row is never verified.
-    if (area === 'bank_account' && !hasBank && value === 'verified') value = 'pending';
+    // C-6: with no bank account on file the bank row is never verified (nor merely "due later": payouts need it).
+    if (area === 'bank_account' && !hasBank && (value === 'verified' || value === 'due_later')) value = 'pending';
     out[area] = value;
   }
   return out;

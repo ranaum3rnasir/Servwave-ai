@@ -40,6 +40,7 @@ const EMPTY: PaymentsSummary = {
 const READY: StripeStatus = {
   connected: true, terms_accepted: true, stripe_charges_enabled: true, stripe_payouts_enabled: true,
   stripe_details_submitted: true, stripe_requirements_due: [], stripe_disabled_reason: null, collected_awaiting_payout: 0,
+  first_payout: { state: 'arrived', arrival_date: '2026-10-09' },
 };
 
 interface Serve {
@@ -117,6 +118,8 @@ describe('KPI tiles', () => {
     expect(screen.getByText('$3,210.50')).toBeInTheDocument();
     expect(screen.getByText('Oct 15, Thursday')).toBeInTheDocument();
     expect(screen.getByText('In transit $1,800.00')).toBeInTheDocument();
+    // The first payout reached the bank: the page confirms payouts instead of explaining the wait.
+    expect(screen.getByTestId('first-payout-notice')).toHaveTextContent('Payouts are arriving regularly');
   });
 
   it('says "1 payment" for one', async () => {

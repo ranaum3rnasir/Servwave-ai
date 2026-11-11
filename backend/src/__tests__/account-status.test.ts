@@ -203,7 +203,7 @@ describe('verificationOf (pure)', () => {
   const bank = { object: 'list', data: [{ object: 'bank_account', bank_name: 'Test Bank', last4: '6789' }] };
   const acct = (over: {
     submitted?: boolean; charges?: boolean; disabled?: string | null; due?: string[]; past?: string[]; pending?: string[];
-    eventually?: string[]; bank?: boolean;
+    eventually?: string[]; bank?: boolean; futureDue?: string[];
   } = {}) => ({
     id: 'acct_fixture', object: 'account',
     details_submitted: over.submitted ?? true, charges_enabled: over.charges ?? true, payouts_enabled: true,
@@ -212,7 +212,21 @@ describe('verificationOf (pure)', () => {
       currently_due: over.due ?? [], past_due: over.past ?? [], pending_verification: over.pending ?? [],
       eventually_due: over.eventually ?? [], disabled_reason: over.disabled ?? null,
     },
+    future_requirements: { currently_due: over.futureDue ?? [], past_due: [], eventually_due: [], pending_verification: [] },
   }) as unknown as Stripe.Account;
+
+  // A company with two owners: setup collected the co-owner's name and email; the rest is asked for once sales pass
+  // a volume threshold. The processor's dashboard lists those items, so the owner row must not read "verified".
+  it('active account with a co-owner\'s details due later -> owner identity due_later, never verified', () => {
+    const coOwner = ['address.city', 'address.line1', 'dob.day', 'phone', 'ssn_last_4'].map((f) => `person_fixture.${f}`);
+    expect(verificationOf(acct({ eventually: coOwner })))
+      .toEqual({ business_details: 'verified', owner_identity: 'due_later', bank_account: 'verified', tax_id: 'verified' });
+    // An upcoming rule change counts as later too.
+    expect(verificationOf(acct({ futureDue: ['company.tax_id'] })).tax_id).toBe('due_later');
+    // Due now still wins over due later, and a bank that is not on file stays pending (C-6).
+    expect(verificationOf(acct({ due: ['person_fixture.dob.day'], eventually: coOwner })).owner_identity).toBe('action_needed');
+    expect(verificationOf(acct({ bank: false, eventually: ['external_account'] })).bank_account).toBe('pending');
+  });
 
   it('state 2: setup in progress', () => {
     expect(verificationOf(acct({
@@ -278,8 +292,8 @@ describe('verificationOf (pure)', () => {
     expect(v.tax_id).toBe('not_started');
   });
 
-  it('an eventually-due key only means not_started before details are submitted', () => {
-    expect(verificationOf(acct({ eventually: ['individual.id_number'] })).tax_id).toBe('verified');
+  it('an eventually-due key means not_started before details are submitted and due_later after, never verified', () => {
+    expect(verificationOf(acct({ eventually: ['individual.id_number'] })).tax_id).toBe('due_later');
   });
 
   it('returns exactly the four values and no requirement key or account id', () => {

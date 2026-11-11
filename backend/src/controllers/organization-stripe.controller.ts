@@ -13,6 +13,7 @@ import { mccForIndustry } from '../lib/stripe-mcc';
 import { refreshAccountStatus, type Verification, type VerificationValue } from '../lib/account-status';
 import { SESSION_SURFACES, type SessionSurface } from '../lib/account-session-surfaces';
 import { requestHasOnlinePayments, ONLINE_PAYMENTS_NOT_IN_PLAN_REFUSAL } from '../lib/online-payments-plan';
+import { firstPayoutOf } from '../services/payments-page';
 
 export class PaymentsTermsError extends Error {
   constructor(public status: number, public code: string, message: string) {
@@ -199,7 +200,23 @@ export async function getStripeStatus(req: Request, res: Response) {
       where: { organization_id: req.user!.organization_id, context: 'payments_onboarding', terms_version: CURRENT_PAYMENTS_TERMS_VERSION },
       select: { id: true },
     });
-    res.json({ ...rest, verification: verificationForBrowser(stripe_verification), connected, terms_accepted: Boolean(termsRow), collected_awaiting_payout });
+    // Until the first payout reaches the bank, the payout pages say how long it usually takes; then they confirm it.
+    // Read from ServWave's own payout rows (no processor call); nothing but a state and a day leaves here.
+    let first_payout = firstPayoutOf(null, null);
+    if (connected) {
+      const orgId = req.user!.organization_id;
+      const earliest = (statuses: string[]) => prisma.payout.findFirst({
+        where: { organization_id: orgId, status: { in: statuses } },
+        orderBy: [{ arrival_date: 'asc' }, { created_at: 'asc' }],
+        select: { arrival_date: true },
+      });
+      const paid = await earliest(['PAID']);
+      first_payout = firstPayoutOf(paid, paid ? null : await earliest(['PENDING', 'IN_TRANSIT']));
+    }
+    res.json({
+      ...rest, verification: verificationForBrowser(stripe_verification), connected, terms_accepted: Boolean(termsRow),
+      collected_awaiting_payout, first_payout,
+    });
   } catch (err) {
     logger.error('getStripeStatus error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -219,10 +236,16 @@ export async function refreshStripeStatus(req: Request, res: Response) {
   await getStripeStatus(req, res);
 }
 
+export const accountLinkSchema = z.object({
+  collect: z.enum(['now', 'all']).default('now'),
+});
+
 // Hosted Account Link fallback (§3.1/§6.2) — the drawer calls this after the embedded component
 // fails to load twice, so onboarding can always be finished on Stripe's surface.
 export async function createStripeAccountLink(req: Request, res: Response) {
   try {
+    const parsed = accountLinkSchema.safeParse(req.body ?? {});
+    if (!parsed.success) { res.status(400).json({ error: 'Unknown setup type.' }); return; }
     const orgId = req.user!.organization_id;
     const org = await prisma.organization.findUnique({ where: { id: orgId }, select: { stripe_account_id: true } });
     if (!org?.stripe_account_id) { res.status(409).json({ error: 'Start setup first.' }); return; }
@@ -230,7 +253,7 @@ export async function createStripeAccountLink(req: Request, res: Response) {
     const refreshUrl = `${env.FRONTEND_URL}/settings/servwave-payments`;
     // ?onboarding=return makes the ServWave Payments settings page re-read the account status on arrival.
     const returnUrl = `${refreshUrl}?onboarding=return`;
-    const url = await createAccountLink(org.stripe_account_id, refreshUrl, returnUrl);
+    const url = await createAccountLink(org.stripe_account_id, refreshUrl, returnUrl, parsed.data.collect);
     res.json({ url });
   } catch (err) {
     if (err instanceof PaymentsTermsError) { res.status(err.status).json({ code: err.code, error: err.message }); return; }

@@ -17,6 +17,7 @@ import {
   payoutScheduleText,
   buildTimeline,
   type StatusInput,
+  firstPayoutOf,
 } from '../services/payments-page';
 import { describeDisputeReason } from '../lib/payment-failure-reasons';
 
@@ -195,5 +196,15 @@ describe('toPageRow', () => {
   });
   it('reads Refund failed when the flag is set, never Succeeded', () => {
     expect(toPageRow({ ...input, refundFailedOpen: true }, false).status).toBe('Refund failed');
+  });
+});
+
+describe('firstPayoutOf', () => {
+  const day = (d: string) => ({ arrival_date: new Date(`${d}T00:00:00Z`) });
+  it('waiting with no payout; on the way while one is pending or in transit; arrived once one is paid', () => {
+    expect(firstPayoutOf(null, null)).toEqual({ state: 'waiting' });
+    expect(firstPayoutOf(null, day('2026-11-13'))).toEqual({ state: 'on_the_way', arrival_date: '2026-11-13' });
+    expect(firstPayoutOf(day('2026-11-06'), day('2026-11-13'))).toEqual({ state: 'arrived', arrival_date: '2026-11-06' });
+    expect(firstPayoutOf(null, { arrival_date: null })).toEqual({ state: 'on_the_way', arrival_date: null });
   });
 });

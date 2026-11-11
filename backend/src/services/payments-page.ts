@@ -84,6 +84,26 @@ export function payoutStatusOf(
   return 'failed';
 }
 
+/**
+ * Where the company's first payout is, so the payout pages can set expectations until money has reached the bank:
+ * waiting (nothing paid out yet), on_the_way (a payout is pending or in transit) or arrived (one has been paid).
+ * A failed or canceled payout counts as neither; the attention card reports a failed one.
+ */
+export type FirstPayout =
+  | { state: 'waiting' }
+  | { state: 'on_the_way'; arrival_date: string | null }
+  | { state: 'arrived'; arrival_date: string | null };
+
+type PayoutDay = { arrival_date: Date | null } | null;
+const isoDay = (d: Date | null): string | null => (d ? d.toISOString().slice(0, 10) : null);
+
+/** Pure: the first payout, from the company's earliest paid payout and its earliest payout still on its way. */
+export function firstPayoutOf(earliestPaid: PayoutDay, earliestOnTheWay: PayoutDay): FirstPayout {
+  if (earliestPaid) return { state: 'arrived', arrival_date: isoDay(earliestPaid.arrival_date) };
+  if (earliestOnTheWay) return { state: 'on_the_way', arrival_date: isoDay(earliestOnTheWay.arrival_date) };
+  return { state: 'waiting' };
+}
+
 export interface PayoutScheduleSummary {
   interval: string | null;
   weekly_anchor: string | null;

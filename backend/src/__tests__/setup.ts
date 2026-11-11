@@ -1028,6 +1028,11 @@ vi.mock('../lib/prisma', () => ({
       createMany: vi.fn(),
       deleteMany: vi.fn(),
     },
+    // The payout pages' first-payout notice reads the earliest payout; none by default.
+    payout: {
+      findFirst: vi.fn().mockResolvedValue(null),
+      findMany: vi.fn().mockResolvedValue([]),
+    },
     organization: {
       findUnique: vi.fn(),
       findFirst: vi.fn().mockResolvedValue({

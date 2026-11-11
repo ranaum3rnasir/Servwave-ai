@@ -8,6 +8,7 @@ import { buildAbility } from '@/lib/ability';
 import { resetAccountScopedStores } from '@/lib/storeReset';
 import ServwavePaymentsPage from '@/pages/v2/settings/ServwavePaymentsPage';
 import type { StripeStatus } from '@/lib/api/shared/organization';
+import { firstPayoutNotice } from '@/lib/payments/first-payout-notice';
 
 const OWNER = buildAbility([{ action: 'manage_payout_account', subject: 'Organization' }]);
 const NOT_OWNER = buildAbility([{ action: 'update', subject: 'Organization' }]);
@@ -34,6 +35,7 @@ const hoisted = vi.hoisted(() => ({
   logout: vi.fn(),
   apiPost: vi.fn(),
   onboardingProps: vi.fn(),
+  bannerProps: vi.fn(),
   descriptor: 'HARBOR LOCKS' as string | null,
 }));
 
@@ -61,9 +63,10 @@ vi.mock('@/lib/axios', () => ({ default: { post: hoisted.apiPost } }));
 vi.mock('@stripe/connect-js/pure', () => ({ loadConnectAndInitialize: hoisted.load }));
 vi.mock('@stripe/react-connect-js', () => ({
   ConnectComponentsProvider: ({ children }: { children: React.ReactNode }) => <div data-testid="connect-provider">{children}</div>,
-  ConnectNotificationBanner: (props: { onLoadError?: () => void }) => (
-    <div data-testid="embedded-banner"><button onClick={props.onLoadError}>Simulate banner load error</button></div>
-  ),
+  ConnectNotificationBanner: (props: { onLoadError?: () => void }) => {
+    hoisted.bannerProps(props);
+    return <div data-testid="embedded-banner"><button onClick={props.onLoadError}>Simulate banner load error</button></div>;
+  },
   ConnectAccountOnboarding: (props: { onExit: () => void }) => {
     hoisted.onboardingProps(props);
     return <div data-testid="embedded-onboarding"><button onClick={props.onExit}>Simulate embed exit</button></div>;
@@ -178,20 +181,59 @@ describe('the embedded components', () => {
   it('mounts the notification banner and onboarding for an account that has not finished setup', async () => {
     renderPage();
     expect(await screen.findByTestId('embedded-onboarding')).toBeInTheDocument();
+    expect(hoisted.onboardingProps).toHaveBeenLastCalledWith(
+      expect.objectContaining({ collectionOptions: { fields: 'currently_due', futureRequirements: 'omit' } }),
+    );
+    expect(screen.queryByTestId('due-later')).not.toBeInTheDocument();
     expect(screen.getByTestId('embedded-banner')).toBeInTheDocument();
     expect(screen.queryByTestId('embedded-management')).not.toBeInTheDocument();
   });
 
   it('offers Manage bank and identity once payouts are on and nothing is due, and mounts account management on click', async () => {
     const user = userEvent.setup();
-    hoisted.status = { ...STATUS, stripe_requirements_due: [], stripe_details_submitted: true, stripe_charges_enabled: true, stripe_payouts_enabled: true };
+    hoisted.status = {
+      ...STATUS, stripe_requirements_due: [], stripe_details_submitted: true, stripe_charges_enabled: true, stripe_payouts_enabled: true,
+      first_payout: { state: 'waiting' },
+    };
     renderPage();
     expect(await screen.findByText('Bank and identity details are managed in a secure form. They never pass through ServWave.')).toBeInTheDocument();
+    // No payout has reached the bank yet: the card says how long the first one can take.
+    expect(screen.getByTestId('first-payout-notice')).toHaveTextContent('Your first payout can take up to 7 business days');
     expect(screen.getByTestId('embedded-banner')).toBeInTheDocument();
     expect(screen.queryByTestId('embedded-management')).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Manage bank and identity' }));
     expect(await screen.findByTestId('embedded-management')).toBeInTheDocument();
     expect(screen.queryByTestId('embedded-onboarding')).not.toBeInTheDocument();
+  });
+
+  // A co-owner's details are only asked for once volume passes a threshold: setup never asked for them. The page says so,
+  // the banner lists them, and Add details now opens the form that collects them; onboarding of what is due now asks for less.
+  it('active with details due later: the row reads Due later, the banner shows later items, Add details now collects them', async () => {
+    const user = userEvent.setup();
+    hoisted.status = {
+      ...STATUS, stripe_requirements_due: [], stripe_details_submitted: true, stripe_charges_enabled: true, stripe_payouts_enabled: true,
+      verification: { business_details: 'verified', owner_identity: 'due_later', bank_account: 'verified', tax_id: 'verified' },
+    };
+    renderPage();
+    expect(await screen.findByText('Due later')).toBeInTheDocument();
+    expect(screen.getByTestId('due-later')).toHaveTextContent('payouts pause until they are added');
+    expect(screen.getByRole('button', { name: 'Manage bank and identity' })).toBeInTheDocument();
+    expect(hoisted.bannerProps).toHaveBeenCalledWith(
+      expect.objectContaining({ collectionOptions: { fields: 'eventually_due', futureRequirements: 'include' } }),
+    );
+    await user.click(screen.getByRole('button', { name: 'Add details now' }));
+    expect(await screen.findByTestId('embedded-onboarding')).toBeInTheDocument();
+    expect(hoisted.onboardingProps).toHaveBeenLastCalledWith(
+      expect.objectContaining({ collectionOptions: { fields: 'eventually_due', futureRequirements: 'include' } }),
+    );
+    // The secure-setup fallback for this form collects the later items too.
+    await user.click(screen.getByRole('button', { name: 'Simulate banner load error' }));
+    const tab = { opener: null as unknown, location: { href: '' }, close: vi.fn() };
+    const open = vi.spyOn(window, 'open').mockReturnValue(tab as unknown as Window);
+    hoisted.accountLink.mockResolvedValue({ url: 'https://secure.example.test/setup' });
+    await user.click(screen.getByRole('button', { name: /^Continue in secure setup/ }));
+    await waitFor(() => expect(hoisted.accountLink).toHaveBeenCalledWith({ collect: 'all' }));
+    open.mockRestore();
   });
 
   it('does not mount the onboarding by itself when nothing is due; Finish setup mounts it', async () => {
@@ -526,5 +568,29 @@ describe('fix round 1: terms sentence, 44px controls, secure-setup tab', () => {
       );
       open.mockRestore();
     });
+  });
+});
+
+// The wait for the first payout, explained until it arrives, then a confirmation (the rule itself; one page mount above).
+describe('first payout notice', () => {
+  const active: StripeStatus = {
+    ...STATUS, stripe_requirements_due: [], stripe_details_submitted: true, stripe_charges_enabled: true, stripe_payouts_enabled: true,
+  };
+  it('explains the wait, then the payout on its way with its date, then confirms; never names a vendor', () => {
+    const waiting = firstPayoutNotice({ ...active, first_payout: { state: 'waiting' } })!;
+    expect(waiting).toMatchObject({ tone: 'neutral', title: 'Your first payout can take up to 7 business days' });
+    expect(waiting.body).toMatch(/Bank \(ACH\) payments take about 4 more business days/);
+    expect(waiting.body).toMatch(/one deposit, after processing fees, from ServWave/);
+    expect(firstPayoutNotice({ ...active, first_payout: { state: 'on_the_way', arrival_date: '2026-11-13' } })!.title)
+      .toBe('Your first payout is on its way, expected Fri, Nov 13');
+    const arrived = firstPayoutNotice({ ...active, first_payout: { state: 'arrived', arrival_date: '2026-11-06' } })!;
+    expect(arrived).toMatchObject({ tone: 'success', title: 'Payouts are arriving regularly' });
+    expect(arrived.body).toMatch(/^Your first payout reached your bank on Fri, Nov 6\./);
+    for (const n of [waiting, arrived]) expect(`${n.title} ${n.body}`).not.toMatch(/stripe/i);
+  });
+  it('says nothing while the account cannot take payments, or without a payout state', () => {
+    expect(firstPayoutNotice({ ...active, stripe_charges_enabled: false, first_payout: { state: 'waiting' } })).toBeNull();
+    expect(firstPayoutNotice({ ...active, stripe_details_submitted: false, first_payout: { state: 'waiting' } })).toBeNull();
+    expect(firstPayoutNotice(active)).toBeNull();
   });
 });

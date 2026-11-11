@@ -224,7 +224,8 @@ export function useUploadLogo() {
   });
 }
 
-export type VerificationValue = 'not_started' | 'pending' | 'action_needed' | 'verified' | 'restricted';
+// due_later: nothing is asked now, but more will be asked in this area later (a co-owner's details, say).
+export type VerificationValue = 'not_started' | 'pending' | 'due_later' | 'action_needed' | 'verified' | 'restricted';
 
 /** The four verification rows of the payout account. Null until the account has been read for the first time. */
 export interface StripeVerification {
@@ -246,6 +247,8 @@ export interface StripeStatus {
   stripe_disabled_reason: string | null;
   /** Optional while rolling out: absent or null means "not read yet", and the page shows no rows. */
   verification?: StripeVerification | null;
+  /** Where the first payout is: the payout pages explain the wait until it arrives, then confirm it. */
+  first_payout?: { state: 'waiting' } | { state: 'on_the_way' | 'arrived'; arrival_date: string | null };
   collected_awaiting_payout: number; // §6.6 deferred-bank nudge $X (0 unless charges live + payouts pending)
 }
 
@@ -328,6 +331,8 @@ export function useAcceptPaymentsTerms() {
 export function useStripeAccountLink() {
   // Hosted Account Link fallback (drawer's second-failure path).
   return useMutation({
-    mutationFn: () => api.post('/api/organization/stripe/account-link').then((r) => r.data as { url: string }),
+    // collect 'all' also asks for what is only due later; the default asks for what is due now.
+    mutationFn: (opts?: { collect?: 'now' | 'all' }) =>
+      api.post('/api/organization/stripe/account-link', { collect: opts?.collect ?? 'now' }).then((r) => r.data as { url: string }),
   });
 }

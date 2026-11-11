@@ -26,6 +26,7 @@ const mockPrisma = prisma as unknown as {
     findFirst: ReturnType<typeof vi.fn>;
   };
   payment: { aggregate: ReturnType<typeof vi.fn> };
+  payout: { findFirst: ReturnType<typeof vi.fn> };
   auditLog: { create: ReturnType<typeof vi.fn> };
 };
 
@@ -388,6 +389,22 @@ describe('GET /api/organization/stripe/status', () => {
     expect(JSON.stringify(res.body)).not.toContain('acct_');
   });
 
+  // Until the first payout reaches the bank the payout pages explain the wait; then they confirm it. Read from ServWave's rows.
+  it('reports the first payout: waiting with none, on the way while one travels, arrived once one is paid', async () => {
+    asSalesWith({ view_payments: true });
+    mockPrisma.payout.findFirst.mockResolvedValue(null);
+    expect((await getStatusAsSales()).body.first_payout).toEqual({ state: 'waiting' });
+
+    mockPrisma.payout.findFirst.mockResolvedValueOnce(null).mockResolvedValueOnce({ arrival_date: new Date('2026-11-13T00:00:00Z') });
+    expect((await getStatusAsSales()).body.first_payout).toEqual({ state: 'on_the_way', arrival_date: '2026-11-13' });
+
+    mockPrisma.payout.findFirst.mockResolvedValueOnce({ arrival_date: new Date('2026-11-06T00:00:00Z') });
+    expect((await getStatusAsSales()).body.first_payout).toEqual({ state: 'arrived', arrival_date: '2026-11-06' });
+    expect(mockPrisma.payout.findFirst).toHaveBeenLastCalledWith(expect.objectContaining({
+      where: { organization_id: expect.any(String), status: { in: ['PAID'] } },
+    }));
+  });
+
   it('answers a user holding only Manage payout account, with no account identifier', async () => {
     asSalesWith({ manage_payout_account: true });
     const res = await getStatusAsSales();
@@ -546,7 +563,25 @@ describe('POST /api/organization/stripe/account-link', () => {
       'acct_1',
       'http://localhost:5173/settings/servwave-payments',
       'http://localhost:5173/settings/servwave-payments?onboarding=return',
+      'now',
     );
+  });
+
+  // The "add details now" flow: the link also collects what will only be asked for later (a co-owner's details).
+  it('collects everything, later items included, when asked to; refuses an unknown setup type', async () => {
+    mockPrisma.termsAcceptance.findFirst.mockResolvedValue({ id: 't1' });
+    mockPrisma.organization.findUnique.mockResolvedValue({ stripe_account_id: 'acct_1' });
+    mockCreateAccountLink.mockResolvedValue('https://connect.stripe.com/setup/e/acct_1/xyz');
+
+    const all = await request(app).post('/api/organization/stripe/account-link').set(authHeader('admin')).send({ collect: 'all' });
+    expect(all.status).toBe(200);
+    expect(mockCreateAccountLink).toHaveBeenLastCalledWith('acct_1', expect.any(String), expect.any(String), 'all');
+
+    mockCreateAccountLink.mockClear();
+    const bad = await request(app).post('/api/organization/stripe/account-link').set(authHeader('admin')).send({ collect: 'everything' });
+    expect(bad.status).toBe(400);
+    expect(bad.body).toEqual({ error: 'Unknown setup type.' });
+    expect(mockCreateAccountLink).not.toHaveBeenCalled();
   });
 });
 

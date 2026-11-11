@@ -17,6 +17,7 @@ import { Skeleton } from '@/ui-kit/components/ui/skeleton';
 import { toast } from '@/ui-kit/components/ui/sonner';
 
 import { TabPanel, TabStrip, type TabItem } from '../_shared/tabs';
+import { FirstPayoutNotice } from '@/components/payments/FirstPayoutNotice';
 import { AttentionCard } from './components/AttentionCard';
 import { PHONE_TAP_AREA } from './phoneTap';
 import { useCanvasMinHeight } from './useCanvasMinHeight';
@@ -131,6 +132,7 @@ export default function PaymentsPage() {
         />
       ) : (
         <>
+          <FirstPayoutNotice status={status} />
           {canSeePrices && (
             <KpiRow
               summary={summary.data}
