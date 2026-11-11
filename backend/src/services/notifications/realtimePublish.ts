@@ -21,33 +21,35 @@
 import { supabaseAdmin } from '../../lib/supabase';
 import { logger } from '../../lib/logger';
 
-/** Fan a single broadcast event out to one private channel per recipient. */
+/** Fan a single broadcast event out to one private channel per recipient in parallel. */
 async function publishToRecipients(
   event: string,
   recipientIds: string[],
   organizationId: string,
 ): Promise<void> {
-  for (const recipientId of recipientIds) {
-    const topic = `org:${organizationId}:user:${recipientId}`;
-    try {
-      const channel = supabaseAdmin.channel(topic, { config: { private: true } });
+  await Promise.all(
+    recipientIds.map(async (recipientId) => {
+      const topic = `org:${organizationId}:user:${recipientId}`;
       try {
-        await channel.send({
-          type: 'broadcast',
-          event,
-          payload: { type: event },
-        });
-      } catch (err) {
-        logger.warn(
-          `realtimePublish: failed to publish ${event} for recipient ${recipientId} on topic ${topic} — skipping. err=${String(err)}`,
-        );
-      } finally {
-        await supabaseAdmin.removeChannel(channel).catch(() => {/* cleanup failure swallowed */});
+        const channel = supabaseAdmin.channel(topic, { config: { private: true } });
+        try {
+          await channel.send({
+            type: 'broadcast',
+            event,
+            payload: { type: event },
+          });
+        } catch (err) {
+          logger.warn(
+            `realtimePublish: failed to publish ${event} for recipient ${recipientId} on topic ${topic} — skipping. err=${String(err)}`,
+          );
+        } finally {
+          await supabaseAdmin.removeChannel(channel).catch(() => {/* cleanup failure swallowed */});
+        }
+      } catch {
+        // outer guard: channel construction itself failed; nothing to clean up
       }
-    } catch {
-      // outer guard: channel construction itself failed; nothing to clean up
-    }
-  }
+    })
+  );
 }
 
 export async function publishNotificationsChanged(

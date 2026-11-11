@@ -205,6 +205,9 @@ export interface BeeQueueItem {
   status: string;
   attempt_count: number;
   scheduled_for: string;
+  total_amount?: number;
+  last_attempted_at?: string | null;
+  archived_at?: string | null;
   warranty_started_on?: 'Job Complete' | 'Invoice Sent' | string | null;
   original_scheduled_for?: string | null;
   is_rescheduled?: boolean;

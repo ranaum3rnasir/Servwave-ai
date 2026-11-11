@@ -20,15 +20,31 @@ import { TaskCreateFilesField } from './TaskCreateFilesField';
 import { DateTimePicker } from '@/components/form/DateTimePicker';
 import { useScheduleTimezone, pickerValueToIso, isoToPickerValue } from '@/lib/schedule-tz';
 import { SelectField } from '@/components/form/SelectField';
+import { cn } from '@/lib/utils';
 
 interface CreateTaskModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   initialParse?: ParsedTask | null;
   presetEntity?: LinkedEntity | null; // when opened from a Job/Lead (Task 19); locks linked entity
+  skipEntityAccess?: boolean;
+  className?: string;
+  overlayClassName?: string;
+  onSuccess?: (task: any) => void;
+  notify?: { in_app?: boolean; email?: boolean };
 }
 
-export function CreateTaskModal({ open, onOpenChange, initialParse, presetEntity }: CreateTaskModalProps) {
+export function CreateTaskModal({
+  open,
+  onOpenChange,
+  initialParse,
+  presetEntity,
+  skipEntityAccess,
+  className,
+  overlayClassName,
+  onSuccess,
+  notify,
+}: CreateTaskModalProps) {
   // Task due times mean the ORG's clock, never the viewer's browser.
   const timezone = useScheduleTimezone();
   const { toast } = useToast();
@@ -41,7 +57,7 @@ export function CreateTaskModal({ open, onOpenChange, initialParse, presetEntity
     description, setDescription, canAssignOthers, entityAccess, files, onFilesStep, footer,
     handleCreate, handleClose, onDialogOpenChange,
   } = useCreateTaskForm({
-    open, onOpenChange, initialParse, presetEntity,
+    open, onOpenChange, initialParse, presetEntity, skipEntityAccess, onSuccess, notify,
     dueFromIso: (iso) => isoToPickerValue(iso, timezone),
     dueToIso: (value) => pickerValueToIso(value, timezone) ?? null,
     onCreateError: (title, description) => toast({ title, description, variant: 'destructive' }),
@@ -49,7 +65,10 @@ export function CreateTaskModal({ open, onOpenChange, initialParse, presetEntity
 
   return (
     <Dialog open={open} onOpenChange={onDialogOpenChange}>
-      <DialogContent className="max-w-xl max-h-[90vh] overflow-y-auto">
+      <DialogContent
+        className={cn("max-w-xl max-h-[90vh] overflow-y-auto z-[90]", className)}
+        overlayClassName={cn("z-[85]", overlayClassName)}
+      >
         <DialogHeader>
           <DialogTitle>New Task</DialogTitle>
         </DialogHeader>

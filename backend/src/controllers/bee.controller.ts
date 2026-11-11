@@ -31,7 +31,7 @@ export async function toggleBeeStatus(req: Request, res: Response) {
 
   try {
     const resetSetupConfig = {
-      setupDone: [0, 0, 0, 0, 0, 0, 0, 0],
+      setupDone: [0, 0, 0, 0, 0, 0, 0],
       testPassed: false,
     };
 
@@ -630,7 +630,15 @@ export async function linkBeeCallTask(req: Request, res: Response) {
     // Verify the task belongs to this org
     const task = await prisma.task.findFirst({
       where: { id: task_id, organization_id: user.organization_id },
-      select: { id: true, task_number: true, title: true, status: true },
+      select: {
+        id: true,
+        task_number: true,
+        title: true,
+        status: true,
+        priority: true,
+        assignee_ids: true,
+        watcher_ids: true,
+      },
     });
     if (!task) {
       return res.status(404).json({ error: 'Task not found' });
@@ -645,6 +653,41 @@ export async function linkBeeCallTask(req: Request, res: Response) {
     if (updated.count === 0) {
       return res.status(404).json({ error: 'Call log not found' });
     }
+
+    // Fire Bee alert notifications asynchronously on configured channels (In-app, SMS, Email) in background
+    void (async () => {
+      try {
+        const [callLog, setting] = await Promise.all([
+          prisma.beeCallLog.findFirst({
+            where: { id: callId, organization_id: user.organization_id },
+          }),
+          prisma.beeSetting.findUnique({
+            where: { organization_id: user.organization_id },
+          }),
+        ]);
+        const cfg = (setting?.setup_config as any) || {};
+
+        await BeeService.dispatchFollowUpTaskNotifications({
+          orgId: user.organization_id,
+          task: {
+            id: task.id,
+            title: task.title,
+            task_number: task.task_number,
+            priority: task.priority || 'MEDIUM',
+          },
+          assignees: task.assignee_ids || [],
+          watchers: task.watcher_ids || [],
+          customerName: callLog?.customer_name || 'Customer',
+          customerPhone: callLog?.customer_phone || undefined,
+          outcomeLabel: callLog?.outcome || 'Customer Inquiry',
+          summary: callLog?.ai_summary || '',
+          jobNumber: (callLog as any)?.job_number || undefined,
+          alertChannels: cfg.alertChannels,
+        });
+      } catch (notifErr) {
+        logger.warn('[BeeService] Background follow-up task notification error:', notifErr);
+      }
+    })();
 
     res.json({
       ok: true,
@@ -671,9 +714,17 @@ export async function getBeeQueue(req: Request, res: Response) {
     const statusWhere =
       status === 'all'
         ? {}
-        : status === 'scheduled' || status === 'skipped'
-          ? { status: { in: ['scheduled', 'skipped', 'in_progress'] } }
-          : { status };
+        : status === 'archived'
+          ? {
+              OR: [
+                { status: 'archived' },
+                { status: 'failed' },
+                { attempt_count: { gte: 1 } },
+              ],
+            }
+          : status === 'scheduled' || status === 'skipped'
+            ? { status: { in: ['scheduled', 'skipped', 'in_progress'] } }
+            : { status };
 
     const rawItems = await prisma.beeQueueItem.findMany({
       where: {
@@ -692,7 +743,9 @@ export async function getBeeQueue(req: Request, res: Response) {
         ? enriched
         : status === 'scheduled'
           ? enriched.filter((item: any) => item.status === 'scheduled' || item.status === 'in_progress')
-          : enriched.filter((item: any) => item.status === status);
+          : status === 'archived'
+            ? enriched.filter((item: any) => item.status === 'archived')
+            : enriched.filter((item: any) => item.status === status);
 
     res.json({ ok: true, items });
   } catch (err: any) {

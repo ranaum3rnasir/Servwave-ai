@@ -100,8 +100,20 @@ export const useTasksStore = create<TasksState>()((set, get) => ({
     if (get().loading || get().loaded) return;
     set({ loading: true });
     try {
-      const tasks = await listTasks();
-      set({ tasks, loaded: true });
+      const serverTasks = await listTasks();
+      set((s) => {
+        const serverIds = new Set(serverTasks.map((t) => t.id));
+        const merged = serverTasks.map((st) => {
+          const existing = s.tasks.find((t) => t.id === st.id);
+          return existing ? { ...st, ...pick(existing, DETAIL_ONLY_KEYS) } : st;
+        });
+        for (const existing of s.tasks) {
+          if (!serverIds.has(existing.id)) {
+            merged.unshift(existing);
+          }
+        }
+        return { tasks: merged, loaded: true };
+      });
     } finally {
       set({ loading: false });
     }

@@ -12,9 +12,8 @@ import { Heading } from '@/ui-kit/components/ui/heading';
 import { OutcomeBadge } from '../tabs/BeeCallLogTab';
 import { formatPhone, extractFailureMessage, cn, formatSnakeCase } from '@/lib/utils';
 import { CreateTaskModal } from '@/components/tasks/CreateTaskModal';
-import { useTaskCategories } from '@/lib/api/taskCategories';
 import { useTasksStore } from '@/stores/tasksStore';
-import type { ParsedTask } from '@/lib/tasks/taskAI';
+import { useTaskDetailStore } from '@/stores/taskDetailStore';
 import type { LinkedEntity } from '@/lib/tasks/types';
 
 const SPEED_OPTIONS = [
@@ -52,18 +51,55 @@ export const BeeCallDrawer: React.FC = () => {
   const audioRef = React.useRef<HTMLAudioElement | null>(null);
 
   const [isCreateTaskModalOpen, setIsCreateTaskModalOpen] = React.useState(false);
-  const [taskDraft, setTaskDraft] = React.useState<ParsedTask | null>(null);
   const [presetEntity, setPresetEntity] = React.useState<LinkedEntity | null>(null);
-  const { data: categories } = useTaskCategories();
-  const { settings } = useBeeStore();
+  const [createdTaskId, setCreatedTaskId] = React.useState<string | null>(null);
   const tasks = useTasksStore((s) => s.tasks);
 
   const call = selectedCallDetail;
 
   const matchedTaskInStore = React.useMemo(() => {
-    if (!call?.id) return null;
-    return tasks.find((t) => t.description && t.description.includes(call.id)) || null;
-  }, [tasks, call?.id]);
+    if (!call) return null;
+    if (createdTaskId) {
+      const found = tasks.find((t) => t.id === createdTaskId);
+      if (found) return found;
+    }
+    const currentTaskId = (call as any).task_id || (call as any).task?.id;
+    if (currentTaskId) {
+      const found = tasks.find((t) => t.id === currentTaskId);
+      if (found) return found;
+    }
+    if (call.id) {
+      return tasks.find((t) => t.description && t.description.includes(call.id)) || null;
+    }
+    return null;
+  }, [tasks, call, createdTaskId]);
+
+  const handleTaskCreated = React.useCallback(
+    async (task: any) => {
+      if (!call?.id || !task?.id) return;
+      setCreatedTaskId(task.id);
+      try {
+        await api.patch(`/api/bee/calls/${call.id}/task`, { task_id: task.id });
+        if (selectedCallDetail && selectedCallDetail.id === call.id) {
+          useBeeStore.setState({
+            selectedCallDetail: {
+              ...selectedCallDetail,
+              task_id: task.id,
+              task: {
+                id: task.id,
+                task_number: task.task_number,
+                title: task.title,
+                status: task.status,
+              },
+            },
+          });
+        }
+      } catch {
+        // Non-fatal
+      }
+    },
+    [call?.id, selectedCallDetail]
+  );
 
   // When a task is created manually and appears in the store, persist the link to the backend
   // so it survives page reloads (task_id column on bee_call_logs).
@@ -96,6 +132,16 @@ export const BeeCallDrawer: React.FC = () => {
     }
     return null;
   }, [matchedTaskInStore, call]);
+
+  const handleOpenLinkedTask = React.useCallback(
+    (taskId: string) => {
+      useTaskDetailStore.getState().open(taskId);
+      void useTasksStore.getState().fetchTaskDetail(taskId);
+      closeCallDetail();
+      navigate(`/tasks?task=${taskId}`);
+    },
+    [closeCallDetail, navigate]
+  );
 
   // Total duration in seconds
   const totalDuration = React.useMemo(() => {
@@ -137,6 +183,10 @@ export const BeeCallDrawer: React.FC = () => {
     if (!call) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        if (isCreateTaskModalOpen) {
+          // Modal handles its own escape without closing the parent drawer
+          return;
+        }
         if (isFullScreen) {
           setIsFullScreen(false);
         } else {
@@ -146,7 +196,7 @@ export const BeeCallDrawer: React.FC = () => {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [call, isFullScreen, closeCallDetail]);
+  }, [call, isFullScreen, isCreateTaskModalOpen, closeCallDetail]);
 
   if (!call) return null;
 
@@ -349,27 +399,8 @@ export const BeeCallDrawer: React.FC = () => {
     );
   };
 
-  const formatOutcomeLabel = (outcome?: string): string => {
-    const o = (outcome || '').toUpperCase();
-    if (o.includes('WARRANTY')) return 'Warranty Plan';
-    if (o.includes('NEW_WORK') || o.includes('NEW WORK') || o.includes('NEW_JOB') || o.includes('NEW JOB')) return 'New Job';
-    if (o.includes('CALLBACK')) return 'Call Back Later';
-    if (o.includes('COMPLAINT')) return 'Complaint';
-    if (o.includes('HUMAN')) return 'Needs a Human';
-    if (o.includes('REVIEW')) return 'Needs Review';
-    if (o.includes('DNC')) return 'Do Not Call Request';
-    if (o.includes('NOT_INTERESTED')) return 'Not Interested';
-    if (o.includes('ANSWERED') || o.includes('COMPLETED')) return 'Answered';
-    return outcome || 'Customer Inquiry';
-  };
-
-  const handleOpenCreateTask = async () => {
+  const handleOpenCreateTask = () => {
     if (!call) return;
-    const outcomeLabel = formatOutcomeLabel(
-      call.outcome || (Array.isArray(call.outcomes) ? call.outcomes[0] : '')
-    );
-    const customerName = call.customer_name || call.c || 'Customer';
-    const customerPhone = formatPhone(call.customer_phone || call.p || '');
     const jobNumber =
       call.job_number ||
       (call.j && call.j.startsWith('#')
@@ -378,63 +409,7 @@ export const BeeCallDrawer: React.FC = () => {
       '';
     const targetJobId = call.job_id || null;
 
-    const jobSuffix = jobNumber ? ` · Job #${jobNumber}` : '';
-    const title = `Bee Follow-up: ${outcomeLabel} - ${customerName}${jobSuffix}`;
-
-    const descriptionLines = [
-      `Outcome: ${outcomeLabel}`,
-      `Customer: ${customerName}${customerPhone ? ` (${customerPhone})` : ''}`,
-      jobNumber ? `Associated Job: #${jobNumber}` : null,
-      '',
-      'Why Follow-up is Needed (from conversation):',
-      (isTechnicalFailure && (call.ai_summary || (call as any).summary)
-        ? extractFailureMessage(call.ai_summary || (call as any).summary)
-        : null) ||
-        call.ai_summary ||
-        (call as any).summary ||
-        (wantsList.length > 0
-          ? `Customer wants: ${wantsList.join(', ')}`
-          : 'Customer engaged with Bee warranty agent and follow-up was requested or flagged.'),
-      '',
-      call.id ? `Bee Call Log ID: ${call.id}` : null,
-    ];
-    const description = descriptionLines.filter((l) => l !== null).join('\n');
-
-    // Match 'Bee Follow-up' category if present
-    const beeCategory = categories?.find(
-      (c) => c.name.trim().toLowerCase() === 'bee follow-up'
-    );
-    const categoryRef = beeCategory
-      ? { id: beeCategory.id, name: beeCategory.name, color: beeCategory.color }
-      : null;
-
-    // Resolve Assignees & Watchers from Bee Setup config and/or Job
-    const cfg = (settings?.setup_config as any) || {};
-    let dispatcherId: string | null = null;
-
-    if (targetJobId) {
-      try {
-        const jobRes = await api.get(`/api/jobs/${targetJobId}`);
-        if (jobRes?.data?.job?.dispatcher_id) {
-          dispatcherId = jobRes.data.job.dispatcher_id;
-        } else if (jobRes?.data?.dispatcher?.id) {
-          dispatcherId = jobRes.data.dispatcher.id;
-        }
-      } catch {
-        // fallback
-      }
-    }
-
-    if (!dispatcherId && cfg.fallbackDispatcherId && cfg.fallbackDispatcherId !== 'none') {
-      dispatcherId = cfg.fallbackDispatcherId;
-    }
-
-    const assigneeIds = dispatcherId ? [dispatcherId] : [];
-    const watcherIds =
-      cfg.adminWatcherId && cfg.adminWatcherId !== 'none'
-        ? [cfg.adminWatcherId]
-        : [];
-
+    // Associated Job entity - the only required linkage
     const entity: LinkedEntity | null = targetJobId
       ? {
           type: 'JOB',
@@ -444,18 +419,6 @@ export const BeeCallDrawer: React.FC = () => {
       : null;
 
     setPresetEntity(entity);
-    setTaskDraft({
-      title,
-      description,
-      priority: 'HIGH',
-      due_at: null,
-      assignee_ids: assigneeIds,
-      assignee_id: assigneeIds[0],
-      watcher_ids: watcherIds,
-      category: categoryRef,
-      linked_entity: entity,
-    });
-
     setIsCreateTaskModalOpen(true);
   };
 
@@ -511,14 +474,14 @@ export const BeeCallDrawer: React.FC = () => {
     <>
       {/* Background Scrim */}
       <div
-        className="fixed inset-0 bg-black/50 backdrop-blur-[2px] z-[100] transition-opacity"
+        className="fixed inset-0 bg-black/50 backdrop-blur-[2px] z-[80] transition-opacity"
         onClick={closeCallDetail}
       />
 
       {/* Right-Side Drawer */}
       <aside
         className={cn(
-          "fixed top-0 right-0 bottom-0 h-screen h-[100dvh] bg-surface-light border-l border-border z-[100] overflow-y-auto p-6 shadow-2xl flex flex-col justify-between animate-in slide-in-from-right duration-200 transition-all",
+          "fixed top-0 right-0 bottom-0 h-screen h-[100dvh] bg-surface-light border-l border-border z-[80] overflow-y-auto p-6 shadow-2xl flex flex-col justify-between animate-in slide-in-from-right duration-200 transition-all",
           isFullScreen ? "left-0 w-full max-w-none" : "w-full max-w-[620px]"
         )}
       >
@@ -767,48 +730,6 @@ export const BeeCallDrawer: React.FC = () => {
             </div>
           </div>
 
-          {/* Follow-up Task Banner if created */}
-          {existingTask && (
-            <div className="p-3 bg-emerald-50/70 border border-emerald-200/90 rounded-xl flex items-center justify-between gap-3 text-xs shadow-xs animate-in fade-in duration-200">
-              <div className="flex items-center gap-2.5 min-w-0">
-                <div className="w-7 h-7 rounded-full bg-emerald-100 border border-emerald-200 flex items-center justify-center shrink-0">
-                  <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-                </div>
-                <div className="min-w-0">
-                  <div className="font-semibold text-emerald-950 flex items-center gap-1.5 flex-wrap">
-                    <span>Task created</span>
-                    {existingTask.task_number && (
-                      <span className="font-mono text-[11px] text-emerald-700 font-bold bg-white px-1.5 py-0.5 rounded border border-emerald-200">
-                        #{existingTask.task_number}
-                      </span>
-                    )}
-                    {existingTask.status && (
-                      <span className="text-[10px] text-emerald-700 uppercase font-bold tracking-wider">
-                        · {formatSnakeCase(existingTask.status)}
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-[11px] text-emerald-800/90 mt-0.5 truncate max-w-sm">
-                    {existingTask.title?.replace(/Job ##/g, 'Job #') || 'Bee Follow-up Task'}
-                  </p>
-                </div>
-              </div>
-
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => {
-                  closeCallDetail();
-                  navigate(`/tasks?task=${existingTask.id}`);
-                }}
-                className="h-7 text-xs gap-1 border-emerald-300 text-emerald-800 bg-white hover:bg-emerald-50 shrink-0 font-medium"
-              >
-                <span>View task</span>
-                <ExternalLink className="h-3 w-3" />
-              </Button>
-            </div>
-          )}
-
           {/* Action Buttons Row */}
           <div className="flex flex-wrap items-center gap-2 pt-2 pb-1">
             <SelectField
@@ -823,10 +744,7 @@ export const BeeCallDrawer: React.FC = () => {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => {
-                  closeCallDetail();
-                  navigate(`/tasks?task=${existingTask.id}`);
-                }}
+                onClick={() => handleOpenLinkedTask(existingTask.id)}
                 className="h-8 inline-flex items-center gap-1.5 border-emerald-300 bg-emerald-50/70 hover:bg-emerald-100/80 text-emerald-800 font-medium"
                 title={`Task #${existingTask.task_number || existingTask.id.slice(0, 8)} created. Click to preview and open in Tasks.`}
               >
@@ -921,8 +839,12 @@ export const BeeCallDrawer: React.FC = () => {
         <CreateTaskModal
           open={isCreateTaskModalOpen}
           onOpenChange={setIsCreateTaskModalOpen}
-          initialParse={taskDraft}
           presetEntity={presetEntity}
+          skipEntityAccess
+          className="z-[90]"
+          overlayClassName="z-[85]"
+          onSuccess={handleTaskCreated}
+          notify={{ in_app: false, email: false }}
         />
       )}
     </>,

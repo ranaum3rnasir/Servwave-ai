@@ -69,11 +69,11 @@ export const BeeHomeTab: React.FC = () => {
     setCallsFilterOutcome,
   } = useBeeStore();
 
-  const totalSteps = 8;
+  const totalSteps = 7;
   const currentDoneList =
     settings?.setup_config?.setupDone && Array.isArray(settings.setup_config.setupDone)
       ? settings.setup_config.setupDone.slice(0, totalSteps)
-      : (setupDone || [0, 0, 0, 0, 0, 0, 0, 0]).slice(0, totalSteps);
+      : (setupDone || [0, 0, 0, 0, 0, 0, 0]).slice(0, totalSteps);
   const doneCount = currentDoneList.filter((d: number) => d === 1).length;
   const remainingSteps = Math.max(0, totalSteps - doneCount);
   const isLive = Boolean(metrics?.isActive ?? settings?.is_active);
@@ -123,11 +123,11 @@ export const BeeHomeTab: React.FC = () => {
             <strong className="text-ai-600 font-bold">
               {remainingSteps > 0
                 ? `Finish setup - ${remainingSteps} step${remainingSteps === 1 ? '' : 's'} left.`
-                : 'Setup complete - 8 of 8 steps done.'}
+                : `Setup complete - ${totalSteps} of ${totalSteps} steps done.`}
             </strong>{' '}
             <span className="text-text-secondary text-xs">
               {remainingSteps > 0
-                ? 'Bee can only be activated from the Test & go live tab after all 8 setup steps are completed.'
+                ? `Bee can only be activated from the Test & go live tab after all ${totalSteps} setup steps are completed.`
                 : 'Proceed to the Test & go live tab in Setup to activate Bee.'}
             </span>
           </div>

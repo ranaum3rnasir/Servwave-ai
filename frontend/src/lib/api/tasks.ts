@@ -61,6 +61,8 @@ export interface CreateTaskInput {
   watcher_ids?: string[];
   /** Omitted or null: the task has no category. */
   category_id?: string | null;
+  /** Suppress generic notification emits (e.g. when Bee handles alert channels) */
+  notify?: { in_app?: boolean; email?: boolean };
 }
 
 /** The fields a PATCH may carry. `category_id: null` clears the category. */
@@ -240,6 +242,9 @@ export function createTask(input: CreateTaskInput): Promise<Task> {
   }
   if (input.watcher_ids && input.watcher_ids.length > 0) {
     body.watcher_ids = input.watcher_ids;
+  }
+  if (input.notify) {
+    body.notify = input.notify;
   }
   return api.post('/api/tasks', body).then((res) => mapRowToTask(res.data.task as TaskRow));
 }

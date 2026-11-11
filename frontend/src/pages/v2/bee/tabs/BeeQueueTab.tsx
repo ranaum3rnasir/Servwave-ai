@@ -4,19 +4,14 @@ import type { ColumnDef, VisibilityState } from '@tanstack/react-table';
 import { useBeeStore } from '@/stores/beeStore';
 import { BeeQueueItem } from '@/lib/api/bee';
 import {
-  ListOrdered,
   PhoneForwarded,
   SkipForward,
   Search,
   X,
-  AlertTriangle,
-  Ban,
   Clock,
-  Calendar,
 } from 'lucide-react';
 import { DataTable } from '@/ui-kit/components/data/dataTable/dataTable';
 import { Button } from '@/components/ui/button';
-import { Heading } from '@/ui-kit/components/ui/heading';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
@@ -72,36 +67,6 @@ export const queueFilterRegistry: FacetConfig[] = [
       { value: 'rescheduled', label: 'Rescheduled' },
       { value: 'original', label: 'Original Schedule' },
     ],
-  },
-];
-
-export const skippedFilterRegistry: FacetConfig[] = [
-  {
-    key: 'scheduled_date',
-    kind: 'dateRange',
-    param: 'scheduled_date',
-    label: 'Date',
-    icon: 'M8 2v4 M16 2v4 M5 4H19A2 2 0 0 1 21 6V20A2 2 0 0 1 19 22H5A2 2 0 0 1 3 20V6A2 2 0 0 1 5 4Z M3 10h18',
-  },
-  {
-    key: 'skip_reason',
-    kind: 'multi',
-    param: 'skip_reason',
-    label: 'Skip Reason',
-    icon: 'M18.364 18.364A9 9 0 0 0 5.636 5.636m12.728 12.728A9 9 0 0 1 5.636 5.636m12.728 12.728L5.636 5.636',
-    options: [
-      { value: 'job_type_disabled', label: 'Job type disabled' },
-      { value: 'dnc', label: 'Do Not Call' },
-      { value: 'other', label: 'Other reasons' },
-    ],
-  },
-  {
-    key: 'job_type',
-    kind: 'multi',
-    param: 'job_type',
-    label: 'Job Type',
-    icon: 'M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z',
-    optionSource: 'skippedJobTypes',
   },
 ];
 
@@ -241,7 +206,7 @@ export function formatQueueScheduledTime(item: BeeQueueItem, defaultTz: string =
 
 export const BeeQueueTab: React.FC = () => {
   const navigate = useNavigate();
-  const { queueItems, skippedItems, loadQueue, callNow, skipQueueItem, rescheduleQueueItem } = useBeeStore();
+  const { queueItems, loadQueue, callNow, skipQueueItem, rescheduleQueueItem } = useBeeStore();
   const [actingId, setActingId] = useState<string | null>(null);
 
   // Manual Reschedule state
@@ -256,19 +221,12 @@ export const BeeQueueTab: React.FC = () => {
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
 
-  // Filters and Pagination for Skipped Jobs
-  const [skippedSearchQuery, setSkippedSearchQuery] = useState('');
-  const [skippedFilterState, setSkippedFilterState] = useState<FilterState>({});
-  const [skippedPage, setSkippedPage] = useState(1);
-  const [skippedPageSize, setSkippedPageSize] = useState(25);
-
   const queueContainerRef = useRef<HTMLDivElement>(null);
-  const skippedContainerRef = useRef<HTMLDivElement>(null);
 
   React.useEffect(() => {
     loadQueue();
 
-    // Live update polling so queue and skipped items are updated live without manual refresh
+    // Live update polling so queue items are updated live without manual refresh
     const intervalId = setInterval(() => {
       loadQueue();
     }, 4000);
@@ -395,29 +353,9 @@ export const BeeQueueTab: React.FC = () => {
     return [];
   }, [queueItems]);
 
-  const resolveSkippedOptions = useCallback((sourceId: string): FacetOption[] => {
-    if (sourceId === 'skippedJobTypes') {
-      const types = Array.from(
-        new Set(
-          (skippedItems || [])
-            .map((item) => item.job_type || item.warranty_record?.job_type || 'General Service')
-            .filter(Boolean)
-        )
-      );
-      if (types.length === 0) return [{ value: 'General Service', label: 'General Service' }];
-      return types.map((t) => ({ value: t, label: formatSnakeCase(t) }));
-    }
-    return [];
-  }, [skippedItems]);
-
   const hasActiveQueueFilters = useMemo(
     () => Object.values(queueFilterState).some((v) => facetSelectionCount(v) > 0),
     [queueFilterState],
-  );
-
-  const hasActiveSkippedFilters = useMemo(
-    () => Object.values(skippedFilterState).some((v) => facetSelectionCount(v) > 0),
-    [skippedFilterState],
   );
 
   // Filter queue items by search and FilterPopover facets
@@ -509,118 +447,60 @@ export const BeeQueueTab: React.FC = () => {
   const totalPages = Math.max(1, Math.ceil(filteredQueueItems.length / pageSize));
   const safeCurrentPage = Math.min(Math.max(1, currentPage), totalPages);
 
-  // Filter skipped items
-  const filteredSkippedItems = useMemo(() => {
-    return (skippedItems || []).filter((item) => {
-      if (skippedSearchQuery.trim()) {
-        const q = skippedSearchQuery.toLowerCase().trim();
-        const custName = (item.customer_name || '').toLowerCase();
-        const phone = (item.customer_phone || '').toLowerCase();
-        const phoneDigits = (item.customer_phone || '').replace(/\D/g, '');
-        const qDigits = q.replace(/\D/g, '');
-        const jobNum = (item.job_number || item.job_id || '').toLowerCase();
-        const reason = (item.skip_reason || '').toLowerCase();
-        const address = (item.service_address || '').toLowerCase();
-
-        const phoneMatch = phone.includes(q) || (qDigits.length >= 3 && phoneDigits.includes(qDigits));
-
-        if (!custName.includes(q) && !phoneMatch && !jobNum.includes(q) && !reason.includes(q) && !address.includes(q)) {
-          return false;
-        }
-      }
-
-      // Skipped Date Range filter
-      const dateFilter = skippedFilterState.scheduled_date;
-      if (dateFilter && dateFilter.kind === 'dateRange' && (dateFilter.from || dateFilter.to)) {
-        const itemDateStr = item.scheduled_for || item.warranty_record?.warranty_end_date;
-        if (!itemDateStr) return false;
-        const itemDate = new Date(itemDateStr);
-        if (isNaN(itemDate.getTime())) return false;
-
-        if (dateFilter.from) {
-          const fromDate = new Date(`${dateFilter.from}T00:00:00`);
-          if (itemDate < fromDate) return false;
-        }
-        if (dateFilter.to) {
-          const toDate = new Date(`${dateFilter.to}T23:59:59.999`);
-          if (itemDate > toDate) return false;
-        }
-      }
-
-      // Skip reason filter
-      const reasonVal = skippedFilterState.skip_reason;
-      if (reasonVal && reasonVal.kind === 'multi' && reasonVal.values.length > 0) {
-        const lower = (item.skip_reason || '').toLowerCase();
-        const isJobTypeDisabled = lower.includes('job type disabled');
-        const isDnc = lower.includes('do not call');
-        const isOther = !isJobTypeDisabled && !isDnc;
-
-        const match =
-          (reasonVal.values.includes('job_type_disabled') && isJobTypeDisabled) ||
-          (reasonVal.values.includes('dnc') && isDnc) ||
-          (reasonVal.values.includes('other') && isOther);
-        if (!match) return false;
-      }
-
-      // Job Type filter
-      const jobTypeVal = skippedFilterState.job_type;
-      if (jobTypeVal && jobTypeVal.kind === 'multi' && jobTypeVal.values.length > 0) {
-        const itemJobType = item.job_type || item.warranty_record?.job_type || 'General Service';
-        if (!jobTypeVal.values.includes(itemJobType)) return false;
-      }
-
-      return true;
-    });
-  }, [skippedItems, skippedSearchQuery, skippedFilterState]);
-
-  const skippedTotalPages = Math.max(1, Math.ceil(filteredSkippedItems.length / skippedPageSize));
-  const safeSkippedPage = Math.min(Math.max(1, skippedPage), skippedTotalPages);
-
-  // Queue Table Columns
+  // Active Queue Columns
   const queueColumns = useMemo<ColumnDef<BeeQueueItem>[]>(() => [
     {
       id: 'scheduled_time',
       accessorKey: 'scheduled_for',
       header: 'Scheduled Time',
-      size: 175,
-      minSize: 150,
+      size: 190,
+      minSize: 160,
       meta: { label: 'Scheduled Time', pinned: true },
       cell: ({ row }) => {
         const item = row.original;
         const {
-          formattedDateTime,
-          badgeLabel,
-          userTimezone,
+          timeStr,
+          dateStr,
+          isDefaultTz,
+          userTzAbbr,
           customerTimezone,
-          customerFormattedDateTime,
+          customerTimeStr,
         } = formatQueueScheduledTime(item);
 
         return (
-          <div className="flex items-center gap-1.5 whitespace-nowrap">
-            <span
-              className="text-text-primary font-medium text-xs cursor-default"
-              title={`Your time: ${formattedDateTime} (${userTimezone})${
-                customerFormattedDateTime
-                  ? `\nCustomer time: ${customerFormattedDateTime} (${customerTimezone})`
-                  : ''
-              }${badgeLabel ? ` · ${badgeLabel}` : ''}`}
-            >
-              {formattedDateTime}
-            </span>
+          <div className="flex flex-col gap-0.5 whitespace-nowrap">
+            <div className="flex items-center gap-1.5">
+              <span className="font-semibold text-text-primary text-xs">
+                {dateStr.split(',')[0]}, {timeStr}
+              </span>
+              {userTzAbbr && (
+                <span className="text-[10px] text-text-secondary font-medium">
+                  {userTzAbbr}
+                </span>
+              )}
+            </div>
+
+            {!isDefaultTz && customerTimeStr && (
+              <span
+                className="text-[10px] text-text-secondary truncate max-w-[170px]"
+                title={`Customer local time: ${customerTimeStr} (${customerTimezone})`}
+              >
+                Local: {customerTimeStr}
+              </span>
+            )}
+
             {item.is_rescheduled && (
               <span
-                className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-300 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800 shrink-0"
+                className="inline-flex items-center w-fit px-1.5 py-0.2 text-[9px] font-bold rounded bg-amber-500/10 text-amber-600 border border-amber-500/20"
                 title={
-                  item.original_scheduled_for
-                    ? `Originally: ${new Date(item.original_scheduled_for).toLocaleDateString([], {
+                  item.rescheduled_at
+                    ? `Rescheduled on ${new Date(item.rescheduled_at).toLocaleDateString([], {
                         month: 'short',
                         day: 'numeric',
                         hour: 'numeric',
                         minute: '2-digit',
-                        hour12: true,
-                        timeZone: userTimezone,
-                      }).replace(/\b(am|pm)\b/i, (m) => m.toUpperCase())}`
-                    : 'Manually rescheduled'
+                      })}`
+                    : 'Rescheduled call'
                 }
               >
                 Rescheduled
@@ -851,213 +731,8 @@ export const BeeQueueTab: React.FC = () => {
     },
   ], [navigate, actingId]);
 
-  // Skipped Jobs Columns
-  const skippedColumns = useMemo<ColumnDef<BeeQueueItem>[]>(() => [
-    {
-      id: 'customer_name',
-      accessorKey: 'customer_name',
-      header: 'Customer Name',
-      size: 190,
-      minSize: 150,
-      meta: { label: 'Customer Name', pinned: true },
-      cell: ({ row }) => {
-        const item = row.original;
-        const customerId = item.customer_id || item.warranty_record?.customer_id;
-        return (
-          <span
-            onClick={(e) => {
-              e.stopPropagation();
-              if (customerId) navigate(`/customers/${customerId}`);
-            }}
-            className={`font-bold whitespace-nowrap ${
-              customerId
-                ? 'text-text-primary hover:text-primary hover:underline cursor-pointer'
-                : 'text-text-primary'
-            }`}
-            title={customerId ? 'Go to customer page' : undefined}
-          >
-            {item.customer_name}
-          </span>
-        );
-      },
-    },
-    {
-      id: 'customer_phone',
-      accessorKey: 'customer_phone',
-      header: 'Phone Number',
-      size: 140,
-      minSize: 120,
-      meta: { label: 'Phone Number' },
-      cell: ({ row }) => (
-        <span className="font-mono text-text-secondary whitespace-nowrap">
-          {formatPhone(row.original.customer_phone) || '-'}
-        </span>
-      ),
-    },
-    {
-      id: 'job_number',
-      accessorKey: 'job_number',
-      header: 'Job #',
-      size: 110,
-      minSize: 90,
-      meta: { label: 'Job #' },
-      cell: ({ row }) => {
-        const item = row.original;
-        const jobId = item.job_id || item.warranty_record?.job_id;
-        const rawJobLabel = item.job_number || (jobId ? jobId.slice(0, 8) : '-');
-        const jobLabel = rawJobLabel.replace(/^#/, '');
-        return (
-          <span
-            onClick={(e) => {
-              e.stopPropagation();
-              if (jobId) navigate(`/jobs/${jobId}`);
-            }}
-            className={`font-medium whitespace-nowrap ${
-              jobId
-                ? 'text-primary hover:text-primary hover:underline cursor-pointer'
-                : 'text-text-secondary'
-            }`}
-            title={jobId ? 'Go to job page' : undefined}
-          >
-            {jobLabel}
-          </span>
-        );
-      },
-    },
-    {
-      id: 'job_type',
-      accessorKey: 'job_type',
-      header: 'Job Type',
-      size: 140,
-      minSize: 110,
-      meta: { label: 'Job Type' },
-      cell: ({ row }) => {
-        const item = row.original;
-        const jobType = item.job_type || item.warranty_record?.job_type || 'General Service';
-        return (
-          <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium border border-border text-text-secondary whitespace-nowrap">
-            {formatSnakeCase(jobType)}
-          </span>
-        );
-      },
-    },
-    {
-      id: 'skip_reason',
-      accessorKey: 'skip_reason',
-      header: 'Skip Reason',
-      size: 180,
-      minSize: 140,
-      meta: { label: 'Skip Reason' },
-      cell: ({ row }) => {
-        const item = row.original;
-        const skipReason = item.skip_reason || 'Job type disabled';
-        const isJobTypeDisabled = skipReason.toLowerCase().includes('job type disabled');
-        return (
-          <span
-            className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold border whitespace-nowrap ${
-              isJobTypeDisabled
-                ? 'bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-950/60 dark:text-amber-300 dark:border-amber-900'
-                : 'bg-rose-50 text-rose-800 border-rose-200 dark:bg-rose-950/60 dark:text-rose-300 dark:border-rose-900'
-            }`}
-          >
-            {isJobTypeDisabled ? (
-              <AlertTriangle className="h-3 w-3 shrink-0" />
-            ) : (
-              <Ban className="h-3 w-3 shrink-0" />
-            )}
-            {formatSnakeCase(skipReason)}
-          </span>
-        );
-      },
-    },
-    {
-      id: 'service_request',
-      accessorKey: 'service_request',
-      header: 'Service Request',
-      size: 220,
-      minSize: 160,
-      meta: { label: 'Service Request' },
-      cell: ({ row }) => {
-        const item = row.original;
-        const serviceRequest =
-          item.service_request ||
-          item.job_info?.service_request ||
-          item.scope_notes ||
-          item.job_info?.line_items_summary ||
-          '-';
-        return (
-          <div className="truncate text-text-primary font-medium max-w-[220px]" title={serviceRequest}>
-            {serviceRequest}
-          </div>
-        );
-      },
-    },
-    {
-      id: 'warranty_expiry',
-      accessorKey: 'warranty_expiry',
-      header: 'Warranty Expiry',
-      size: 140,
-      minSize: 110,
-      meta: { label: 'Warranty Expiry' },
-      cell: ({ row }) => {
-        const item = row.original;
-        return (
-          <span className="text-text-secondary whitespace-nowrap">
-            {item.warranty_record?.warranty_end_date
-              ? new Date(item.warranty_record.warranty_end_date).toLocaleDateString([], {
-                  month: 'short',
-                  day: 'numeric',
-                  year: 'numeric',
-                })
-              : '-'}
-          </span>
-        );
-      },
-    },
-    {
-      id: 'actions',
-      header: 'Actions',
-      size: 130,
-      minSize: 110,
-      enableResizing: false,
-      enableHiding: false,
-      meta: { label: 'Actions', fixed: true },
-      cell: ({ row }) => {
-        const item = row.original;
-        return (
-          <div className="flex items-center justify-end" onClick={(e) => e.stopPropagation()}>
-            <Button
-              size="sm"
-              className="h-7 px-2.5 text-xs gap-1 shrink-0 cursor-pointer"
-              onClick={() => handleCallNow(item.id)}
-              disabled={actingId === item.id}
-              title="Manually trigger call for this skipped job"
-            >
-              <PhoneForwarded className="h-3 w-3" />
-              Call Now
-            </Button>
-          </div>
-        );
-      },
-    },
-  ], [navigate, actingId]);
-
   return (
     <div className="space-y-4">
-      {/* Queue Header Summary */}
-      <div className="flex items-center justify-between">
-        <div>
-          <Heading level={3} scale="sm" className="font-bold flex items-center gap-2 text-text-primary">
-            <ListOrdered className="h-4 w-4 text-brand" />
-            Outbound Call Queue ({queueItems.length})
-          </Heading>
-          <p className="text-xs text-text-secondary mt-0.5">
-            Customers queued for warranty renewal calls within the active TCPA window. Once answered, customers are permanently removed from the retry queue.
-          </p>
-        </div>
-      </div>
-
-      {/* Main Queue DataTable */}
       <div ref={queueContainerRef} className="relative">
         <BeeTableScrollFades
           containerRef={queueContainerRef}
@@ -1133,7 +808,6 @@ export const BeeQueueTab: React.FC = () => {
                     statusDomain="lead"
                   />
 
-                  {/* Columns Visibility Button with Hidden Count */}
                   <BeeTableColumnOptions
                     table={table}
                     storageKey={STORAGE_KEY_COLUMNS}
@@ -1144,7 +818,6 @@ export const BeeQueueTab: React.FC = () => {
                 </div>
               </div>
 
-              {/* Applied Filter Chips bar */}
               {hasActiveQueueFilters && (
                 <div className="px-4 py-2 border-b border-border/60 bg-muted/20">
                   <AppliedFilterBar
@@ -1165,174 +838,53 @@ export const BeeQueueTab: React.FC = () => {
         </DataTable>
       </div>
 
-      {/* Skipped Jobs Section */}
-      <div className="pt-6 space-y-4 border-t border-border/80">
-        <div className="flex items-center justify-between">
-          <div>
-            <Heading level={3} scale="sm" className="font-bold flex items-center gap-2 text-text-primary">
-              <Ban className="h-4 w-4 text-warning-text" />
-              Skipped Jobs ({(skippedItems || []).length})
-            </Heading>
-            <p className="text-xs text-text-secondary mt-0.5">
-              Jobs excluded from automated calls because their job type is disabled or the customer is on the Do Not Call list. You can manually call any skipped job below.
-            </p>
-          </div>
-        </div>
-
-        {/* Skipped Jobs DataTable */}
-        <div ref={skippedContainerRef} className="relative">
-          <BeeTableScrollFades
-            containerRef={skippedContainerRef}
-            stickyColId="customer_name"
-            hasStickyCol={true}
-          />
-          <DataTable
-            columns={skippedColumns}
-            data={filteredSkippedItems}
-            getRowId={(item) => item.id}
-            page={safeSkippedPage}
-            pageCount={skippedTotalPages}
-            onPageChange={setSkippedPage}
-            pageSize={skippedPageSize}
-            onPageSizeChange={(newSize) => {
-              setSkippedPageSize(newSize);
-              setSkippedPage(1);
-            }}
-            rowCount={filteredSkippedItems.length}
-            enableColumnResizing
-            empty={
-              <div className="text-center py-10 text-text-secondary text-xs">
-                {(skippedItems || []).length === 0
-                  ? 'No skipped jobs found. All completed jobs have enabled job types and eligible call status.'
-                  : 'No skipped jobs match your filter criteria.'}
-              </div>
-            }
-          >
-            {() => (
-              <>
-                <div className="flex flex-wrap items-center gap-2.5 p-3.5 border-b border-border/80 bg-surface-light">
-                  <div className="relative w-[320px] max-w-full">
-                    <Search className="absolute left-3 top-2.5 h-4 w-4 text-text-secondary pointer-events-none" />
-                    <input
-                      type="text"
-                      placeholder="Search skipped customer, job #, reason..."
-                      value={skippedSearchQuery}
-                      onChange={(e) => {
-                        setSkippedSearchQuery(e.target.value);
-                        setSkippedPage(1);
-                      }}
-                      className="w-full pl-9 pr-8 h-9 text-xs bg-surface-light border border-border rounded-lg text-text-primary placeholder:text-text-secondary focus:ring-1 focus:ring-primary focus:outline-none"
-                    />
-                    {skippedSearchQuery && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSkippedSearchQuery('');
-                          setSkippedPage(1);
-                        }}
-                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-text-secondary hover:text-text-primary p-0.5 cursor-pointer"
-                        title="Clear search"
-                      >
-                        <X className="h-3.5 w-3.5" />
-                      </button>
-                    )}
-                  </div>
-
-                  <div className="grow" />
-
-                  <div className="flex items-center gap-2">
-                    <FilterPopover
-                      registry={skippedFilterRegistry}
-                      value={skippedFilterState}
-                      onChange={(next) => {
-                        setSkippedFilterState(next);
-                        setSkippedPage(1);
-                      }}
-                      resolveOptions={resolveSkippedOptions}
-                      resolveMax={() => 0}
-                      statusDomain="lead"
-                    />
-                  </div>
-                </div>
-
-                {/* Applied Filter Chips bar for Skipped Jobs */}
-                {hasActiveSkippedFilters && (
-                  <div className="px-4 py-2 border-b border-border/60 bg-muted/20">
-                    <AppliedFilterBar
-                      registry={skippedFilterRegistry}
-                      value={skippedFilterState}
-                      onChange={(next) => {
-                        setSkippedFilterState(next);
-                        setSkippedPage(1);
-                      }}
-                      resolveOptions={resolveSkippedOptions}
-                      resultCount={filteredSkippedItems.length}
-                      totalCount={(skippedItems || []).length}
-                    />
-                  </div>
-                )}
-              </>
-            )}
-          </DataTable>
-        </div>
-      </div>
-
-      {/* Manual Reschedule Modal */}
-      <Dialog open={Boolean(rescheduleTarget)} onOpenChange={(open) => !open && setRescheduleTarget(null)}>
+      {/* Manual Reschedule Dialog */}
+      <Dialog
+        open={Boolean(rescheduleTarget)}
+        onOpenChange={(open) => {
+          if (!open && !isRescheduling) {
+            setRescheduleTarget(null);
+          }
+        }}
+      >
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle className="text-base font-bold flex items-center gap-2">
-              <Clock className="h-4 w-4 text-primary" />
-              Reschedule Outbound Warranty Call
+              <Clock className="h-4 w-4 text-brand" />
+              Reschedule Outbound Call
             </DialogTitle>
-            <DialogDescription className="text-xs text-muted-foreground">
-              Select a new date and time for Bee to call {rescheduleTarget?.customer_name}.
+            <DialogDescription className="text-xs">
+              Manually set a specific date and time for Bee to dial this customer.
             </DialogDescription>
           </DialogHeader>
 
           {rescheduleTarget && (
-            <div className="space-y-4 py-2 text-xs">
-              <div className="p-3 bg-muted/40 rounded-xl border border-border/80 space-y-1.5">
+            <div className="space-y-4 py-2">
+              <div className="p-3 rounded-lg bg-surface-light border border-border text-xs space-y-1.5">
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Customer:</span>
-                  <span className="font-semibold text-foreground">{rescheduleTarget.customer_name}</span>
+                  <span className="font-semibold text-text-primary">{rescheduleTarget.customer_name}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground">Phone Number:</span>
-                  <span className="font-mono text-foreground">{formatPhone(rescheduleTarget.customer_phone) || '-'}</span>
+                  <span className="text-muted-foreground">Phone:</span>
+                  <span className="font-mono text-text-primary">{formatPhone(rescheduleTarget.customer_phone)}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground">Warranty Started On:</span>
-                  <span className="font-medium text-foreground">
-                    {rescheduleTarget.warranty_started_on === 'Invoice Sent' ? 'Invoice Sent' : 'Job Complete'}
-                  </span>
+                  <span className="text-muted-foreground">Job #:</span>
+                  <span className="font-mono text-text-primary">{rescheduleTarget.job_number || '-'}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Current Schedule:</span>
-                  <span className="font-medium text-foreground">
+                  <span className="font-medium text-text-primary">
                     {new Date(rescheduleTarget.scheduled_for).toLocaleDateString([], {
                       month: 'short',
                       day: 'numeric',
+                      year: 'numeric',
                       hour: 'numeric',
                       minute: '2-digit',
-                      hour12: true,
-                    }).replace(/\b(am|pm)\b/i, (m) => m.toUpperCase())}
+                    })}
                   </span>
                 </div>
-                {rescheduleTarget.is_rescheduled && rescheduleTarget.original_scheduled_for && (
-                  <div className="flex justify-between text-[11px] text-muted-foreground pt-1 border-t border-border/50">
-                    <span>Original Schedule:</span>
-                    <span className="font-medium">
-                      {new Date(rescheduleTarget.original_scheduled_for).toLocaleDateString([], {
-                        month: 'short',
-                        day: 'numeric',
-                        hour: 'numeric',
-                        minute: '2-digit',
-                        hour12: true,
-                      }).replace(/\b(am|pm)\b/i, (m) => m.toUpperCase())}
-                    </span>
-                  </div>
-                )}
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -1342,7 +894,7 @@ export const BeeQueueTab: React.FC = () => {
                     type="date"
                     value={rescheduleDate}
                     onChange={(e) => setRescheduleDate(e.target.value)}
-                    className="h-8 text-xs"
+                    className="h-8 text-xs font-mono"
                   />
                 </div>
                 <div className="space-y-1.5">

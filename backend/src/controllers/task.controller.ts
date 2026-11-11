@@ -348,8 +348,13 @@ export async function create(req: Request, res: Response) {
     // At create every name on the task is a newly added one, so the whole list IS the delta.
     const ref: TaskRef = { id: task.id, title: task.title, task_number: task.task_number };
     if (notify?.in_app !== false) {
-      await emitTask(req, 'task.assigned', ref, { added_assignee_ids: assignees });
-      await emitTask(req, 'task.watching', ref, { added_watcher_ids: watchers });
+      // Fire notifications non-blocking in background so API response is immediate
+      void Promise.all([
+        emitTask(req, 'task.assigned', ref, { added_assignee_ids: assignees }),
+        emitTask(req, 'task.watching', ref, { added_watcher_ids: watchers }),
+      ]).catch((err) => {
+        logger.warn('Failed to emit task notifications:', err);
+      });
     }
 
     // ─── Automation Center event - post-commit, fire-and-forget (#271) ─────────────────────

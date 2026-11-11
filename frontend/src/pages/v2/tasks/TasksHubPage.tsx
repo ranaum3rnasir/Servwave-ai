@@ -138,7 +138,11 @@ export default function TasksHubPage() {
 
   useEffect(() => {
     const deepLinkedTaskId = searchParams.get('task');
-    if (!deepLinkedTaskId || handledTaskDeepLink.current === deepLinkedTaskId) return;
+    if (!deepLinkedTaskId) {
+      handledTaskDeepLink.current = null;
+      return;
+    }
+    if (handledTaskDeepLink.current === deepLinkedTaskId) return;
     handledTaskDeepLink.current = deepLinkedTaskId;
 
     searchParams.delete('task');

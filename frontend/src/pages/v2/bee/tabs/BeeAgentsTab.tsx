@@ -32,6 +32,15 @@ import {
   PhoneCall,
   Sparkles,
 } from 'lucide-react';
+import {
+  JOB_CONTEXT_VARIABLES,
+  CORE_DYNAMIC_VARIABLES,
+  ALL_DYNAMIC_VARIABLES,
+  validateScriptVariables,
+  isVariableUsedInText,
+  getUsedJobContextKeys,
+  DynamicVariableDefinition,
+} from '@/lib/bee/dynamicVariables';
 import { Heading } from '@/ui-kit/components/ui/heading';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -175,6 +184,24 @@ const WIZARD_STEPS: Array<{ id: WizardStepId; label: string }> = [
   { id: 'conversation_flow', label: '2. Conversation flow' },
   { id: 'launch', label: '3. Test & launch' },
 ];
+
+export const FLOW_SECTIONS: Array<{ key: FlowFieldKey; label: string }> = [
+  { key: 'greeting_pitch', label: '1. Greeting' },
+  { key: 'checkin_flow', label: '2. Check-In' },
+  { key: 'warranty_offer_pitch', label: '3. Warranty Pitch & Packages' },
+  { key: 'new_work_pitch', label: '4. New Job' },
+  { key: 'objection_handling', label: '5. Objections' },
+  { key: 'custom_instructions', label: '6. Rules' },
+];
+
+export const FLOW_SECTION_LABELS: Record<FlowFieldKey, string> = {
+  greeting_pitch: '1. Greeting',
+  checkin_flow: '2. Check-In',
+  warranty_offer_pitch: '3. Warranty Pitch & Packages',
+  new_work_pitch: '4. New Job',
+  objection_handling: '5. Objections',
+  custom_instructions: '6. Rules',
+};
 
 export interface ElevenLabsVoiceOption {
   id: string; // Vapi 11labs voice ID
@@ -414,6 +441,19 @@ export const BeeAgentsTab: React.FC = () => {
     useState<FlowFieldKey>('greeting_pitch');
   const [copiedToken, setCopiedToken] = useState<string | null>(null);
 
+  // Dynamic variable selector category & validation states
+  const [variableCategoryTab, setVariableCategoryTab] = useState<'job_context' | 'core'>('job_context');
+  const [sectionErrors, setSectionErrors] = useState<Record<string, string[]>>({});
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const cursorPositionRef = useRef<{ start: number; end: number }>({ start: 0, end: 0 });
+
+  const updateCursor = (e: React.SyntheticEvent<HTMLTextAreaElement>) => {
+    cursorPositionRef.current = {
+      start: e.currentTarget.selectionStart,
+      end: e.currentTarget.selectionEnd,
+    };
+  };
+
   // Early renewal packages pitched in Section 3 (Warranty Pitch)
   const [selectedPlans, setSelectedPlans] = useState<string[]>([
     '1-Year Warranty Extension ($199/yr or $19/mo)',
@@ -575,6 +615,7 @@ export const BeeAgentsTab: React.FC = () => {
   const openCreateModal = () => {
     setEditingAgentId(null);
     setEditorError(null);
+    setSectionErrors({});
     setName('Warranty Care Specialist');
     setVoiceId(DEFAULT_ELEVENLABS_VOICE.id);
     setTone('Warm, consultative, empathetic');
@@ -594,6 +635,7 @@ export const BeeAgentsTab: React.FC = () => {
   const openEditModal = (agent: BeeAgentItem) => {
     setEditingAgentId(agent.id);
     setEditorError(null);
+    setSectionErrors({});
     setName(agent.name || '');
     const matchedVoice = ELEVENLABS_VAPI_VOICES.find(
       (v) =>
@@ -673,6 +715,85 @@ export const BeeAgentsTab: React.FC = () => {
     }
   };
 
+  const validateActiveSection = (): boolean => {
+    const text = conversationFlow[activeFlowField] || '';
+    const result = validateScriptVariables(text);
+    if (!result.isValid) {
+      setSectionErrors((prev) => ({
+        ...prev,
+        [activeFlowField]: result.errors,
+      }));
+      toast.error(`Invalid dynamic variable in ${FLOW_SECTION_LABELS[activeFlowField]}: ${result.errors[0]}`);
+      textareaRef.current?.focus();
+      return false;
+    }
+    setSectionErrors((prev) => ({
+      ...prev,
+      [activeFlowField]: [],
+    }));
+    return true;
+  };
+
+  const validateAllSections = (): boolean => {
+    const errorsBySection: Record<string, string[]> = {};
+    let firstFailingKey: FlowFieldKey | null = null;
+
+    for (const item of FLOW_SECTIONS) {
+      const text = conversationFlow[item.key] || '';
+      const res = validateScriptVariables(text);
+      if (!res.isValid) {
+        errorsBySection[item.key] = res.errors;
+        if (!firstFailingKey) firstFailingKey = item.key;
+      }
+    }
+
+    setSectionErrors(errorsBySection);
+
+    if (firstFailingKey) {
+      setActiveWizardStep('conversation_flow');
+      setActiveFlowField(firstFailingKey);
+      toast.error(
+        `Please fix dynamic variable errors in "${FLOW_SECTION_LABELS[firstFailingKey]}": ${errorsBySection[firstFailingKey]?.[0] || 'Invalid syntax'}`
+      );
+      setTimeout(() => textareaRef.current?.focus(), 50);
+      return false;
+    }
+
+    return true;
+  };
+
+  const handleSwitchFlowSection = (targetKey: FlowFieldKey) => {
+    if (targetKey === activeFlowField) return;
+    if (!validateActiveSection()) return;
+    setActiveFlowField(targetKey);
+    setTimeout(() => textareaRef.current?.focus(), 50);
+  };
+
+  const handleSwitchWizardStep = (targetStep: WizardStepId) => {
+    if (targetStep === activeWizardStep) return;
+    if (activeWizardStep === 'conversation_flow') {
+      if (!validateAllSections()) return;
+    }
+    setActiveWizardStep(targetStep);
+  };
+
+  const handleContinueStep = () => {
+    if (activeWizardStep === 'basics') {
+      if (!name.trim()) {
+        setEditorError('Please enter an Agent Name.');
+        return;
+      }
+      setEditorError(null);
+      setActiveWizardStep('conversation_flow');
+      return;
+    }
+    if (activeWizardStep === 'conversation_flow') {
+      if (!validateAllSections()) return;
+      setActiveWizardStep('launch');
+      return;
+    }
+  };
+
   const handleSaveAgent = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!name.trim()) {
@@ -681,11 +802,20 @@ export const BeeAgentsTab: React.FC = () => {
       return;
     }
 
+    // Validate all 6 sections
+    if (!validateAllSections()) {
+      return;
+    }
+
     try {
       setIsSavingAgent(true);
       setEditorError(null);
       const selectedVoiceObj =
         ELEVENLABS_VAPI_VOICES.find((v) => v.id === voiceId) || DEFAULT_ELEVENLABS_VOICE;
+
+      // Automatically aggregate all used job context fields across all sections
+      const usedContextFields = getUsedJobContextKeys(conversationFlow);
+      const finalJobFields = Array.from(new Set([...selectedJobFields, ...usedContextFields]));
 
       const payload: Partial<BeeAgentItem> = {
         name: name.trim(),
@@ -696,7 +826,7 @@ export const BeeAgentsTab: React.FC = () => {
         tone,
         voice_engine: engineProvider || 'vapi',
         is_active: isActive,
-        job_context_fields: selectedJobFields,
+        job_context_fields: finalJobFields,
         conversation_flow: conversationFlow,
         warranty_offer_pitch: conversationFlow.warranty_offer_pitch,
         new_work_pitch: conversationFlow.new_work_pitch,
@@ -751,15 +881,49 @@ export const BeeAgentsTab: React.FC = () => {
   };
 
   const insertVariableIntoFlow = (token: string) => {
-    setConversationFlow((prev) => {
-      const current = prev[activeFlowField] || '';
-      const needsSpace =
-        current.length > 0 && !current.endsWith(' ') && !current.endsWith('\n');
-      return {
-        ...prev,
-        [activeFlowField]: `${current}${needsSpace ? ' ' : ''}${token}`,
-      };
-    });
+    const currentText = conversationFlow[activeFlowField] || '';
+    const textarea = textareaRef.current;
+    let start = cursorPositionRef.current.start;
+    let end = cursorPositionRef.current.end;
+
+    if (textarea && document.activeElement === textarea) {
+      start = textarea.selectionStart;
+      end = textarea.selectionEnd;
+    }
+
+    if (start > currentText.length) start = currentText.length;
+    if (end > currentText.length) end = currentText.length;
+
+    const before = currentText.slice(0, start);
+    const after = currentText.slice(end);
+
+    const prefix = before.length > 0 && !before.endsWith(' ') && !before.endsWith('\n') ? ' ' : '';
+    const suffix = after.length > 0 && !after.startsWith(' ') && !after.startsWith('\n') ? ' ' : '';
+
+    const insertion = `${prefix}${token}${suffix}`;
+    const newText = before + insertion + after;
+    const newCursorPos = start + insertion.length;
+
+    setConversationFlow((prev) => ({
+      ...prev,
+      [activeFlowField]: newText,
+    }));
+
+    cursorPositionRef.current = { start: newCursorPos, end: newCursorPos };
+    if (textarea) {
+      setTimeout(() => {
+        textarea.focus();
+        textarea.setSelectionRange(newCursorPos, newCursorPos);
+      }, 0);
+    }
+
+    // Live validate updated text
+    const valResult = validateScriptVariables(newText);
+    setSectionErrors((prev) => ({
+      ...prev,
+      [activeFlowField]: valResult.errors,
+    }));
+
     setCopiedToken(token);
     setTimeout(() => setCopiedToken(null), 1400);
   };
@@ -788,7 +952,10 @@ export const BeeAgentsTab: React.FC = () => {
     const rawVars = (j.job_context_variables || {}) as Record<string, string>;
 
     const formatVar = (key: string, fallback: string) => {
-      if (!selectedJobFields.includes(key)) return `[${key} not enabled]`;
+      const isFieldEnabled =
+        selectedJobFields.includes(key) ||
+        isVariableUsedInText(Object.values(conversationFlow).join(' '), key);
+      if (!isFieldEnabled) return `[${key} not enabled]`;
       return rawVars[key] || fallback;
     };
 
@@ -873,6 +1040,13 @@ export const BeeAgentsTab: React.FC = () => {
 
   const selectedVoice: ElevenLabsVoiceOption =
     ELEVENLABS_VAPI_VOICES.find((v) => v.id === voiceId) || DEFAULT_ELEVENLABS_VOICE;
+
+  const currentSectionText = conversationFlow[activeFlowField] || '';
+  const displayedVariables =
+    variableCategoryTab === 'job_context' ? JOB_CONTEXT_VARIABLES : CORE_DYNAMIC_VARIABLES;
+  const usedCountInActive = displayedVariables.filter((v) =>
+    isVariableUsedInText(currentSectionText, v.token)
+  ).length;
 
   return (
     <div className="space-y-6 text-slate-900 font-sans">
@@ -1045,7 +1219,7 @@ export const BeeAgentsTab: React.FC = () => {
                   <button
                     key={step.id}
                     type="button"
-                    onClick={() => setActiveWizardStep(step.id)}
+                    onClick={() => handleSwitchWizardStep(step.id)}
                     className={cn(
                       'px-4 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-colors',
                       isCurrent
@@ -1191,47 +1365,74 @@ export const BeeAgentsTab: React.FC = () => {
           {/* Step 2: Conversation flow (Merged: Variables, Script Sections, Early Renewal Packages in Warranty Pitch, and Live Preview) */}
           {activeWizardStep === 'conversation_flow' && (
             <div className="space-y-6">
-              {/* Job Info Dynamic Variables Bar */}
-              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+              {/* Dynamic Variables Selector Panel */}
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
                     <Database className="h-3.5 w-3.5 text-slate-700" />
-                    Selected Job Info Dynamic Variables ({selectedJobFields.length}/8 enabled)
-                  </span>
-                  <span className="text-[11px] text-slate-500">
-                    Click to toggle inclusion or insert token into active script section
-                  </span>
+                    <span className="text-xs font-bold text-slate-800">
+                      Dynamic Variables ({usedCountInActive} used in this section)
+                    </span>
+                    <span className="text-[11px] text-slate-500">
+                      Click variable to insert at cursor into active section ({FLOW_SECTION_LABELS[activeFlowField]})
+                    </span>
+                  </div>
+
+                  {/* Category Switcher Tabs */}
+                  <div className="inline-flex rounded-lg border border-slate-200 bg-white p-0.5 text-xs font-medium shadow-2xs">
+                    <button
+                      type="button"
+                      onClick={() => setVariableCategoryTab('job_context')}
+                      className={cn(
+                        'px-2.5 py-1 rounded-md text-[11px] font-medium transition-all',
+                        variableCategoryTab === 'job_context'
+                          ? 'bg-[#0c192c] text-white font-semibold shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      )}
+                    >
+                      Job Context ({JOB_CONTEXT_VARIABLES.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setVariableCategoryTab('core')}
+                      className={cn(
+                        'px-2.5 py-1 rounded-md text-[11px] font-medium transition-all',
+                        variableCategoryTab === 'core'
+                          ? 'bg-[#0c192c] text-white font-semibold shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      )}
+                    >
+                      Customer & Job Info ({CORE_DYNAMIC_VARIABLES.length})
+                    </button>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                  {JOB_CONTEXT_FIELD_DEFINITIONS.map((def) => {
-                    const isEnabled = selectedJobFields.includes(def.key);
+                  {displayedVariables.map((def) => {
+                    const isUsedInActive = isVariableUsedInText(currentSectionText, def.token);
                     return (
                       <button
                         key={def.key}
                         type="button"
-                        onClick={() => {
-                          toggleJobContextField(def.key);
-                          insertVariableIntoFlow(def.token);
-                        }}
+                        onClick={() => insertVariableIntoFlow(def.token)}
                         className={cn(
-                          'p-2.5 rounded-lg text-xs transition-all flex flex-col justify-between text-left border',
-                          isEnabled
+                          'p-2.5 rounded-lg text-xs transition-all flex flex-col justify-between text-left border relative group cursor-pointer',
+                          isUsedInActive
                             ? 'bg-emerald-50/90 border-emerald-300 ring-1 ring-emerald-200 text-emerald-950 shadow-2xs font-semibold'
                             : 'bg-white/80 border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-300'
                         )}
-                        title={`Click to insert ${def.token} into active script stage`}
+                        title={`Click to insert ${def.token} at cursor into ${FLOW_SECTION_LABELS[activeFlowField]}`}
                       >
                         <div className="flex items-center justify-between w-full mb-1">
                           <span className="font-semibold text-xs truncate">
-                            {def.label.split(' (')[0]}
+                            {def.label}
                           </span>
-                          {isEnabled ? (
-                            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-600 text-white uppercase tracking-wider">
-                              Used
+                          {isUsedInActive ? (
+                            <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-600 text-white uppercase tracking-wider">
+                              <Check className="h-2.5 w-2.5" /> In Section
                             </span>
                           ) : (
-                            <span className="text-[10px] text-slate-400">Available</span>
+                            <span className="text-[10px] text-slate-400 group-hover:text-slate-700">Available</span>
                           )}
                         </div>
                         <div className="flex items-center gap-1 font-mono text-[10px] text-slate-500">
@@ -1247,41 +1448,82 @@ export const BeeAgentsTab: React.FC = () => {
               {/* Conversation Flow Stages Tabs */}
               <div className="space-y-4">
                 <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
-                  {[
-                    { key: 'greeting_pitch', label: '1. Greeting' },
-                    { key: 'checkin_flow', label: '2. Check-In' },
-                    { key: 'warranty_offer_pitch', label: '3. Warranty Pitch & Packages' },
-                    { key: 'new_work_pitch', label: '4. New Job' },
-                    { key: 'objection_handling', label: '5. Objections' },
-                    { key: 'custom_instructions', label: '6. Rules' },
-                  ].map((tab) => (
-                    <button
-                      key={tab.key}
-                      type="button"
-                      onClick={() => setActiveFlowField(tab.key as FlowFieldKey)}
-                      className={cn(
-                        'px-3.5 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-colors',
-                        activeFlowField === tab.key
-                          ? 'bg-[#0c192c] text-white shadow-xs'
-                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200/70'
-                      )}
-                    >
-                      {tab.label}
-                    </button>
-                  ))}
+                  {FLOW_SECTIONS.map((tab) => {
+                    const hasErrors = (sectionErrors[tab.key]?.length || 0) > 0;
+                    return (
+                      <button
+                        key={tab.key}
+                        type="button"
+                        onClick={() => handleSwitchFlowSection(tab.key)}
+                        className={cn(
+                          'px-3.5 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-colors flex items-center gap-1.5',
+                          activeFlowField === tab.key
+                            ? 'bg-[#0c192c] text-white shadow-xs'
+                            : hasErrors
+                            ? 'bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200/70'
+                        )}
+                      >
+                        <span>{tab.label}</span>
+                        {hasErrors && (
+                          <span className="h-2 w-2 rounded-full bg-rose-500 shrink-0" />
+                        )}
+                      </button>
+                    );
+                  })}
                 </div>
 
                 <Textarea
+                  ref={textareaRef}
                   value={conversationFlow[activeFlowField] || ''}
-                  onChange={(e) =>
-                    setConversationFlow({
-                      ...conversationFlow,
-                      [activeFlowField]: e.target.value,
-                    })
-                  }
+                  onSelect={updateCursor}
+                  onKeyUp={updateCursor}
+                  onClick={updateCursor}
+                  onFocus={updateCursor}
+                  onChange={(e) => {
+                    const nextVal = e.target.value;
+                    setConversationFlow((prev) => ({
+                      ...prev,
+                      [activeFlowField]: nextVal,
+                    }));
+                    // Live clear error if user fixes it
+                    if (sectionErrors[activeFlowField]?.length) {
+                      const res = validateScriptVariables(nextVal);
+                      if (res.isValid) {
+                        setSectionErrors((prev) => ({
+                          ...prev,
+                          [activeFlowField]: [],
+                        }));
+                      }
+                    }
+                  }}
                   rows={4}
-                  className="text-xs font-mono rounded-lg border-slate-200 leading-relaxed"
+                  className={cn(
+                    'text-xs font-mono rounded-lg border-slate-200 leading-relaxed',
+                    (sectionErrors[activeFlowField]?.length || 0) > 0 &&
+                      'border-rose-300 focus-visible:ring-rose-400 bg-rose-50/20'
+                  )}
                 />
+
+                {/* Inline Validation Banner if Section has Errors */}
+                {sectionErrors[activeFlowField] && sectionErrors[activeFlowField].length > 0 && (
+                  <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-start gap-2.5 animate-in fade-in duration-150">
+                    <AlertCircle className="h-4 w-4 text-rose-600 shrink-0 mt-0.5" />
+                    <div className="space-y-1">
+                      <div className="font-semibold text-rose-900">
+                        Dynamic Variable Error ({sectionErrors[activeFlowField].length})
+                      </div>
+                      <ul className="list-disc list-inside space-y-0.5 text-rose-700 text-[11px]">
+                        {sectionErrors[activeFlowField].map((err, i) => (
+                          <li key={i}>{err}</li>
+                        ))}
+                      </ul>
+                      <div className="text-[10px] text-rose-600 mt-1">
+                        Variables must use valid double curly braces (e.g. <code className="bg-rose-100 px-1 py-0.5 rounded font-mono">{'{{customer_name}}'}</code>) and reference registered fields.
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 {/* Section 3: Warranty Pitch - Early Renewal Packages & Offer Integration */}
                 {activeFlowField === 'warranty_offer_pitch' && (
@@ -1644,15 +1886,7 @@ export const BeeAgentsTab: React.FC = () => {
               {activeWizardStep !== 'launch' ? (
                 <Button
                   type="button"
-                  onClick={() => {
-                    const currentIndex = WIZARD_STEPS.findIndex(
-                      (s) => s.id === activeWizardStep
-                    );
-                    if (currentIndex < WIZARD_STEPS.length - 1) {
-                      const nextStep = WIZARD_STEPS[currentIndex + 1];
-                      if (nextStep) setActiveWizardStep(nextStep.id);
-                    }
-                  }}
+                  onClick={handleContinueStep}
                   className="bg-[#0c192c] hover:bg-slate-800 text-white font-semibold text-xs px-4 shadow-sm"
                 >
                   Continue

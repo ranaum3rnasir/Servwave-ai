@@ -22,6 +22,12 @@ export interface CreateTaskFormOptions {
   dueToIso: (value: string) => string | null;
   /** Report a failed create: each dialog raises its own layer's toast. */
   onCreateError: (title: string, description: string) => void;
+  /** Skip advisory entity access queries to optimize modal open latency */
+  skipEntityAccess?: boolean;
+  /** Callback fired with the created task on successful creation */
+  onSuccess?: (task: any) => void;
+  /** Notification override options (e.g. { in_app: false, email: false } when Bee handles its own alerts) */
+  notify?: { in_app?: boolean; email?: boolean };
 }
 
 /**
@@ -36,7 +42,7 @@ export interface CreateTaskFormOptions {
  * (`files.taskId` set), naming the file with a Retry; it never undoes the task.
  */
 export function useCreateTaskForm({
-  open, onOpenChange, initialParse, presetEntity, dueFromIso, dueToIso, onCreateError,
+  open, onOpenChange, initialParse, presetEntity, dueFromIso, dueToIso, onCreateError, skipEntityAccess = false, onSuccess, notify,
 }: CreateTaskFormOptions) {
   const addTask = useTasksStore((s) => s.addTask);
   // CASL `assign` on Task, never `role === 'ADMIN'` - see the hook's note.
@@ -75,7 +81,9 @@ export function useCreateTaskForm({
   // one per mount of a surface that presets an entity (the tasks tab always does), and null for a
   // reader who can change neither roster, who has nothing to do with the answer.
   const rosterEditable = useTaskRosterEditable('create');
-  const entityAccess = useLinkedEntityAccess(open && rosterEditable ? effectiveEntity : null);
+  const entityAccess = useLinkedEntityAccess(
+    open && rosterEditable && !skipEntityAccess ? effectiveEntity : null
+  );
 
   const dueFromIsoRef = useRef(dueFromIso);
   useEffect(() => { dueFromIsoRef.current = dueFromIso; });
@@ -155,7 +163,9 @@ export function useCreateTaskForm({
         // non-holder is allowed.
         ...(assigneeIds.length > 0 ? { assignee_ids: assigneeIds } : {}),
         ...(watcherIds.length > 0 ? { watcher_ids: watcherIds } : {}),
+        ...(notify ? { notify } : {}),
       });
+      onSuccess?.(task);
       // The task exists now, whatever happens to its files. A file that fails keeps the
       // dialog open on the Files outcome, named, with a Retry; it never undoes the task.
       if (await files.uploadTo(task.id)) close();

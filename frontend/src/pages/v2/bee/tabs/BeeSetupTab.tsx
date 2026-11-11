@@ -52,6 +52,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Switch } from '@/components/ui/switch';
 import { SelectField } from '@/ui-kit/components/form/selectField';
 import { TimeCombobox } from '@/components/form/TimeCombobox';
+import { DateTimePicker } from '@/components/form/DateTimePicker';
 import { formatPhone, formatPhoneInput, formatSnakeCase } from '@/lib/utils';
 import {
   Dialog,
@@ -174,13 +175,6 @@ export const BeeSetupTab: React.FC = () => {
     Record<string, { agent_id?: string | null; phone_number?: string | null }>
   >({});
 
-  // Step 4: Triggers
-  const [triggerBeforeEnd, setTriggerBeforeEnd] = useState(true);
-  const [triggerWinBack, setTriggerWinBack] = useState(false);
-  const [triggerManual, setTriggerManual] = useState(true);
-  const [daysBeforeEnd, setDaysBeforeEnd] = useState(30);
-  const [winBackDays, setWinBackDays] = useState(15);
-
   // Step 5: Call window & retries
   const [callDays, setCallDays] = useState<string[]>(['Mon', 'Tue', 'Wed', 'Thu', 'Fri']);
   const [callWindowStart, setCallWindowStart] = useState('10:00');
@@ -255,18 +249,19 @@ export const BeeSetupTab: React.FC = () => {
   const [testPhoneNumber, setTestPhoneNumber] = useState('(201) 555-0100');
   const [isTestCalling, setIsTestCalling] = useState(false);
   const [testPassed, setTestPassed] = useState(false);
-  const [launchMode, setLaunchMode] = useState('Pilot - first 20 customers, then pause for review');
+  const [launchMode, setLaunchMode] = useState('Start now');
+  const [scheduledStartDateTime, setScheduledStartDateTime] = useState('');
   const [isDeactivateModalOpen, setIsDeactivateModalOpen] = useState(false);
   const [isDeactivating, setIsDeactivating] = useState(false);
   
   const [setupDone, setSetupDone] = useState<number[]>(() => {
     if (settings?.setup_config?.setupDone && Array.isArray(settings.setup_config.setupDone)) {
-      return settings.setup_config.setupDone.slice(0, 8);
+      return settings.setup_config.setupDone.slice(0, 7);
     }
     if (storeSetupDone && Array.isArray(storeSetupDone)) {
-      return storeSetupDone.slice(0, 8);
+      return storeSetupDone.slice(0, 7);
     }
-    return [0, 0, 0, 0, 0, 0, 0, 0];
+    return [0, 0, 0, 0, 0, 0, 0];
   });
 
   // Initial load
@@ -303,11 +298,6 @@ export const BeeSetupTab: React.FC = () => {
       setOfficeHours(cfg.officeHours || 'Mon-Fri 8:00 AM - 6:00 PM');
       const loadedStartsOn = cfg.warrantyStartsOn ? (String(cfg.warrantyStartsOn).toLowerCase().includes('invoice') ? 'Invoice Sent' : 'Job Complete') : 'Job Complete';
       setWarrantyStartsOn(loadedStartsOn);
-      setDaysBeforeEnd(cfg.daysBeforeEnd !== undefined ? cfg.daysBeforeEnd : 30);
-      setWinBackDays(cfg.winBackDays !== undefined ? cfg.winBackDays : 15);
-      setTriggerBeforeEnd(cfg.triggerBeforeEnd !== undefined ? cfg.triggerBeforeEnd : true);
-      setTriggerWinBack(cfg.triggerWinBack !== undefined ? cfg.triggerWinBack : false);
-      setTriggerManual(cfg.triggerManual !== undefined ? cfg.triggerManual : true);
       setCallDays(cfg.callDays || ['Mon', 'Tue', 'Wed', 'Thu', 'Fri']);
       setRetryGap(cfg.retryGap || '48 hours');
       setAlternateAmPm(cfg.alternateAmPm !== undefined ? cfg.alternateAmPm : true);
@@ -354,11 +344,17 @@ export const BeeSetupTab: React.FC = () => {
       setNeedsHumanUserId(cfg.needsHumanUserId || '');
       setAlertChannels(cfg.alertChannels || ['In-app', 'Email']);
       setTestPassed(cfg.testPassed !== undefined ? cfg.testPassed : false);
-      setLaunchMode(cfg.launchMode || 'Pilot - first 20 customers, then pause for review');
+      const loadedLaunchMode = cfg.launchMode;
+      if (loadedLaunchMode && loadedLaunchMode.includes('Pilot')) {
+        setLaunchMode('Start now');
+      } else {
+        setLaunchMode(loadedLaunchMode || 'Start now');
+      }
+      setScheduledStartDateTime(cfg.scheduledStartDateTime || '');
 
       if (cfg.setupDone && Array.isArray(cfg.setupDone)) {
-        const normalizedDone = cfg.setupDone.slice(0, 8);
-        while (normalizedDone.length < 8) normalizedDone.push(0);
+        const normalizedDone = cfg.setupDone.slice(0, 7);
+        while (normalizedDone.length < 7) normalizedDone.push(0);
         setSetupDone(normalizedDone);
         setStoreSetupDone(normalizedDone);
       }
@@ -610,9 +606,9 @@ export const BeeSetupTab: React.FC = () => {
     }
   }, [assignableUsers, fallbackDispatcherId, adminWatcherId, systemAdminUser]);
 
-  // Check readiness (all 8 steps completed + system config, test call NOT required)
-  const doneCount = setupDone.slice(0, 8).filter((d) => d === 1).length;
-  const allStepsCompleted = doneCount === 8;
+  // Check readiness (all 7 steps completed + system config, test call NOT required)
+  const doneCount = setupDone.slice(0, 7).filter((d) => d === 1).length;
+  const allStepsCompleted = doneCount === 7;
   const isBeePhoneConfigured = availableNumbers.length > 0;
   const isCallerIdSet = Boolean(callerId);
   const hasWarrantyTerms = enabledJobTypes.length > 0;
@@ -628,13 +624,13 @@ export const BeeSetupTab: React.FC = () => {
     { label: 'At least 1 warranty plan available', ok: hasActivePlans },
     { label: 'Job follow-up task triggers active', ok: hasFollowupTriggers },
     { label: 'Dispatcher & admin watcher configured', ok: isDispatcherSet },
-    { label: 'All 8 setup steps completed', ok: allStepsCompleted },
+    { label: 'All 7 setup steps completed', ok: allStepsCompleted },
   ];
 
   const allReadinessGreen = readinessItems.every((r) => r.ok);
   const isLive = Boolean(metrics?.isActive ?? settings?.is_active);
 
-  // Setup Step List with dynamic summaries (8 consolidated steps)
+  // Setup Step List with dynamic summaries (7 consolidated steps)
   const SETUP_STEPS = useMemo(() => [
     {
       id: 'phone_system',
@@ -659,11 +655,6 @@ export const BeeSetupTab: React.FC = () => {
       summary: `Fallback: ${agents.find((a) => a.id === defaultAgentId)?.name || 'Default persona'} · ${defaultPhoneNumber || callerId || 'Default phone'}`,
     },
     {
-      id: 'triggers',
-      name: 'Triggers',
-      summary: `A: ${daysBeforeEnd} days before end · Win-back: ${winBackDays}d · answered = never called again`,
-    },
-    {
       id: 'skip_rules',
       name: 'Who to skip',
       summary: `Unpaid invoice, phone not connected${skipIfOwesMoney ? ' · skip if owes money' : ''}${skipMinJobAmount > 0 ? ` · under $${skipMinJobAmount}` : ''}`,
@@ -679,13 +670,13 @@ export const BeeSetupTab: React.FC = () => {
       summary: isLive
         ? 'Active - Outbound calling enabled'
         : allStepsCompleted
-          ? 'All 8 steps completed · ready to activate'
-          : 'Complete all 8 steps to activate',
+          ? 'All 7 steps completed · ready to activate'
+          : 'Complete all 7 steps to activate',
     },
   ], [
     availableNumbers, callerId, businessName, timezone, callDays, callWindowStart, callWindowEnd,
     enabledJobTypes, plans, warrantyStartsOn, agents, defaultAgentId, defaultPhoneNumber,
-    daysBeforeEnd, winBackDays, skipIfOwesMoney, skipMinJobAmount, taskTriggerOutcomes,
+    skipIfOwesMoney, skipMinJobAmount, taskTriggerOutcomes,
     taskAssigneeRoles, taskPriority,
     adminWatcherId, isLive, allStepsCompleted
   ]);
@@ -729,11 +720,6 @@ export const BeeSetupTab: React.FC = () => {
         warrantyStartsOn,
         defaultAgentId,
         defaultPhoneNumber: defaultPhoneNumber || callerId,
-        triggerBeforeEnd,
-        triggerWinBack,
-        triggerManual,
-        daysBeforeEnd,
-        winBackDays,
         callDays,
         callWindowStart,
         callWindowEnd,
@@ -758,6 +744,7 @@ export const BeeSetupTab: React.FC = () => {
         alertChannels,
         testPassed,
         launchMode,
+        scheduledStartDateTime: launchMode === 'Schedule a start date' ? scheduledStartDateTime : undefined,
         setupDone: updatedDone,
       };
 
@@ -933,7 +920,7 @@ export const BeeSetupTab: React.FC = () => {
                             ? `${enabledJobTypes.length} job types active` 
                             : idx === 3 
                               ? `${Object.keys(jobTypeAssignments).length} custom mappings` 
-                              : idx === 6
+                              : idx === 5
                                 ? `${taskTriggerOutcomes.length} triggers · Job Dispatcher`
                                 : 'Active in Bee'}
                     </span>
@@ -1625,86 +1612,8 @@ export const BeeSetupTab: React.FC = () => {
               </div>
             )}
 
-            {/* STEP 4: Triggers */}
+            {/* STEP 4: Who to skip */}
             {currentStep === 4 && (
-              <div className="space-y-4 text-xs">
-                <div className="space-y-2">
-                  <Label>Turn on triggers</Label>
-                  <div className="space-y-2 border border-border/60 rounded-lg p-3 bg-surface-light">
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={triggerBeforeEnd}
-                        onChange={(e) => setTriggerBeforeEnd(e.target.checked)}
-                        className="rounded border-input text-primary focus:ring-primary h-3.5 w-3.5"
-                      />
-                      <span>A · Before warranty ends</span>
-                    </label>
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={triggerWinBack}
-                        onChange={(e) => setTriggerWinBack(e.target.checked)}
-                        className="rounded border-input text-primary focus:ring-primary h-3.5 w-3.5"
-                      />
-                      <span>C · Win-back after warranty ends</span>
-                    </label>
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={triggerManual}
-                        onChange={(e) => setTriggerManual(e.target.checked)}
-                        className="rounded border-input text-primary focus:ring-primary h-3.5 w-3.5"
-                      />
-                      <span>E · Manual calls from Queue tab</span>
-                    </label>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5">
-                    <Label>Days before warranty ends</Label>
-                    <Input
-                      type="number"
-                      min={1}
-                      max={90}
-                      value={daysBeforeEnd}
-                      onChange={(e) => setDaysBeforeEnd(parseInt(e.target.value) || 30)}
-                      className="h-8"
-                    />
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <Label>Win-back days after end</Label>
-                    <Input
-                      type="number"
-                      min={1}
-                      max={90}
-                      value={winBackDays}
-                      onChange={(e) => setWinBackDays(parseInt(e.target.value) || 15)}
-                      className="h-8"
-                    />
-                    <span className="text-[11px] text-muted-foreground">Only used if trigger C is enabled.</span>
-                  </div>
-                </div>
-
-                <div className="p-3 bg-muted/40 rounded-lg border border-border/40 text-xs text-muted-foreground space-y-1.5">
-                  <p className="flex items-center gap-1.5 text-foreground font-medium">
-                    <Lock className="h-3.5 w-3.5 text-warning-text" />
-                    Guaranteed Safe Frequency Rule
-                  </p>
-                  <p>
-                    Bee only calls again when the customer didn't answer. Once a customer answers, Bee never calls them again - whatever they said. Your human office team can still call them anytime.
-                  </p>
-                  <p className="text-[11px] text-muted-foreground pt-1 border-t border-border/30">
-                    Locked start condition: Job completed AND invoice sent/paid.
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {/* STEP 5: Who to skip */}
-            {currentStep === 5 && (
               <div className="space-y-4 text-xs">
                 <div className="p-3 bg-muted/40 rounded-lg border border-border/40 text-xs text-muted-foreground">
                   <span className="font-semibold text-foreground">Always skipped: </span>
@@ -1880,8 +1789,8 @@ export const BeeSetupTab: React.FC = () => {
               </div>
             )}
 
-            {/* STEP 6: Job follow-up tasks & handoff */}
-            {currentStep === 6 && (
+            {/* STEP 5: Job follow-up tasks & handoff */}
+            {currentStep === 5 && (
               <div className="space-y-5 text-xs">
                 {/* 1. Outcome Triggers for Task Creation */}
                 <div className="space-y-2.5">
@@ -2168,8 +2077,8 @@ export const BeeSetupTab: React.FC = () => {
               </div>
             )}
 
-            {/* STEP 7: Test & go live */}
-            {currentStep === 7 && (
+            {/* STEP 6: Test & go live */}
+            {currentStep === 6 && (
               <div className="space-y-4 text-xs">
                 {availableNumbers.length === 0 && (
                   <div className="p-3.5 rounded-xl border border-amber-300 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800 text-amber-900 dark:text-amber-200 space-y-1.5">
@@ -2223,19 +2132,44 @@ export const BeeSetupTab: React.FC = () => {
 
                 <div className="space-y-1.5">
                   <Label>Launch mode</Label>
-                  <Select value={launchMode} onValueChange={setLaunchMode}>
+                  <Select
+                    value={launchMode === 'Schedule a start date' ? 'Schedule a start date' : 'Start now'}
+                    onValueChange={(val) => {
+                      setLaunchMode(val);
+                      if (val === 'Schedule a start date' && !scheduledStartDateTime) {
+                        const tmrw = new Date();
+                        tmrw.setDate(tmrw.getDate() + 1);
+                        const yyyy = tmrw.getFullYear();
+                        const mm = String(tmrw.getMonth() + 1).padStart(2, '0');
+                        const dd = String(tmrw.getDate()).padStart(2, '0');
+                        setScheduledStartDateTime(`${yyyy}-${mm}-${dd}T09:00`);
+                      }
+                    }}
+                  >
                     <SelectTrigger className="h-8">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="Pilot - first 20 customers, then pause for review">
-                        Pilot - first 20 customers, then pause for review
-                      </SelectItem>
                       <SelectItem value="Start now">Start now - full queue execution</SelectItem>
                       <SelectItem value="Schedule a start date">Schedule a start date</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
+
+                {launchMode === 'Schedule a start date' && (
+                  <div className="space-y-1.5 pt-1">
+                    <Label>Scheduled start date &amp; time</Label>
+                    <DateTimePicker
+                      value={scheduledStartDateTime}
+                      onChange={setScheduledStartDateTime}
+                      clearable={false}
+                      className="w-full max-w-md"
+                    />
+                    <span className="text-[11px] text-muted-foreground">
+                      Bee will hold calls in the queue and begin outbound calling at the scheduled start date and time.
+                    </span>
+                  </div>
+                )}
               </div>
             )}
 
@@ -2275,7 +2209,7 @@ export const BeeSetupTab: React.FC = () => {
                   </Button>
                 ) : (
                   <div className="flex items-center gap-2">
-                    {setupDone[7] !== 1 && (
+                    {setupDone[SETUP_STEPS.length - 1] !== 1 && (
                       <Button
                         size="sm"
                         variant="outline"
@@ -2595,7 +2529,7 @@ export const BeeSetupTab: React.FC = () => {
             <ul className="list-disc pl-4 space-y-1 text-[11px] leading-relaxed">
               <li>All scheduled outbound warranty calls will be paused immediately.</li>
               <li>All previous configuration settings and setup progress will be reset to their defaults.</li>
-              <li>To activate Bee again, an administrator must review and complete all 8 setup steps and activate from the <b>Test &amp; go live</b> tab.</li>
+              <li>To activate Bee again, an administrator must review and complete all 7 setup steps and activate from the <b>Test &amp; go live</b> tab.</li>
             </ul>
           </div>
 

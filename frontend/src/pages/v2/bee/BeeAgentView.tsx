@@ -4,6 +4,7 @@ import { useBeeStore } from '@/stores/beeStore';
 import { BeeHomeTab } from './tabs/BeeHomeTab';
 import { BeeCallLogTab } from './tabs/BeeCallLogTab';
 import { BeeQueueTab } from './tabs/BeeQueueTab';
+import { BeeSkippedArchivedTab } from './tabs/BeeSkippedArchivedTab';
 import { BeeAgentsTab } from './tabs/BeeAgentsTab';
 import { BeeWarrantyPlansTab } from './tabs/BeeWarrantyPlansTab';
 import { BeeDncTab } from './tabs/BeeDncTab';
@@ -13,6 +14,7 @@ import {
   LayoutDashboard,
   PhoneCall,
   ListOrdered,
+  Archive,
   Bot,
   ShieldCheck,
   PhoneOff,
@@ -87,7 +89,7 @@ export const BeeAgentView: React.FC = () => {
     };
   }, [loadMetrics, loadSettings]);
 
-  const totalSteps = 8;
+  const totalSteps = 7;
   const currentDoneList =
     settings?.setup_config?.setupDone && Array.isArray(settings.setup_config.setupDone)
       ? settings.setup_config.setupDone.slice(0, totalSteps)
@@ -100,6 +102,7 @@ export const BeeAgentView: React.FC = () => {
     { value: 'home', label: 'Home', icon: LayoutDashboard },
     { value: 'calls', label: 'Call Log', icon: PhoneCall },
     { value: 'queue', label: 'Queue', icon: ListOrdered },
+    { value: 'skipped_archived', label: 'Skipped & Archived', icon: Archive },
     { value: 'agents', label: 'Agents', icon: Bot },
     { value: 'plans', label: 'Warranty Plans', icon: ShieldCheck },
     { value: 'dnc', label: 'Do Not Call', icon: PhoneOff },
@@ -279,6 +282,7 @@ export const BeeAgentView: React.FC = () => {
         {activeTab === 'home' && <BeeHomeTab />}
         {activeTab === 'calls' && <BeeCallLogTab />}
         {activeTab === 'queue' && <BeeQueueTab />}
+        {activeTab === 'skipped_archived' && <BeeSkippedArchivedTab />}
         {activeTab === 'agents' && <BeeAgentsTab />}
         {activeTab === 'plans' && <BeeWarrantyPlansTab />}
         {activeTab === 'dnc' && <BeeDncTab />}

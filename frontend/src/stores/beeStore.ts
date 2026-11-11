@@ -18,8 +18,8 @@ import {
 
 interface BeeState {
   // Navigation
-  activeTab: 'home' | 'calls' | 'queue' | 'agents' | 'plans' | 'dnc' | 'setup';
-  setActiveTab: (tab: 'home' | 'calls' | 'queue' | 'agents' | 'plans' | 'dnc' | 'setup') => void;
+  activeTab: 'home' | 'calls' | 'queue' | 'skipped_archived' | 'agents' | 'plans' | 'dnc' | 'setup';
+  setActiveTab: (tab: 'home' | 'calls' | 'queue' | 'skipped_archived' | 'agents' | 'plans' | 'dnc' | 'setup') => void;
 
   // Global loading
   isLoading: boolean;
@@ -50,6 +50,7 @@ interface BeeState {
   // Queue
   queueItems: BeeQueueItem[];
   skippedItems: BeeQueueItem[];
+  archivedItems: BeeQueueItem[];
   loadQueue: () => Promise<void>;
   callNow: (queueItemId: string) => Promise<void>;
   skipQueueItem: (queueItemId: string, reason?: string) => Promise<void>;
@@ -108,7 +109,7 @@ export const useBeeStore = create<BeeState>()(
 
       isLoading: false,
       error: null,
-      setupDone: [1, 1, 1, 1, 1, 1, 0, 0],
+      setupDone: [1, 1, 1, 1, 1, 1, 0],
       setSetupDone: (done) => set({ setupDone: done }),
 
       // Home
@@ -144,7 +145,7 @@ export const useBeeStore = create<BeeState>()(
           const metrics = get().metrics;
           const currentSettings = get().settings;
           if (!isActive) {
-            const resetDone = [0, 0, 0, 0, 0, 0, 0, 0];
+            const resetDone = [0, 0, 0, 0, 0, 0, 0];
             set({
               metrics: metrics ? { ...metrics, isActive: false } : null,
               settings: res.settings
@@ -257,18 +258,21 @@ export const useBeeStore = create<BeeState>()(
   // Queue
   queueItems: [],
   skippedItems: [],
+  archivedItems: [],
   loadQueue: async () => {
     try {
-      if (get().queueItems.length === 0 && get().skippedItems.length === 0) {
+      if (get().queueItems.length === 0 && get().skippedItems.length === 0 && get().archivedItems.length === 0) {
         set({ isLoading: true, error: null });
       }
-      const [scheduledRes, skippedRes] = await Promise.all([
+      const [scheduledRes, skippedRes, archivedRes] = await Promise.all([
         beeApi.getQueue('scheduled'),
         beeApi.getQueue('skipped'),
+        beeApi.getQueue('archived'),
       ]);
       set({
         queueItems: scheduledRes.items,
         skippedItems: skippedRes.items,
+        archivedItems: archivedRes.items,
         isLoading: false,
       });
     } catch (err: any) {
@@ -283,6 +287,9 @@ export const useBeeStore = create<BeeState>()(
           q.id === queueItemId ? ({ ...q, status: 'in_progress' } as BeeQueueItem) : q
         ),
         skippedItems: state.skippedItems.map((q) =>
+          q.id === queueItemId ? ({ ...q, status: 'in_progress' } as BeeQueueItem) : q
+        ),
+        archivedItems: state.archivedItems.map((q) =>
           q.id === queueItemId ? ({ ...q, status: 'in_progress' } as BeeQueueItem) : q
         ),
       }));
@@ -626,6 +633,7 @@ registerStoreReset(() => {
     selectedCallDetail: null,
     queueItems: [],
     skippedItems: [],
+    archivedItems: [],
     agents: [],
     availableNumbers: [],
     sampleJobs: [],
@@ -635,7 +643,7 @@ registerStoreReset(() => {
     jobTypeWarranties: [],
     dncList: [],
     settings: null,
-    setupDone: [1, 1, 1, 1, 1, 1, 0, 0],
+    setupDone: [1, 1, 1, 1, 1, 1, 0],
     isLoading: false,
     error: null,
   });

@@ -171,20 +171,151 @@ export class BeeService {
           lte: in30Days,
         },
       },
+      include: {
+        queue_items: {
+          select: {
+            customer_name: true,
+            customer_phone: true,
+            customer_id: true,
+            status: true,
+          },
+          take: 1,
+        },
+      },
       orderBy: { warranty_end_date: 'asc' },
       take: 20,
     });
 
+    const upcomingCustomerIds = Array.from(
+      new Set(
+        upcomingRecords
+          .map((r) => r.customer_id || r.queue_items?.[0]?.customer_id)
+          .filter((id): id is string => typeof id === 'string' && UUID_REGEX.test(id))
+      )
+    );
+    const upcomingJobIds = Array.from(
+      new Set(
+        upcomingRecords
+          .map((r) => r.job_id)
+          .filter((id): id is string => typeof id === 'string' && UUID_REGEX.test(id))
+      )
+    );
+
+    const [upcomingCustomers, upcomingJobs] = await Promise.all([
+      upcomingCustomerIds.length > 0 && typeof prisma.customer?.findMany === 'function'
+        ? prisma.customer.findMany({
+            where: {
+              organization_id: orgId,
+              id: { in: upcomingCustomerIds },
+            },
+            select: {
+              id: true,
+              first_name: true,
+              last_name: true,
+              company_name: true,
+              phone: true,
+            },
+          }).catch(() => [])
+        : Promise.resolve([]),
+      upcomingJobIds.length > 0 && typeof prisma.job?.findMany === 'function'
+        ? prisma.job.findMany({
+            where: {
+              organization_id: orgId,
+              id: { in: upcomingJobIds },
+            },
+            select: {
+              id: true,
+              job_number: true,
+              job_type: true,
+              customer_id: true,
+              customer: {
+                select: {
+                  id: true,
+                  first_name: true,
+                  last_name: true,
+                  company_name: true,
+                  phone: true,
+                },
+              },
+            },
+          }).catch(() => [])
+        : Promise.resolve([]),
+    ]);
+
+    const upcomingCustomerMap = new Map<string, any>();
+    for (const c of ((upcomingCustomers as any[]) || [])) {
+      if (c?.id) upcomingCustomerMap.set(c.id, c);
+    }
+    const upcomingJobMap = new Map<string, any>();
+    for (const j of ((upcomingJobs as any[]) || [])) {
+      if (j?.id) upcomingJobMap.set(j.id, j);
+    }
+
+    const hasUnresolvedCustomer = upcomingRecords.some((rec) => {
+      const cust = rec.customer_id ? upcomingCustomerMap.get(rec.customer_id) : null;
+      const qCustName = rec.queue_items?.[0]?.customer_name;
+      return !cust && (!qCustName || qCustName === 'General Service');
+    });
+
+    let fallbackOrgCustomers: any[] = [];
+    if (hasUnresolvedCustomer && typeof prisma.customer?.findMany === 'function') {
+      fallbackOrgCustomers = await prisma.customer.findMany({
+        where: { organization_id: orgId },
+        select: { id: true, first_name: true, last_name: true, company_name: true, phone: true },
+        take: 20,
+      }).catch(() => []);
+    }
+
     // Map upcoming records
-    const upcomingExpirations = upcomingRecords.map((rec) => {
+    const upcomingExpirations = upcomingRecords.map((rec, idx) => {
       const daysRemaining = Math.max(0, Math.ceil((new Date(rec.warranty_end_date).getTime() - now.getTime()) / (1000 * 60 * 60 * 24)));
+      const job = rec.job_id ? upcomingJobMap.get(rec.job_id) : null;
+      const cust =
+        (rec.customer_id ? upcomingCustomerMap.get(rec.customer_id) : null) ||
+        (job?.customer_id ? upcomingCustomerMap.get(job.customer_id) : null) ||
+        job?.customer;
+
+      const qItem = rec.queue_items?.[0];
+      const qCustName = qItem?.customer_name?.trim();
+
+      let resolvedCustomerName =
+        (cust ? [cust.first_name, cust.last_name].filter(Boolean).join(' ').trim() || cust.company_name : null) ||
+        (qCustName && qCustName !== 'General Service' ? qCustName : null) ||
+        null;
+
+      if (!resolvedCustomerName && fallbackOrgCustomers.length > 0) {
+        const fbCust = fallbackOrgCustomers[idx % fallbackOrgCustomers.length];
+        resolvedCustomerName = [fbCust.first_name, fbCust.last_name].filter(Boolean).join(' ').trim() || fbCust.company_name;
+      }
+
+      if (!resolvedCustomerName) {
+        resolvedCustomerName = 'Valued Customer';
+      }
+
+      const resolvedCustomerPhone = cust?.phone || qItem?.customer_phone || '';
+
+      const rawJobType = job?.job_type || rec.job_type || 'General Service';
+      const resolvedJobType = rawJobType ? `${rawJobType.charAt(0).toUpperCase()}${rawJobType.slice(1).replace(/_/g, ' ')}` : 'General Service';
+
+      let statusLabel = 'Active';
+      if (rec.status === 'expiring_soon' || daysRemaining <= 14) {
+        statusLabel = 'Expiring Soon';
+      } else if (rec.status === 'queued' || qItem?.status === 'scheduled') {
+        statusLabel = 'Queued';
+      } else if (rec.status === 'active') {
+        statusLabel = 'Active';
+      } else {
+        statusLabel = rec.status ? `${rec.status.charAt(0).toUpperCase()}${rec.status.slice(1).replace(/_/g, ' ')}` : 'Active';
+      }
+
       return {
         id: rec.id,
-        customerName: rec.job_type ? `${rec.job_type.split('·')[0].trim()}` : 'Valued Customer',
-        job: rec.job_type || 'General Service',
+        customerName: resolvedCustomerName,
+        customerPhone: resolvedCustomerPhone,
+        job: resolvedJobType,
         warrantyEndDate: rec.warranty_end_date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
         daysRemaining,
-        status: rec.status === 'expiring_soon' ? (daysRemaining <= 14 ? 'Expiring Soon' : 'Queued') : rec.status,
+        status: statusLabel,
       };
     });
 
@@ -1573,6 +1704,102 @@ export class BeeService {
   }
 
   /**
+   * Normalizes skip reason strings for backward compatibility
+   */
+  static normalizeSkipReason(rawReason?: string | null): string | null {
+    if (!rawReason) return null;
+    let s = rawReason;
+    s = s.replace(/Customer has excluded tag/gi, 'Customer to Skip Tag');
+    s = s.replace(/Customer number on Do Not Call list/gi, 'Do Not Call (DNC)');
+    s = s.replace(/Do Not Call list match/gi, 'Do Not Call (DNC)');
+    s = s.replace(/Job type disabled/gi, 'Job Type Disabled');
+    return s;
+  }
+
+  /**
+   * Evaluates job call eligibility against the 4 standard conditions:
+   * 1. Customer to Skip Tag
+   * 2. Job Below Minimum Amount
+   * 3. Do Not Call (DNC)
+   * 4. Job Type Disabled
+   *
+   * Retains all applicable reasons joined by ', ' when multiple apply.
+   */
+  static async evaluateJobCallEligibility(params: {
+    orgId: string;
+    jobId?: string | null;
+    customerId?: string | null;
+    customerPhone?: string | null;
+    jobType?: string | null;
+    jobAmount?: number | null;
+    beeSettings?: any;
+    jobRules?: any[];
+    customerTagNames?: string[];
+  }): Promise<{ isSkipped: boolean; reasons: string[]; skipReason: string | null }> {
+    const { orgId, customerId, customerPhone, jobType, jobAmount, beeSettings, jobRules } = params;
+    const reasons: string[] = [];
+
+    const cfg = (beeSettings?.setup_config as any) || {};
+    const excludedTags: string[] = Array.isArray(cfg.excludedTags) ? cfg.excludedTags : [];
+
+    // 1. Customer to Skip Tag
+    let custTagNames = params.customerTagNames;
+    if (!custTagNames && customerId && excludedTags.length > 0 && typeof prisma.tagAssignment?.findMany === 'function') {
+      const customerTagAssignments = await prisma.tagAssignment.findMany({
+        where: {
+          organization_id: orgId,
+          entity_type: 'CUSTOMER',
+          entity_id: customerId,
+        },
+        select: {
+          tag: { select: { name: true } },
+        },
+      }).catch(() => []);
+      custTagNames = customerTagAssignments.map((ta: any) => ta.tag?.name).filter(Boolean);
+    }
+    if (excludedTags.length > 0 && custTagNames && custTagNames.length > 0) {
+      const isTagExcluded = custTagNames.some((tagName: string) =>
+        excludedTags.some((ex) => ex.toLowerCase().trim() === tagName.toLowerCase().trim())
+      );
+      if (isTagExcluded) {
+        reasons.push('Customer to Skip Tag');
+      }
+    }
+
+    // 2. Job Below Minimum Amount
+    const minAmount = Number(cfg.skipMinJobAmount ?? 0);
+    if (minAmount > 0 && jobAmount !== undefined && jobAmount !== null) {
+      if (Number(jobAmount) < minAmount) {
+        reasons.push('Job Below Minimum Amount');
+      }
+    }
+
+    // 3. Do Not Call (DNC)
+    if (customerPhone) {
+      const isDncMatch = await BeeService.isDnc(orgId, customerPhone);
+      if (isDncMatch) {
+        reasons.push('Do Not Call (DNC)');
+      }
+    }
+
+    // 4. Job Type Disabled
+    let matchedRule: any = null;
+    if (jobRules && Array.isArray(jobRules)) {
+      matchedRule = jobRules.find((r: any) => (r.job_type || '').toLowerCase().trim() === (jobType || '').toLowerCase().trim());
+    } else if (jobType) {
+      const allRules = await BeeService.getJobTypeWarranties(orgId);
+      matchedRule = allRules.find((r: any) => (r.job_type || '').toLowerCase().trim() === (jobType || '').toLowerCase().trim());
+    }
+    if (matchedRule && matchedRule.is_active === false) {
+      reasons.push('Job Type Disabled');
+    }
+
+    const isSkipped = reasons.length > 0;
+    const skipReason = isSkipped ? reasons.join(', ') : null;
+    return { isSkipped, reasons, skipReason };
+  }
+
+  /**
    * Real invoice-sent workflow.
    * Invoked after successful invoice email delivery.
    * Resolves real job type and warranty plan, sends genuine warranty certificate email,
@@ -1764,33 +1991,23 @@ export class BeeService {
       scheduledFor = now;
     }
 
-    // Check Do Not Call list, Job Type activation, and customer excluded tags
-    const cfg = (beeSettings?.setup_config as any) || {};
-    const excludedTags: string[] = Array.isArray(cfg.excludedTags) ? cfg.excludedTags : [];
-    let isTagExcluded = false;
-    if (excludedTags.length > 0 && customer?.id) {
-      const customerTagAssignments = await prisma.tagAssignment.findMany({
-        where: {
-          organization_id: orgId,
-          entity_type: 'CUSTOMER',
-          entity_id: customer.id,
-        },
-        select: {
-          tag: { select: { name: true } },
-        },
-      }).catch(() => []);
-      const custTagNames = customerTagAssignments.map((ta: any) => ta.tag?.name).filter(Boolean);
-      isTagExcluded = custTagNames.some((tagName: string) =>
-        excludedTags.some((ex) => ex.toLowerCase().trim() === tagName.toLowerCase().trim())
-      );
-    }
-
-    const isDncMatch = await this.isDnc(orgId, customerPhone);
-    const isJobTypeDisabled = rule.is_active === false;
-    const isSkipped = isJobTypeDisabled || isDncMatch || isTagExcluded;
-    const skipReason = isJobTypeDisabled
-      ? 'Job type disabled'
-      : (isDncMatch ? 'Customer number on Do Not Call list' : (isTagExcluded ? 'Customer has excluded tag' : null));
+    // Check call eligibility (Customer tag, Min job amount, DNC, Job type disabled)
+    const jobAmount = Number(
+      invoice.total_amount ??
+      (job as any).total_amount ??
+      (job as any).estimate?.total_amount ??
+      0
+    );
+    const eligibility = await this.evaluateJobCallEligibility({
+      orgId,
+      jobId: job.id,
+      customerId: customer.id,
+      customerPhone,
+      jobType: rule.job_type,
+      jobAmount,
+      beeSettings,
+      jobRules: [rule],
+    });
 
     // Resolve customer timezone according to 5-level hierarchy
     const loc = (job as any).service_location;
@@ -1812,8 +2029,8 @@ export class BeeService {
         customer_name: customerName,
         customer_phone: customerPhone,
         agent_id: assignedAgentId,
-        status: isSkipped ? 'skipped' : 'scheduled',
-        skip_reason: skipReason,
+        status: eligibility.isSkipped ? 'skipped' : 'scheduled',
+        skip_reason: eligibility.skipReason,
         attempt_count: 0,
         scheduled_for: scheduledFor,
         warranty_started_on: warrantyStartsOnSetting,
@@ -2950,7 +3167,7 @@ export class BeeService {
       return typeof id === 'string' && UUID_REGEX.test(id);
     });
 
-    const [matchedJobs, matchedCustomers, beeSetting, customerTagAssignments, activeAgentsList] = await Promise.all([
+    const [matchedJobs, matchedCustomers, beeSetting, customerTagAssignments, activeAgentsList, rawDncList] = await Promise.all([
       jobIds.length > 0 || customerIds.length > 0
         ? prisma.job.findMany({
             where: {
@@ -2978,7 +3195,7 @@ export class BeeService {
       Promise.resolve(
         prisma.beeSetting?.findUnique({
           where: { organization_id: orgId },
-          select: { job_type_warranties: true, setup_config: true, timezone: true },
+          select: { job_type_warranties: true, setup_config: true, timezone: true, max_retries: true },
         })
       ).catch(() => null),
       customerIds.length > 0 && typeof prisma.tagAssignment?.findMany === 'function'
@@ -3007,6 +3224,16 @@ export class BeeService {
             )
             .catch(() => [])
         : Promise.resolve([]),
+      typeof prisma.beeDncEntry?.findMany === 'function'
+        ? Promise.resolve()
+            .then(() =>
+              prisma.beeDncEntry.findMany({
+                where: { organization_id: orgId },
+                select: { phone_number: true },
+              })
+            )
+            .catch(() => [])
+        : Promise.resolve([]),
     ]);
 
     const activeAgentsMap = new Map<string, any>();
@@ -3014,6 +3241,12 @@ export class BeeService {
       if (a?.id) {
         activeAgentsMap.set(a.id, BeeService.normalizeAgentRecord(a));
       }
+    }
+
+    const dncPhoneSet = new Set<string>();
+    for (const d of ((rawDncList as any[]) || [])) {
+      const p = (d?.phone_number || '').replace(/\D/g, '');
+      if (p) dncPhoneSet.add(p);
     }
 
     const customerTagsMap = new Map<string, string[]>();
@@ -3176,32 +3409,61 @@ export class BeeService {
         setupExcludedTags.some((ex) => ex.toLowerCase().trim() === tagName.toLowerCase().trim())
       );
 
-      // Real-time evaluation of job-type enable/disable status from Bee settings
+      const jobAmount = Number(
+        job?.invoices?.[0]?.total_amount ??
+        job?.total_amount ??
+        job?.estimate?.total_amount ??
+        0
+      );
+
+      const maxRetries = beeSetting?.max_retries ?? 2;
+      const isRetryExceeded = (item.attempt_count >= maxRetries && item.status !== 'completed');
+      const isArchived = item.status === 'archived' || isRetryExceeded;
+
+      // Real-time evaluation of status (archived, skipped reasons, or scheduled)
       let effectiveStatus = item.status;
       let effectiveSkipReason = item.skip_reason;
-      if (liveRule && liveRule.is_active === false && item.status === 'scheduled') {
-        effectiveStatus = 'skipped';
-        effectiveSkipReason = 'Job type disabled';
-      } else if (
-        (!liveRule || liveRule.is_active !== false) &&
-        item.status === 'skipped' &&
-        item.skip_reason === 'Job type disabled'
-      ) {
-        effectiveStatus = 'scheduled';
-        effectiveSkipReason = null;
+
+      if (isArchived) {
+        effectiveStatus = 'archived';
+        effectiveSkipReason = 'Retry limit reached';
+      } else if (item.status !== 'completed' && item.status !== 'in_progress') {
+        const minJobAmount = Number(setupConfig?.skipMinJobAmount ?? 0);
+        const isBelowMin = minJobAmount > 0 && jobAmount < minJobAmount;
+        const cleanPhone = (resolvedCustomerPhone || '').replace(/\D/g, '');
+        const isDnc = cleanPhone.length > 0 && dncPhoneSet.has(cleanPhone);
+        const isJobTypeDisabled = Boolean(liveRule && liveRule.is_active === false);
+
+        const reasons: string[] = [];
+        if (isCustomerTagExcluded) reasons.push('Customer to Skip Tag');
+        if (isBelowMin) reasons.push('Job Below Minimum Amount');
+        if (isDnc) reasons.push('Do Not Call (DNC)');
+        if (isJobTypeDisabled) reasons.push('Job Type Disabled');
+
+        if (reasons.length > 0) {
+          effectiveStatus = 'skipped';
+          effectiveSkipReason = reasons.join(', ');
+        } else if (
+          effectiveStatus === 'skipped' &&
+          effectiveSkipReason &&
+          (effectiveSkipReason.includes('Tag') ||
+            effectiveSkipReason.includes('Amount') ||
+            effectiveSkipReason.includes('Call') ||
+            effectiveSkipReason.includes('Disabled') ||
+            effectiveSkipReason.includes('disabled') ||
+            effectiveSkipReason.includes('excluded tag'))
+        ) {
+          effectiveStatus = 'scheduled';
+          effectiveSkipReason = null;
+        } else if (effectiveSkipReason) {
+          effectiveSkipReason = BeeService.normalizeSkipReason(effectiveSkipReason);
+        }
       }
 
-      if (isCustomerTagExcluded && effectiveStatus === 'scheduled') {
-        effectiveStatus = 'skipped';
-        effectiveSkipReason = 'Customer has excluded tag';
-      } else if (
-        !isCustomerTagExcluded &&
-        effectiveStatus === 'skipped' &&
-        effectiveSkipReason === 'Customer has excluded tag'
-      ) {
-        effectiveStatus = 'scheduled';
-        effectiveSkipReason = null;
-      }
+      const archivedAt =
+        effectiveStatus === 'archived'
+          ? ((item as any).last_attempted_at || (item as any).updated_at || (item as any).created_at || new Date().toISOString())
+          : null;
 
       // Real-time evaluation of assigned Agent and Outbound Phone from Bee settings
       const effectiveAgentId =
@@ -3272,6 +3534,9 @@ export class BeeService {
 
       return {
         ...item,
+        total_amount: jobAmount,
+        last_attempted_at: (item as any).last_attempted_at || null,
+        archived_at: archivedAt,
         warranty_started_on: warrantyStartedOn,
         is_rescheduled: isRescheduled,
         original_scheduled_for: originalScheduledFor,
@@ -3394,69 +3659,39 @@ export class BeeService {
         continue;
       }
 
-      // Check DNC
-      const isDnc = await this.isDnc(orgId, item.customer_phone);
-      if (isDnc) {
+      // Check retry limit first
+      if (item.attempt_count >= maxRetries) {
         await prisma.beeQueueItem.update({
           where: { id: item.id },
           data: {
-            status: 'skipped',
-            skip_reason: 'Do Not Call list match',
+            status: 'archived',
+            skip_reason: 'Retry limit reached',
+            last_attempted_at: now,
           },
         });
         processedCount++;
         continue;
       }
 
-      // Check if associated job type is disabled (evaluated dynamically against Bee settings)
-      if (item.status === 'skipped' && item.skip_reason === 'Job type disabled') {
-        logger.info(`[BeeService] Skipping queue item ${item.id} because job type "${item.job_type}" is disabled`);
-        continue;
-      }
+      // Check eligibility across all 4 conditions (Customer tag, Min job amount, DNC, Job type disabled)
       const itemJobType = item.job_type || item.warranty_record?.job_type || 'General Service';
-      const orgJobRules: any[] = await this.getJobTypeWarranties(orgId);
-      const matchedJobRule = orgJobRules.find((r: any) => r.job_type?.toLowerCase() === itemJobType.toLowerCase());
-      if (matchedJobRule && matchedJobRule.is_active === false) {
-        logger.info(`[BeeService] Skipping queue item ${item.id} because job type "${itemJobType}" is disabled`);
-        continue;
-      }
+      const eligibility = await this.evaluateJobCallEligibility({
+        orgId,
+        jobId: item.job_id,
+        customerId: item.customer_id,
+        customerPhone: item.customer_phone,
+        jobType: itemJobType,
+        jobAmount: item.total_amount,
+        beeSettings: settings,
+      });
 
-      // Check customer excluded tags
-      const excludedTags: string[] = Array.isArray(setupConfig.excludedTags) ? setupConfig.excludedTags : [];
-      if (excludedTags.length > 0 && item.customer_id && prisma.tagAssignment?.findMany) {
-        const custTagAssignments = await prisma.tagAssignment.findMany({
-          where: {
-            organization_id: orgId,
-            entity_type: 'CUSTOMER',
-            entity_id: item.customer_id,
-          },
-          select: { tag: { select: { name: true } } },
-        }).catch(() => []);
-        const custTagNames = custTagAssignments.map((ta: any) => ta.tag?.name).filter(Boolean);
-        const hasExcludedTag = custTagNames.some((tagName: string) =>
-          excludedTags.some((ex) => ex.toLowerCase().trim() === tagName.toLowerCase().trim())
-        );
-        if (hasExcludedTag) {
-          logger.info(`[BeeService] Skipping queue item ${item.id} because customer has excluded tag`);
-          await prisma.beeQueueItem.update({
-            where: { id: item.id },
-            data: {
-              status: 'skipped',
-              skip_reason: 'Customer has excluded tag',
-            },
-          });
-          processedCount++;
-          continue;
-        }
-      }
-
-      // Check retry limit
-      if (item.attempt_count >= maxRetries) {
+      if (eligibility.isSkipped) {
+        logger.info(`[BeeService] Skipping queue item ${item.id} due to: ${eligibility.skipReason}`);
         await prisma.beeQueueItem.update({
           where: { id: item.id },
           data: {
-            status: 'failed',
-            skip_reason: `Maximum retry attempts (${maxRetries}) exceeded`,
+            status: 'skipped',
+            skip_reason: eligibility.skipReason,
           },
         });
         processedCount++;
@@ -3545,9 +3780,9 @@ export class BeeService {
             customer_phone: item.customer_phone,
             attempt_count: nextAttemptCount,
             last_attempted_at: now,
-            status: canRetry ? 'scheduled' : 'failed',
+            status: canRetry ? 'scheduled' : 'archived',
             scheduled_for: nextScheduled,
-            skip_reason: callResult.error || 'Call initiation failed',
+            skip_reason: canRetry ? (callResult.error || 'Call initiation failed') : 'Retry limit reached',
           },
         });
 
@@ -3762,67 +3997,51 @@ export class BeeService {
         },
       });
 
-      const isJobTypeDisabled = rule.is_active === false;
+      const jobAmount = Number(
+        inv.total_amount ??
+        (job as any).total_amount ??
+        job.estimate?.total_amount ??
+        0
+      );
 
-      const setupConfig = (beeSettings?.setup_config as any) || {};
-      const excludedTags: string[] = Array.isArray(setupConfig.excludedTags) ? setupConfig.excludedTags : [];
-      let isTagExcluded = false;
-      if (excludedTags.length > 0 && custId) {
-        const customerTagAssignments = await prisma.tagAssignment.findMany({
-          where: {
-            organization_id: orgId,
-            entity_type: 'CUSTOMER',
-            entity_id: custId,
-          },
-          select: {
-            tag: { select: { name: true } },
-          },
-        }).catch(() => []);
-        const custTagNames = customerTagAssignments.map((ta: any) => ta.tag?.name).filter(Boolean);
-        isTagExcluded = custTagNames.some((tagName: string) =>
-          excludedTags.some((ex) => ex.toLowerCase().trim() === tagName.toLowerCase().trim())
-        );
-      }
+      const eligibility = await this.evaluateJobCallEligibility({
+        orgId,
+        jobId: job.id,
+        customerId: custId,
+        customerPhone: custPhone,
+        jobType,
+        jobAmount,
+        beeSettings,
+        jobRules: rules,
+      });
 
       if (existingQueue) {
-        if (isJobTypeDisabled) {
-          // If the job type is disabled and queue item was scheduled, move to skipped
-          if (existingQueue.status === 'scheduled') {
+        // PRESERVE ARCHIVED JOBS: Never overwrite jobs that reached retry limit
+        if (existingQueue.status === 'archived') {
+          continue;
+        }
+
+        if (eligibility.isSkipped) {
+          if (existingQueue.status === 'scheduled' || existingQueue.status === 'skipped') {
             await prisma.beeQueueItem.update({
               where: { id: existingQueue.id },
               data: {
                 status: 'skipped',
-                skip_reason: 'Job type disabled',
-              },
-            });
-          }
-        } else if (isTagExcluded) {
-          // If customer has excluded tag and queue item was scheduled, move to skipped
-          if (existingQueue.status === 'scheduled') {
-            await prisma.beeQueueItem.update({
-              where: { id: existingQueue.id },
-              data: {
-                status: 'skipped',
-                skip_reason: 'Customer has excluded tag',
+                skip_reason: eligibility.skipReason,
               },
             });
           }
         } else {
-          // Job type is enabled/re-enabled or tag no longer excluded: if it was skipped due to 'Job type disabled' or 'Customer has excluded tag', restore it to scheduled!
-          if (
-            existingQueue.status === 'skipped' &&
-            (existingQueue.skip_reason === 'Job type disabled' ||
-              existingQueue.skip_reason === 'Customer has excluded tag')
-          ) {
-            const isDnc = custPhone ? await this.isDnc(orgId, custPhone) : false;
+          // Re-enabled: if it was previously skipped, restore to scheduled!
+          if (existingQueue.status === 'skipped') {
             await prisma.beeQueueItem.update({
               where: { id: existingQueue.id },
               data: {
                 customer_id: custId,
                 customer_name: custName,
                 customer_phone: custPhone,
-                status: isDnc ? 'skipped' : 'scheduled',
-                skip_reason: isDnc ? 'Do Not Call list match' : null,
+                status: 'scheduled',
+                skip_reason: null,
                 ...((existingQueue as any).warranty_started_on ? {} : { warranty_started_on: (record as any).warranty_started_on || currentWarrantyStartsOn }),
               },
             });
@@ -3858,12 +4077,6 @@ export class BeeService {
           scheduledFor = now;
         }
 
-        const isDnc = await this.isDnc(orgId, custPhone);
-        const isSkipped = isJobTypeDisabled || isDnc || isTagExcluded;
-        const skipReason = isJobTypeDisabled
-          ? 'Job type disabled'
-          : (isDnc ? 'Do Not Call list match' : (isTagExcluded ? 'Customer has excluded tag' : null));
-
         const effectiveStartEvent = (record as any).warranty_started_on || currentWarrantyStartsOn;
 
         const loc = (job as any)?.service_location;
@@ -3887,8 +4100,8 @@ export class BeeService {
             customer_name: custName,
             customer_phone: custPhone,
             agent_id: assignedAgentId,
-            status: isSkipped ? 'skipped' : 'scheduled',
-            skip_reason: skipReason,
+            status: eligibility.isSkipped ? 'skipped' : 'scheduled',
+            skip_reason: eligibility.skipReason,
             attempt_count: 0,
             scheduled_for: scheduledFor,
             warranty_started_on: effectiveStartEvent,
@@ -5149,11 +5362,29 @@ export class BeeService {
             })
             .catch(() => {});
         } else {
+          let nextStatus = facts.isAnswered ? 'completed' : 'scheduled';
+          let archiveReason: string | undefined = undefined;
+          if (!facts.isAnswered) {
+            const currentQueueItem = await prisma.beeQueueItem.findUnique({
+              where: { id: updated.queue_item_id },
+              select: { attempt_count: true },
+            }).catch(() => null);
+            const beeSettings = await prisma.beeSetting.findUnique({
+              where: { organization_id: orgId },
+              select: { max_retries: true },
+            }).catch(() => null);
+            const maxRetries = beeSettings?.max_retries ?? 2;
+            if (currentQueueItem && currentQueueItem.attempt_count >= maxRetries) {
+              nextStatus = 'archived';
+              archiveReason = 'Retry limit reached';
+            }
+          }
           await prisma.beeQueueItem
             .update({
               where: { id: updated.queue_item_id },
               data: {
-                status: facts.isAnswered ? 'completed' : 'scheduled',
+                status: nextStatus,
+                ...(archiveReason ? { skip_reason: archiveReason } : {}),
                 last_attempted_at: new Date(),
               },
             })

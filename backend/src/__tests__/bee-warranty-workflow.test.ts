@@ -266,7 +266,7 @@ describe('Bee Warranty and First Call Backend Workflow', () => {
         expect.objectContaining({
           data: expect.objectContaining({
             status: 'skipped',
-            skip_reason: 'Customer number on Do Not Call list',
+            skip_reason: 'Do Not Call (DNC)',
           }),
         })
       );
@@ -413,7 +413,7 @@ describe('Bee Warranty and First Call Backend Workflow', () => {
         expect.objectContaining({
           data: expect.objectContaining({
             status: 'skipped',
-            skip_reason: 'Job type disabled',
+            skip_reason: 'Job Type Disabled',
           }),
         })
       );
@@ -467,7 +467,7 @@ describe('Bee Warranty and First Call Backend Workflow', () => {
           where: { id: 'queue-sync-1' },
           data: expect.objectContaining({
             status: 'skipped',
-            skip_reason: 'Job type disabled',
+            skip_reason: 'Job Type Disabled',
           }),
         })
       );
