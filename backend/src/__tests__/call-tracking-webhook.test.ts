@@ -13,6 +13,7 @@ import crypto from 'crypto';
 import webhookRoutes from '../routes/webhook.routes';
 import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
+import { CALLRAIL_WEBHOOK_PRE } from '../lib/call-tracking/__tests__/fixtures/callrail-webhook';
 
 const app = express();
 app.use('/api/webhooks', webhookRoutes);
@@ -122,6 +123,35 @@ describe('call-tracking webhook gates', () => {
     const res = await post({ body, signature: sign(body) });
     expect(res.status).toBe(202);
     expect(res.body.ignored).toBe('unrecognised');
+  });
+
+  it('an unrecognised body logs its key NAMES, so a vendor shape change is visible on day one, and never a value', async () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as any);
+    const body = JSON.stringify({ call_ref: 'CAL-x', caller: '+16095550123', caller_name: 'DOE,JANE' });
+    const res = await post({ body, signature: sign(body) });
+    expect(res.status).toBe(202);
+    const line = String(warn.mock.calls.find((c) => String(c[0]).includes('unrecognised'))?.[0]);
+    expect(line).toContain('keys=call_ref,caller,caller_name');
+    expect(line).not.toContain('6095550123');
+    expect(line).not.toContain('DOE');
+    warn.mockRestore();
+  });
+
+  it('the shape production actually receives is recognised and stashed (#3447)', async () => {
+    const res = await post({ phase: 'pre', body: JSON.stringify(CALLRAIL_WEBHOOK_PRE) });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ received: true });
+    await flush();
+    expect(p.callTrackingIntegration.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'cti-1' }, data: { last_event_at: expect.any(Date) } }),
+    );
+    const args = p.pendingCallAttribution.upsert.mock.calls[0][0];
+    expect(args.create).toMatchObject({
+      vendor_call_id: CALLRAIL_WEBHOOK_PRE.resource_id,
+      from_number: '+16095550123',
+      tracking_source: 'Google Ad Extension',
+      attribution: expect.objectContaining({ gclid: 'Cj0TESTgclid', campaign: 'Ads Extension', medium: 'cpc' }),
+    });
   });
 
   it('WhatConverts needs no signature: the URL token is the only gate', async () => {

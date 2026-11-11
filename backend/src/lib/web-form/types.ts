@@ -14,9 +14,9 @@ import type { WebFormProvider } from '@prisma/client';
 export interface WebFormSubmissionEvent {
   provider: WebFormProvider;
   /**
-   * The vendor's own entry id, when the payload carries one. It does NOT by
-   * default: a Hidden field with Default Value "Submission ID" has to be added
-   * to the form first (plan §4 Q4), so this is null until the agency does that.
+   * The vendor's own entry id, when the payload carries one (a field mapped to
+   * `submissionId`, else `entry_id` / `submission_id` / `entry`). Folded into the
+   * duplicate key, never the key on its own: see process.ts `submissionKey`.
    */
   vendorSubmissionId: string | null;
   /** `form_title`, appended by the plugin to every delivery. */
@@ -35,7 +35,12 @@ export interface WebFormSubmissionEvent {
   landingPageUrl: string | null;
   /** `referer_url` - the page the visitor arrived from. */
   referringUrl: string | null;
-  /** The recognised ad-tracking values among the unmapped keys (utm_*, gclid, …). Also present in `extras`. */
+  /**
+   * The ad-tracking values (utm_*, gclid, keyword, …), from, in order: fields the
+   * org's `field_map` points at a tracking target, keys named for one (these are
+   * also kept in `extras`), then the query strings of the form's page and of a
+   * same-site referring page. Unfilled placeholders (`__gclid__`) never land here.
+   */
   trackingParams: Record<string, string>;
   /**
    * OUR receive time, and deliberately not the payload's `entry_time`: that is

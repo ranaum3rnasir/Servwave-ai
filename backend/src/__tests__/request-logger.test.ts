@@ -42,4 +42,22 @@ describe('request logger redaction', () => {
     }
     expect(cap.lines.join('')).not.toContain('authzz-7766');
   });
+  it('logs an inbound webhook as its route shape: no URL token, no query values (#3446)', async () => {
+    const token = 'f00d'.repeat(16);
+    const cap = captureStdout();
+    try {
+      await request(app)
+        .post(`/api/webhooks/call-tracking/callrail/${token}/pre?callername=DOE%2CJANE&callernum=%2B16095550123`)
+        .set('Content-Type', 'application/json')
+        .send('{}');
+      await request(app).post(`/api/webhooks/web-form/forminator/${token}`).set('Content-Type', 'application/json').send('{}');
+      await flush();
+    } finally {
+      cap.restore();
+    }
+    const out = cap.lines.join('');
+    expect(out).toContain('/api/webhooks/call-tracking/callrail/REDACTED/pre?REDACTED');
+    expect(out).toContain('/api/webhooks/web-form/forminator/REDACTED');
+    for (const leaked of [token, 'DOE', '6095550123']) expect(out).not.toContain(leaked);
+  });
 });

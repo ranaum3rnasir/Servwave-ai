@@ -59,14 +59,17 @@ class DuplicateCtmEventError extends Error {
 
 export async function handleCtmWebhook(req: Request, res: Response) {
   // Gate 1 — query token, fail closed.
-  const expected = env.CTM_WEBHOOK_TOKEN;
-  if (!expected) {
+  // The secrets below sit in locals whose NAMES the error reporter's key rule masks (`…Token`,
+  // `authorization`, `…Password`): with local variables on, an error passing through this frame
+  // would otherwise send the shared webhook token to the error tracker (#3446).
+  const expectedToken = env.CTM_WEBHOOK_TOKEN;
+  if (!expectedToken) {
     logger.warn('[ctm-webhook] CTM_WEBHOOK_TOKEN is not set — rejecting all webhook traffic (fail closed)');
     res.status(401).json({ error: 'Unauthorized' });
     return;
   }
-  const provided = typeof req.query.token === 'string' ? req.query.token : '';
-  if (!provided || !timingSafeEqualStr(provided, expected)) {
+  const providedToken = typeof req.query.token === 'string' ? req.query.token : '';
+  if (!providedToken || !timingSafeEqualStr(providedToken, expectedToken)) {
     res.status(401).json({ error: 'Unauthorized' });
     return;
   }
@@ -95,11 +98,11 @@ export async function handleCtmWebhook(req: Request, res: Response) {
   }
 
   // Gate 3 — Basic auth we set at hook-provision time, verified when present.
-  const basic = req.header('authorization');
-  if (basic?.startsWith('Basic ')) {
-    const decoded = Buffer.from(basic.slice(6), 'base64').toString('utf8');
-    const [, password = ''] = decoded.split(':');
-    if (!timingSafeEqualStr(password, expected)) {
+  const authorization = req.header('authorization');
+  if (authorization?.startsWith('Basic ')) {
+    const userAndPassword = Buffer.from(authorization.slice(6), 'base64').toString('utf8');
+    const [, password = ''] = userAndPassword.split(':');
+    if (!timingSafeEqualStr(password, expectedToken)) {
       res.status(401).json({ error: 'Unauthorized' });
       return;
     }

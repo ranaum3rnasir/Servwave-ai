@@ -37,6 +37,22 @@ import { processTrackedCallEvent } from '../lib/call-tracking/process';
 
 const PHASES = new Set(['pre', 'post']);
 
+const MAX_LOGGED_KEYS = 60;
+const MAX_LOGGED_KEY_LENGTH = 40;
+
+/**
+ * The top-level key names of an unrecognised body, for the log. Bounded and
+ * stripped to a safe alphabet because the names are sender-chosen too (the
+ * unsigned provider has only its URL token as a gate).
+ */
+function describeKeys(body: unknown): string {
+  if (!body || typeof body !== 'object') return `(${body === null ? 'null' : typeof body})`;
+  if (Array.isArray(body)) return '(array)';
+  const names = Object.keys(body).map((k) => k.replace(/[^A-Za-z0-9_.-]/g, '?').slice(0, MAX_LOGGED_KEY_LENGTH));
+  const shown = names.slice(0, MAX_LOGGED_KEYS).join(',');
+  return names.length > MAX_LOGGED_KEYS ? `${shown},+${names.length - MAX_LOGGED_KEYS} more` : shown || '(none)';
+}
+
 export async function handleCallTrackingWebhook(req: Request, res: Response) {
   const provider = String(req.params.provider ?? '');
   if (!isCallTrackingProvider(provider)) {
@@ -87,7 +103,13 @@ export async function handleCallTrackingWebhook(req: Request, res: Response) {
   const phase = PHASES.has(phaseParam) ? (phaseParam as 'pre' | 'post') : undefined;
   const event = parseTrackedCallEvent(provider, body, phase);
   if (!event) {
-    logger.warn(`[call-tracking] unrecognised payload (provider=${provider}) — acked, ignored`);
+    // The key NAMES are the whole diagnosis when a vendor's shape differs from
+    // what the adapter reads (#3447: weeks of real calls were ignored behind a
+    // line that said only "unrecognised"). Names only, never a value: values
+    // are callers' names and numbers.
+    logger.warn(
+      `[call-tracking] unrecognised payload (provider=${provider}, keys=${describeKeys(body)}) — acked, ignored`,
+    );
     res.status(202).json({ received: true, ignored: 'unrecognised' });
     return;
   }

@@ -269,3 +269,201 @@ describe('the per-org field_map override', () => {
     }
   });
 });
+
+/**
+ * The site's forms carry their tracking values in numbered HIDDEN fields
+ * (`hidden_1`..`hidden_12`), whose names say nothing about what they hold.
+ * Only the per-org field_map can say "hidden_3 is the click id" (#3448).
+ */
+describe('hidden tracking fields, pointed at by the field_map (#3448)', () => {
+  const WITH_HIDDEN = {
+    ...SUBMISSION,
+    hidden_1: 'kitchen remodel',
+    hidden_2: 'Cj0TESTgclid',
+    hidden_3: '203.0.113.7',
+    hidden_4: '4521',
+    hidden_5: 'google',
+  };
+  const MAP = { hidden_1: 'keyword', hidden_2: 'gclid', hidden_3: 'ignore', hidden_4: 'submissionId', hidden_5: 'utm_source' };
+
+  it('lifts a mapped hidden field into the tracking values under its target name', () => {
+    const e = parseWebFormSubmission('forminator', WITH_HIDDEN, MAP)!;
+    expect(e.trackingParams).toMatchObject({ keyword: 'kitchen remodel', gclid: 'Cj0TESTgclid', utm_source: 'google' });
+  });
+
+  it('takes the vendor submission id from the mapped hidden field', () => {
+    expect(parseWebFormSubmission('forminator', WITH_HIDDEN, MAP)!.vendorSubmissionId).toBe('4521');
+  });
+
+  it('a field mapped to `ignore` is consumed silently: not a tracking value, not drift', () => {
+    const warn = vi.spyOn(logger, 'warn');
+    const e = parseWebFormSubmission('forminator', WITH_HIDDEN, MAP)!;
+    expect(JSON.stringify(e.trackingParams)).not.toContain('203.0.113.7');
+    expect(e.extras).not.toHaveProperty('hidden_3');
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('keys the field map does not know'));
+  });
+
+  it('an explicitly mapped value wins over a same-named raw key', () => {
+    const e = parseWebFormSubmission('forminator', { ...WITH_HIDDEN, gclid: 'raw-key-value' }, MAP)!;
+    expect(e.trackingParams.gclid).toBe('Cj0TESTgclid');
+  });
+
+  it('an empty mapped hidden field leaves the raw key\'s value in place', () => {
+    const e = parseWebFormSubmission('forminator', { ...WITH_HIDDEN, hidden_2: '', gclid: 'raw-key-value' }, MAP)!;
+    expect(e.trackingParams.gclid).toBe('raw-key-value');
+  });
+
+  it('without a map the hidden fields stay unknown: kept verbatim and named in the drift alarm', () => {
+    const warn = vi.spyOn(logger, 'warn');
+    const e = parseWebFormSubmission('forminator', WITH_HIDDEN)!;
+    expect(e.trackingParams).not.toHaveProperty('gclid');
+    expect(e.extras.hidden_2).toBe('Cj0TESTgclid');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('hidden_2'));
+  });
+
+  it('lifts a raw key literally named `keyword`, like the other tracking names', () => {
+    expect(parseWebFormSubmission('forminator', { ...SUBMISSION, keyword: 'showroom' })!.trackingParams.keyword).toBe(
+      'showroom',
+    );
+  });
+});
+
+describe('a form that names its phone field phone_2 (#3448)', () => {
+  it('reads phone_2 as the phone when there is no phone_1', () => {
+    const { phone_1: _drop, ...body } = SUBMISSION;
+    const e = parseWebFormSubmission('forminator', { ...body, phone_2: '(609) 555-0188' })!;
+    expect(e.phone).toBe('+16095550188');
+    expect(e.extras).not.toHaveProperty('phone_2');
+  });
+
+  it('phone_1 still wins when a form carries both', () => {
+    const e = parseWebFormSubmission('forminator', { ...SUBMISSION, phone_2: '(609) 555-0188' })!;
+    expect(e.phone).toBe('+16095550123');
+  });
+});
+
+describe('what live forms actually send (#3448)', () => {
+  it('treats an unfilled placeholder as empty, mapped or not', () => {
+    const e = parseWebFormSubmission(
+      'forminator',
+      { ...SUBMISSION, hidden_10: '__gclid__', hidden_7: '__keyword__', utm_source: '__utm_source__', utm_term: '{keyword}' },
+      { hidden_10: 'gclid', hidden_7: 'keyword' },
+    )!;
+    // Only the real value from the landing URL (`?utm_campaign=spring`) survives.
+    expect(e.trackingParams).toEqual({ utm_campaign: 'spring' });
+  });
+
+  it('fills the click id and keyword from the landing page\'s own query string', () => {
+    const e = parseWebFormSubmission(
+      'forminator',
+      {
+        ...SUBMISSION,
+        hidden_2: 'https://www.example.com/contact/?gclid=Cj0TESTgclid&keyword=custom+cabinets&utm_source=google&page=2',
+        hidden_10: '__gclid__',
+      },
+      { current_url: null, hidden_2: 'landingPageUrl', hidden_10: 'gclid' },
+    )!;
+    expect(e.landingPageUrl).toBe(
+      'https://www.example.com/contact/?gclid=Cj0TESTgclid&keyword=custom+cabinets&utm_source=google&page=2',
+    );
+    expect(e.trackingParams).toEqual({ gclid: 'Cj0TESTgclid', keyword: 'custom cabinets', utm_source: 'google' });
+  });
+
+  it('never lets the landing URL override a real mapped value, and survives a landing value that is not a URL', () => {
+    const e = parseWebFormSubmission(
+      'forminator',
+      { ...SUBMISSION, current_url: 'https://www.example.com/?gclid=from-url', hidden_10: 'from-field' },
+      { hidden_10: 'gclid' },
+    )!;
+    expect(e.trackingParams.gclid).toBe('from-field');
+    expect(parseWebFormSubmission('forminator', { ...SUBMISSION, current_url: 'not a url' })!.trackingParams).toEqual({});
+  });
+
+  it('does not count the plugin\'s own envelope keys as drift', () => {
+    const warn = vi.spyOn(logger, 'warn');
+    parseWebFormSubmission('forminator', { ...SUBMISSION, form_uid: '6abb60a3ed5e4', _wp_http_referer: '/contact/', _forminator_user_ip: '' });
+    expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+describe('the referring page, one click before the form (#3448)', () => {
+  const MAP = { hidden_2: 'referringUrl' };
+
+  it('fills the click id and keyword from a SAME-SITE referring page', () => {
+    const e = parseWebFormSubmission(
+      'forminator',
+      {
+        ...SUBMISSION,
+        // Live forms send the plugin's own referrer slot empty (all 35 stored submissions).
+        referer_url: '',
+        current_url: 'https://www.example.test/contact/',
+        hidden_2: 'https://example.test/showroom/?gclid=Cj0TESTgclid&keyword=custom+cabinets',
+      },
+      MAP,
+    )!;
+    expect(e.referringUrl).toBe('https://example.test/showroom/?gclid=Cj0TESTgclid&keyword=custom+cabinets');
+    expect(e.trackingParams).toEqual({ gclid: 'Cj0TESTgclid', keyword: 'custom cabinets' });
+  });
+
+  it('never takes tracking values from an OUTSIDE referrer: they describe someone else\'s campaign', () => {
+    const e = parseWebFormSubmission(
+      'forminator',
+      {
+        ...SUBMISSION,
+        // Live forms send the plugin's own referrer slot empty (all 35 stored submissions).
+        referer_url: '',
+        current_url: 'https://example.test/contact/',
+        hidden_2: 'https://partner.example/?utm_source=newsletter&gclid=theirs',
+      },
+      MAP,
+    )!;
+    expect(e.trackingParams).toEqual({});
+  });
+
+  it('the form\'s own page wins over the referring page', () => {
+    const e = parseWebFormSubmission(
+      'forminator',
+      {
+        ...SUBMISSION,
+        // Live forms send the plugin's own referrer slot empty (all 35 stored submissions).
+        referer_url: '',
+        current_url: 'https://example.test/contact/?utm_source=own-page',
+        hidden_2: 'https://example.test/showroom/?utm_source=previous-page',
+      },
+      MAP,
+    )!;
+    expect(e.trackingParams.utm_source).toBe('own-page');
+  });
+});
+
+describe('placeholders in mapped fields (#3448, review)', () => {
+  it('a placeholder submission id counts as no id at all', () => {
+    expect(
+      parseWebFormSubmission('forminator', { ...SUBMISSION, hidden_11: '__submission_id__' }, { hidden_11: 'submissionId' })!
+        .vendorSubmissionId,
+    ).toBeNull();
+  });
+
+  it('a second slug mapped to the same target still gets its turn when the first is a placeholder', () => {
+    const e = parseWebFormSubmission(
+      'forminator',
+      { ...SUBMISSION, current_url: 'https://example.test/c/', hidden_10: '__gclid__', hidden_13: 'Cj0SECOND' },
+      { hidden_10: 'gclid', hidden_13: 'gclid' },
+    )!;
+    expect(e.trackingParams.gclid).toBe('Cj0SECOND');
+  });
+});
+
+describe('the drift alarm is one bounded, printable line', () => {
+  it('strips line breaks from sender-chosen key names and the form title, and caps the key list', () => {
+    const warn = vi.spyOn(logger, 'warn');
+    const body: Record<string, unknown> = { ...SUBMISSION, form_title: 'Quote\n[web-form] forged line', 'evil\r\nkey': 'x' };
+    for (let i = 0; i < 100; i++) body[`extra_${i}`] = 'x';
+    parseWebFormSubmission('forminator', body);
+    const line = String(warn.mock.calls.find((c) => String(c[0]).includes('does not know'))?.[0]);
+    expect(line).not.toMatch(/[\r\n]/);
+    expect(line).toContain('evil??key');
+    expect(line).toMatch(/,\+\d+ more\)$/);
+  });
+});
+

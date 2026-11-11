@@ -417,6 +417,15 @@ describe('Lead.attribution (plan §3e)', () => {
     });
   });
 
+  it('takes the keyword from the form\'s own keyword field before utm_term (#3448)', async () => {
+    p.webFormIntegration.findFirst.mockResolvedValue(
+      integration({ field_map: { hidden_1: 'keyword', hidden_2: 'gclid' } }),
+    );
+    await post({ ...SUBMISSION, hidden_1: 'kitchen remodel', hidden_2: 'Cj0TESTgclid', utm_term: 'other term' });
+    await flush();
+    expect(createData(p.lead).attribution).toMatchObject({ keyword: 'kitchen remodel', gclid: 'Cj0TESTgclid' });
+  });
+
   it('omits what the submission did not carry rather than storing empty strings', async () => {
     // An empty bucket in a GROUP BY is worse than no bucket, and a row of nulls
     // makes "no campaign" indistinguishable from "never captured".
@@ -688,15 +697,10 @@ describe('two orgs sending the same submission key', () => {
     await flush();
 
     expect(p.webFormSubmission.create).toHaveBeenCalledTimes(2);
-    expect(createData(p.webFormSubmission, 0)).toMatchObject({
-      organization_id: ORG_ID,
-      submission_key: ENTRY_ID,
-    });
+    expect(createData(p.webFormSubmission, 0)).toMatchObject({ organization_id: ORG_ID });
     // The second claim SUCCEEDS: same key, different org, different row.
-    expect(createData(p.webFormSubmission, 1)).toMatchObject({
-      organization_id: ORG_B,
-      submission_key: ENTRY_ID,
-    });
+    expect(createData(p.webFormSubmission, 1)).toMatchObject({ organization_id: ORG_B });
+    expect(createData(p.webFormSubmission, 1).submission_key).toBe(createData(p.webFormSubmission, 0).submission_key);
 
     expect(p.customer.create).toHaveBeenCalledTimes(2);
     expect(p.lead.create).toHaveBeenCalledTimes(2);

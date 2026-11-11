@@ -25,6 +25,28 @@ import type { WebFormSubmissionEvent } from '../types';
  * This file is the only place vendor slugs live.
  */
 
+/**
+ * Ad-tracking targets a slug may be mapped onto (#3448). A site usually carries
+ * these in numbered HIDDEN fields (`hidden_3`) whose names say nothing, so
+ * recognising them by name (TRACKING_KEY below) only works when the site named
+ * them `gclid` / `utm_source`; for everything else the org's `field_map` says
+ * which hidden field holds which value. They land in `trackingParams` under the
+ * target's own name.
+ */
+export const TRACKING_TARGETS = [
+  'keyword',
+  'gclid',
+  'gbraid',
+  'wbraid',
+  'fbclid',
+  'msclkid',
+  'utm_source',
+  'utm_medium',
+  'utm_campaign',
+  'utm_term',
+  'utm_content',
+] as const;
+
 /** The normalised keys a slug may be mapped onto. A `field_map` value outside this set is ignored. */
 export const MAPPABLE_KEYS = [
   'firstName',
@@ -36,6 +58,15 @@ export const MAPPABLE_KEYS = [
   'selection',
   'landingPageUrl',
   'referringUrl',
+  /** The vendor's own entry id, from a hidden field (preferred over SUBMISSION_ID_KEYS). */
+  'submissionId',
+  /**
+   * Consume the slug and keep nothing: for a field we deliberately do not
+   * collect (a visitor IP address) but that would otherwise fire the drift alarm
+   * on every submission. The raw payload in the ledger still holds it.
+   */
+  'ignore',
+  ...TRACKING_TARGETS,
 ] as const;
 
 export type MappableKey = (typeof MAPPABLE_KEYS)[number];
@@ -57,6 +88,9 @@ export const DEFAULT_FIELD_MAP: Readonly<Record<string, MappableKey>> = {
   name_1: 'firstName',
   name_2: 'lastName',
   phone_1: 'phone',
+  // A form whose phone field is the plugin's SECOND phone (seen on a live
+  // contact form, #3448). After phone_1, so phone_1 wins when both exist.
+  phone_2: 'phone',
   email_1: 'email',
   textarea_1: 'message',
   text_1: 'messageFallback',
@@ -71,6 +105,11 @@ export const DEFAULT_FIELD_MAP: Readonly<Record<string, MappableKey>> = {
  * unknown-key alarm on every single submission and make it worthless.
  */
 const ENVELOPE_KEYS: ReadonlySet<string> = new Set([
+  // Seen on every live delivery (#3448): the plugin's per-render id, the CMS's
+  // own referer field and the plugin's (empty) IP slot.
+  'form_uid',
+  '_wp_http_referer',
+  '_forminator_user_ip',
   'form_title',
   'entry_time',
   'page_id',
@@ -82,7 +121,29 @@ const ENVELOPE_KEYS: ReadonlySet<string> = new Set([
 const SUBMISSION_ID_KEYS = ['entry_id', 'submission_id', 'entry'] as const;
 
 /** Ad-tracking values worth lifting out of `extras` into `trackingParams`. */
-const TRACKING_KEY = /^(utm_[a-z0-9_]+|gclid|gbraid|wbraid|fbclid|msclkid)$/i;
+const TRACKING_KEY = /^(utm_[a-z0-9_]+|gclid|gbraid|wbraid|fbclid|msclkid|keyword)$/i;
+
+/** Targets whose value is dropped when it is only an unfilled placeholder (see PLACEHOLDER). */
+const PLACEHOLDER_CHECKED: ReadonlySet<string> = new Set<string>([...TRACKING_TARGETS, 'submissionId']);
+
+/** Bounds for the drift alarm's line: the key names are sender-chosen. */
+const MAX_LOGGED_KEYS = 60;
+const MAX_LOGGED_KEY_LENGTH = 40;
+
+/** A sender-chosen string made safe for one log line: printable, no line breaks, bounded. */
+function loggable(v: string, max: number): string {
+  return v.replace(/[^\x20-\x7E]/g, '?').slice(0, max);
+}
+
+/**
+ * An UNFILLED placeholder: the site's script was meant to swap it for a real
+ * value and did not. Live forms sent `__gclid__` / `__keyword__` /
+ * `__utm_source__` in their hidden fields on every submission, including ones
+ * whose landing URL carried a real click id (#3448), and an ad URL template can
+ * arrive as `{keyword}`. Stored, these would become a campaign called
+ * "__utm_campaign__", so a tracking value that is only a placeholder is empty.
+ */
+const PLACEHOLDER = /^(?:__[a-z0-9_]+__|\{[a-z0-9_]+\}|\{\{[a-z0-9_ ]+\}\})$/i;
 
 type Raw = Record<string, unknown>;
 
@@ -141,6 +202,41 @@ function str(v: unknown, depth = 0): string | null {
     return parts.length ? parts.join(', ') : null;
   }
   return null;
+}
+
+/** A tracking value, or null when it is empty or only an unfilled placeholder. */
+function trackingValue(v: string | null | undefined): string | null {
+  if (!v) return null;
+  return PLACEHOLDER.test(v) ? null : v;
+}
+
+/** True when both are absolute URLs on the same host, ignoring a leading `www.`. */
+function sameSite(a: string | null, b: string | null): boolean {
+  if (!a || !b) return false;
+  try {
+    const host = (u: string) => new URL(u).hostname.toLowerCase().replace(/^www\./, '');
+    return host(a) === host(b);
+  } catch {
+    return false;
+  }
+}
+
+/** The recognised tracking parameters in a URL's query string; nothing for a value that is not a URL. */
+function trackingParamsOfUrl(url: string | null): Array<[string, string]> {
+  if (!url) return [];
+  let query: URLSearchParams;
+  try {
+    query = new URL(url).searchParams;
+  } catch {
+    return [];
+  }
+  const out: Array<[string, string]> = [];
+  for (const [key, raw] of query) {
+    if (!TRACKING_KEY.test(key)) continue;
+    const v = trackingValue(raw.trim());
+    if (v) out.push([key.toLowerCase(), v]);
+  }
+  return out;
 }
 
 /** The `extras` representation: never lose a value, even one `str()` cannot flatten. */
@@ -214,19 +310,32 @@ export function parseForminator(body: unknown, fieldMap?: unknown): WebFormSubmi
   // puts two slugs onto one key, the winner must be decided by the map an
   // operator can read rather than by whatever order the plugin serialised the
   // body in. The first slug in the map with a non-empty value wins.
+  //
+  // A tracking value or submission id that is only an unfilled placeholder
+  // counts as EMPTY here, so a second slug mapped to the same target still gets
+  // its turn instead of losing to `__gclid__`.
   const mapped: Partial<Record<MappableKey, string | null>> = {};
   for (const [slug, target] of Object.entries(map)) {
     if (mapped[target] != null) continue;
     if (!owns(body, slug)) continue;
-    mapped[target] = str(body[slug]);
+    const v = str(body[slug]);
+    mapped[target] = PLACEHOLDER_CHECKED.has(target) ? trackingValue(v) : v;
+  }
+
+  // Mapped tracking targets first: an operator's explicit "hidden_2 is the
+  // click id" outranks a same-named raw key, which only fills a gap below.
+  for (const target of TRACKING_TARGETS) {
+    const v = trackingValue(mapped[target]);
+    if (v) trackingParams[target] = v;
   }
 
   for (const [key, value] of Object.entries(body)) {
     if (owns(map, key)) continue;
     extras[key] = verbatim(value);
     if (TRACKING_KEY.test(key)) {
-      const v = str(value);
-      if (v) trackingParams[key.toLowerCase()] = v;
+      const v = trackingValue(str(value));
+      const name = key.toLowerCase();
+      if (v && !owns(trackingParams, name)) trackingParams[name] = v;
     }
     if (!ENVELOPE_KEYS.has(key) && !(SUBMISSION_ID_KEYS as readonly string[]).includes(key)) {
       unknownKeys.push(key);
@@ -236,15 +345,40 @@ export function parseForminator(body: unknown, fieldMap?: unknown): WebFormSubmi
   if (unknownKeys.length) {
     // The drift alarm. The first time the agency adds or reorders a field we
     // would otherwise discover it by its absence. Keys only, never values.
+    const shown = unknownKeys
+      .slice(0, MAX_LOGGED_KEYS)
+      .map((k) => loggable(k, MAX_LOGGED_KEY_LENGTH).replace(/,/g, '?'))
+      .join(',');
+    const more = unknownKeys.length > MAX_LOGGED_KEYS ? `,+${unknownKeys.length - MAX_LOGGED_KEYS} more` : '';
     logger.warn(
-      `[web-form] payload carried keys the field map does not know (provider=forminator, form=${
-        str(body.form_title) ?? 'unknown'
-      }, keys=${unknownKeys.join(',')})`,
+      `[web-form] payload carried keys the field map does not know (provider=forminator, form=${loggable(
+        str(body.form_title) ?? 'unknown',
+        FORM_TITLE_MAX,
+      )}, keys=${shown}${more})`,
     );
   }
 
+  // Last, the query strings of the pages themselves: an ad click lands with
+  // `?gclid=…&keyword=…`, and that URL is often the only place the values
+  // survive. On live forms the hidden tracking fields held placeholders while
+  // the page the visitor came from - the ad's landing page, one click before
+  // the form - held the real click id (#3448). So: the form's own page first,
+  // then the referring page, but ONLY when it is on the same site; an outside
+  // referrer's `utm_*` describe someone else's campaign. Fills gaps only, never
+  // overrides a field.
+  const landingPageUrl = mapped.landingPageUrl ?? null;
+  const referringUrl = mapped.referringUrl ?? null;
+  const pages = sameSite(landingPageUrl, referringUrl) ? [landingPageUrl, referringUrl] : [landingPageUrl];
+  for (const page of pages) {
+    for (const [name, value] of trackingParamsOfUrl(page)) {
+      if (!owns(trackingParams, name)) trackingParams[name] = value;
+    }
+  }
+
   const vendorSubmissionId =
-    SUBMISSION_ID_KEYS.map((k) => str(body[k])).find((v): v is string => v !== null) ?? null;
+    mapped.submissionId ??
+    SUBMISSION_ID_KEYS.map((k) => (owns(body, k) ? str(body[k]) : null)).find((v): v is string => v !== null) ??
+    null;
 
   const rawPhone = mapped.phone ?? null;
   const rawEmail = mapped.email ?? null;
@@ -262,8 +396,8 @@ export function parseForminator(body: unknown, fieldMap?: unknown): WebFormSubmi
     email: rawEmail ? normalizeEmail(rawEmail) : null,
     message: mapped.message ?? mapped.messageFallback ?? null,
     selection: mapped.selection ?? null,
-    landingPageUrl: mapped.landingPageUrl ?? null,
-    referringUrl: mapped.referringUrl ?? null,
+    landingPageUrl,
+    referringUrl,
     trackingParams,
     // Our own receive time. `entry_time` is site-local with no offset (see
     // types.ts) and stays in `extras` verbatim.

@@ -1,11 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { parseTrackedCallEvent, isCallTrackingProvider } from '../adapters';
 import { attributionOfEvent } from '../types';
+import { CALLRAIL_WEBHOOK_PRE, CALLRAIL_WEBHOOK_POST } from './fixtures/callrail-webhook';
 
 /**
- * CallRail's documented webhook example (Webhooks integration reference), trimmed
- * to the fields the adapter reads. `source_name` is the TRACKER's display name
- * and must never become the marketing source.
+ * The vendor's API description of a call record. NOT what its Webhooks
+ * integration sends (that is ./fixtures/callrail-webhook.ts); kept because the
+ * adapter still accepts these names as a fallback. `source_name` is the
+ * TRACKER's display name and must never become the marketing source.
  */
 const CALLRAIL_PRE = {
   id: 'CAL8154bbf4a4e14d2c9a0f5d5e8c3f2b1a',
@@ -118,6 +120,95 @@ describe('call-tracking adapters', () => {
       const before = Date.now();
       const e = parseTrackedCallEvent('callrail', { ...CALLRAIL_PRE, start_time: 'not a date' });
       expect(e!.startedAt.getTime()).toBeGreaterThanOrEqual(before);
+    });
+  });
+
+  describe('CallRail Webhooks integration: the shape production actually receives (#3447)', () => {
+    it('recognises a real-shaped pre-call and maps every marketing field', () => {
+      const e = parseTrackedCallEvent('callrail', CALLRAIL_WEBHOOK_PRE, 'pre');
+      expect(e).not.toBeNull();
+      expect(e!.phase).toBe('pre');
+      expect(e!.vendorCallId).toBe('CAL0000test0000pre0000000000000001');
+      expect(e!.callerNumber).toBe('+16095550123');
+      expect(e!.trackingNumber).toBe('+18565550100');
+      expect(e!.source).toBe('Google Ad Extension');
+      expect(e!.medium).toBe('cpc');
+      expect(e!.campaign).toBe('Ads Extension');
+      expect(e!.keywords).toBe('custom kitchen cabinets');
+      expect(e!.landingPageUrl).toBe('https://www.example.com/showroom/?keyword=custom+kitchen+cabinets');
+      expect(e!.referringUrl).toBe('https://www.google.com/');
+      expect(e!.gclid).toBe('Cj0TESTgclid');
+      expect(e!.firstCall).toBe(true);
+    });
+
+    it('reads `datetime` as UTC whatever the server zone is', () => {
+      const e = parseTrackedCallEvent('callrail', CALLRAIL_WEBHOOK_PRE, 'pre');
+      expect(e!.startedAt.toISOString()).toBe('2026-11-11T14:20:45.000Z');
+    });
+
+    it('a pre-call carries no duration and no recording, even though the wire sends "0" and ""', () => {
+      const e = parseTrackedCallEvent('callrail', CALLRAIL_WEBHOOK_PRE, 'pre');
+      expect(e!.durationSec).toBeNull();
+      expect(e!.recordingUrl).toBeNull();
+      expect(attributionOfEvent(e!)).not.toHaveProperty('vendor_duration_sec');
+    });
+
+    it('without a route hint, "0" duration and an empty recording still mean pre', () => {
+      expect(parseTrackedCallEvent('callrail', CALLRAIL_WEBHOOK_PRE)!.phase).toBe('pre');
+      expect(parseTrackedCallEvent('callrail', CALLRAIL_WEBHOOK_POST)!.phase).toBe('post');
+    });
+
+    it('a post-call carries the duration and the recording link', () => {
+      const e = parseTrackedCallEvent('callrail', CALLRAIL_WEBHOOK_POST, 'post');
+      expect(e!.vendorCallId).toBe('CAL0000test0000pre0000000000000001');
+      expect(e!.durationSec).toBe(230);
+      expect(e!.recordingUrl).toBe(CALLRAIL_WEBHOOK_POST.recording);
+    });
+
+    it('falls back to `callernum` when `customer_phone_number` is absent', () => {
+      const { customer_phone_number: _drop, ...body } = CALLRAIL_WEBHOOK_PRE;
+      expect(parseTrackedCallEvent('callrail', body, 'pre')!.callerNumber).toBe('+16095550123');
+    });
+
+    it('falls back to `utm_term` for the keyword and `referrermedium` for the medium', () => {
+      const e = parseTrackedCallEvent(
+        'callrail',
+        { ...CALLRAIL_WEBHOOK_PRE, keywords: '', utm_term: 'cabinet showroom', utm_medium: '' },
+        'pre',
+      );
+      expect(e!.keywords).toBe('cabinet showroom');
+      expect(e!.medium).toBe('cpc');
+    });
+
+    it('keeps an already-readable source as sent and only re-cases a snake_case one', () => {
+      expect(parseTrackedCallEvent('callrail', { ...CALLRAIL_WEBHOOK_PRE, callsource: 'direct' }, 'pre')!.source).toBe('Direct');
+      expect(
+        parseTrackedCallEvent('callrail', { ...CALLRAIL_WEBHOOK_PRE, callsource: 'Website Pool A' }, 'pre')!.source,
+      ).toBe('Website Pool A');
+      expect(parseTrackedCallEvent('callrail', { ...CALLRAIL_WEBHOOK_PRE, callsource: '' }, 'pre')!.source).toBeNull();
+    });
+
+    it('never carries the caller\'s name or location into the attribution block', () => {
+      const attr = attributionOfEvent(parseTrackedCallEvent('callrail', CALLRAIL_WEBHOOK_POST, 'post')!);
+      const flat = JSON.stringify(attr);
+      expect(flat).not.toContain('DOE');
+      expect(flat).not.toContain('Trenton');
+      expect(attr).toMatchObject({
+        source: 'Google Ad Extension',
+        medium: 'cpc',
+        campaign: 'Ads Extension',
+        keyword: 'custom kitchen cabinets',
+        gclid: 'Cj0TESTgclid',
+        tracking_number: '+18565550100',
+        vendor_duration_sec: 230,
+      });
+    });
+
+    it('still refuses a body with no call id or no caller', () => {
+      const { resource_id: _id, ...noId } = CALLRAIL_WEBHOOK_PRE;
+      expect(parseTrackedCallEvent('callrail', noId, 'pre')).toBeNull();
+      const { customer_phone_number: _a, callernum: _b, ...noCaller } = CALLRAIL_WEBHOOK_PRE;
+      expect(parseTrackedCallEvent('callrail', noCaller, 'pre')).toBeNull();
     });
   });
 

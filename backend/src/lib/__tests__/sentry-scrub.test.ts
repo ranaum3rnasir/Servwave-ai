@@ -71,6 +71,60 @@ describe('scrubSentryEvent', () => {
     expect(JSON.stringify(out)).not.toContain(token);
   });
 
+  it('masks the URL token of an inbound vendor webhook even when the URL has no query string (#3446)', () => {
+    const token = 'a1b2'.repeat(16);
+    const out = scrubSentryEvent({
+      request: { url: `https://api.test/api/webhooks/web-form/forminator/${token}` },
+      breadcrumbs: [{ category: 'http', data: { url: `/api/webhooks/call-tracking/callrail/${token}/post` } }],
+    });
+    expect(JSON.stringify(out)).not.toContain(token);
+    expect(JSON.stringify(out)).toContain('/api/webhooks/web-form/forminator/REDACTED');
+  });
+
+  it('drops a webhook request\'s whole query string, whose keys the vendor chooses (#3446)', () => {
+    const out = scrubSentryEvent({
+      request: {
+        url: 'https://api.test/api/webhooks/call-tracking/callrail/x1y2z3/pre?callername=DOE%2CJANE',
+        query_string: 'callername=DOE%2CJANE&callernum=%2B16095550123',
+      },
+    });
+    const flat = JSON.stringify(out);
+    expect(flat).not.toContain('DOE');
+    expect(flat).not.toContain('6095550123');
+  });
+
+  it('cleans a sampled trace of a webhook request: span attributes, span descriptions and the transaction name (#3446)', () => {
+    const token = 'b2c3'.repeat(16);
+    const url = `https://api.test/api/webhooks/call-tracking/callrail/${token}/pre?callername=DOE%2CJANE&callernum=%2B16095550123`;
+    const attrs = {
+      'url.full': url,
+      'http.url': url,
+      'http.target': `/api/webhooks/call-tracking/callrail/${token}/pre?callername=DOE%2CJANE`,
+      'url.path': `/api/webhooks/call-tracking/callrail/${token}/pre`,
+      'url.query': 'callername=DOE%2CJANE&callernum=%2B16095550123',
+      'http.method': 'POST',
+    };
+    const out = scrubSentryEvent({
+      type: 'transaction',
+      transaction: `POST /api/webhooks/call-tracking/callrail/${token}/pre`,
+      contexts: { trace: { data: attrs }, otel: { attributes: attrs } },
+      spans: [{ description: `POST /api/webhooks/call-tracking/callrail/${token}/pre`, data: attrs }],
+    });
+    const flat = JSON.stringify(out);
+    for (const leaked of [token, 'DOE', '6095550123']) expect(flat).not.toContain(leaked);
+    expect(flat).toContain('POST /api/webhooks/call-tracking/callrail/REDACTED/pre');
+    expect((out as any).contexts.trace.data['http.method']).toBe('POST');
+  });
+
+  it('leaves the trace of an ordinary request as it was', () => {
+    const event = {
+      type: 'transaction',
+      transaction: 'GET /api/leads',
+      contexts: { trace: { data: { 'url.full': 'https://api.test/api/leads?page=2', 'url.query': 'page=2' } } },
+    };
+    expect(scrubSentryEvent(event)).toBe(event);
+  });
+
   it('masks one-time codes and tokens in a request query string sent as [key, value] pairs', () => {
     const otp = secret();
     const token = secret();
@@ -98,6 +152,34 @@ describe('scrubSentryEvent', () => {
     expect(out).not.toContain(otp);
     expect(out).not.toContain(link);
     expect(out).toContain('"verification_type":"recovery"');
+  });
+
+  it("masks a vendor's signing key held in a frame local, under any spelling of `…key` (#3446)", () => {
+    const out = scrubSentryEvent({
+      exception: {
+        values: [
+          {
+            stacktrace: {
+              frames: [
+                {
+                  filename: '/app/src/controllers/call-tracking-webhook.controller.ts',
+                  vars: {
+                    integration: { id: 'i1', organization_id: 'o1', signing_key: 'sk-test-1' },
+                    signingKey: 'sk-test-2',
+                    PRIVATE_KEY: 'sk-test-3',
+                    sortOrder: 'newest',
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    });
+    const flat = JSON.stringify(out);
+    for (const leaked of ['sk-test-1', 'sk-test-2', 'sk-test-3']) expect(flat).not.toContain(leaked);
+    expect(flat).toContain('"sortOrder":"newest"');
+    expect(flat).toContain('"organization_id":"o1"');
   });
 
   it('masks a token inside a URL-valued string in a vendor frame, at any depth', () => {

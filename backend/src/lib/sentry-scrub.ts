@@ -1,4 +1,4 @@
-import { isSensitiveKey, redactUrl } from './log-redact';
+import { isSensitiveKey, isWebhookUrl, redactUrl } from './log-redact';
 
 /**
  * Strip credentials from an error report before the SDK sends it (instrument.ts beforeSend,
@@ -8,7 +8,7 @@ import { isSensitiveKey, redactUrl } from './log-redact';
  * a throw in the password reset path would ship the reset token and the new password (password
  * reset spec §5.2: the token is never logged). It removes:
  *  - every value under a sensitive key (token, password, secret, code, any `*_otp`, action_link,
- *    ...) in frame locals and in the request body, at any depth;
+ *    any `*_key` or `…Key`, ...) in frame locals and in the request body, at any depth;
  *  - every local of a frame in the password code itself, whatever the variable is called;
  *  - the value of every sensitive query parameter in a URL-valued string in any frame's locals, so
  *    a link held by a vendor SDK frame (a recovery `action_link`, a `?token=` URL) is masked too;
@@ -28,7 +28,15 @@ const PASSWORD_ROUTE = /\/password\b|\/auth\//;
  * (`email_otp`, `otp_code`) and the provider's ready-made sign-in link (`action_link`).
  */
 const REPORT_ONLY_KEY = /(^|_)otp($|_)|^action_link$/i;
-const isSecretKey = (key: string) => isSensitiveKey(key) || REPORT_ONLY_KEY.test(key);
+/**
+ * A field named as a key, `signing_key`, `PRIVATE_KEY` or `signingKey`: a vendor's signing key held in a
+ * frame local (a webhook integration row, #3446). A bare `key` is sensitive already. The camel form needs
+ * the capital K, so a word that merely ends in "key" is not taken for one.
+ */
+const NAMED_KEY = /_key$/i;
+const CAMEL_KEY = /[a-z\d]Key$/;
+const isSecretKey = (key: string) =>
+  isSensitiveKey(key) || REPORT_ONLY_KEY.test(key) || NAMED_KEY.test(key) || CAMEL_KEY.test(key);
 /** A whole string that is a URL (absolute, or a path) with a query string. */
 const URL_WITH_QUERY = /^(?:[a-z][a-z\d+.-]*:\/\/|\/)[^\s?]*\?\S*$/i;
 
@@ -76,7 +84,8 @@ function scrubUrlField(v: unknown): unknown {
   }
   if (isBag(v)) return redactDeep(v);
   if (typeof v !== 'string') return v;
-  if (v.includes('?')) return redactUrl(v);
+  // A webhook URL carries its credential in the PATH, so it is reduced even with no query string.
+  if (v.includes('?') || isWebhookUrl(v)) return redactUrl(v);
   // A bare query string ("token=...&x=1").
   if (/^[^\s/?]*=/.test(v)) {
     const redacted = redactUrl(`?${v}`).slice(1);
@@ -113,7 +122,12 @@ function scrubRequest(request: unknown): unknown {
   const url = typeof request.url === 'string' ? request.url : '';
   let out = request;
   if ('url' in request) out = withField(out, 'url', scrubUrlField(request.url));
-  if ('query_string' in request) out = withField(out, 'query_string', scrubUrlField(request.query_string));
+  if ('query_string' in request) {
+    // On an inbound webhook the vendor chooses the query keys (a caller's name and number among
+    // them), so no key list can clean it: drop it whole, as the request logger does (#3446).
+    const query = isWebhookUrl(url) && request.query_string ? FILTERED : scrubUrlField(request.query_string);
+    out = withField(out, 'query_string', query);
+  }
   if ('data' in request) out = withField(out, 'data', scrubBody(request.data, url));
   if ('cookies' in request) out = withField(out, 'cookies', redactDeep(request.cookies));
   return out;
@@ -131,12 +145,62 @@ function scrubBreadcrumb(crumb: unknown): unknown {
   return out;
 }
 
+/** An OpenTelemetry-style attribute that holds a bare query string (`url.query`, `http.query`). */
+const QUERY_ATTRIBUTE = /(^|\.)query$/i;
+/** "POST /api/webhooks/…": a span description or transaction name that is a method plus a URL. */
+const METHOD_AND_URL = /^([A-Z]+ )(\S+)$/;
+
+/** A string that may be a URL, a bare query string, or "METHOD url": masked like any URL field. */
+function scrubLabel(v: unknown): unknown {
+  if (typeof v !== 'string') return v;
+  const m = METHOD_AND_URL.exec(v);
+  if (!m) return scrubUrlField(v);
+  const url = scrubUrlField(m[2]);
+  return url === m[2] ? v : `${m[1]}${url}`;
+}
+
+/**
+ * The attributes a sampled TRACE carries (`contexts.trace.data`, `contexts.otel`,
+ * each `spans[].data`). The server span records the incoming request's URL
+ * there under `url.full`, `http.url`, `http.target`, `url.path` and `url.query`
+ * - outside `request`, so the request scrub never saw them (#3446, found in
+ * review). Every string is masked like a URL field, and when the bag describes
+ * an inbound webhook its query attributes are dropped whole: their keys are the
+ * vendor's (a caller's name and number among them).
+ */
+function scrubAttributes(bag: unknown, depth = 0): unknown {
+  if (!isBag(bag) || depth > 4) return bag;
+  const webhook = Object.values(bag).some((v) => typeof v === 'string' && isWebhookUrl(v));
+  let out: Bag | null = null;
+  for (const [key, v] of Object.entries(bag)) {
+    let next: unknown = v;
+    if (typeof v === 'string') next = webhook && QUERY_ATTRIBUTE.test(key) && v ? FILTERED : scrubLabel(v);
+    else if (isBag(v)) next = scrubAttributes(v, depth + 1);
+    if (next !== v) (out ??= { ...bag })[key] = next;
+  }
+  return out ?? bag;
+}
+
+function scrubSpans(spans: unknown[]): unknown[] {
+  const mapped = spans.map((span) => {
+    if (!isBag(span)) return span;
+    let out = span;
+    if ('data' in span) out = withField(out, 'data', scrubAttributes(span.data));
+    if ('description' in span) out = withField(out, 'description', scrubLabel(span.description));
+    return out;
+  });
+  return mapped.some((s, i) => s !== spans[i]) ? mapped : spans;
+}
+
 export function scrubSentryEvent<T>(event: T): T {
   try {
     if (!isBag(event)) return event;
     let out: Bag = event;
     if ('exception' in out) out = withField(out, 'exception', scrubException(out.exception));
     if ('request' in out) out = withField(out, 'request', scrubRequest(out.request));
+    if ('contexts' in out) out = withField(out, 'contexts', scrubAttributes(out.contexts));
+    if (Array.isArray(out.spans)) out = withField(out, 'spans', scrubSpans(out.spans));
+    if ('transaction' in out) out = withField(out, 'transaction', scrubLabel(out.transaction));
     if (Array.isArray(out.breadcrumbs)) {
       const before = out.breadcrumbs as unknown[];
       const crumbs = before.map(scrubBreadcrumb);

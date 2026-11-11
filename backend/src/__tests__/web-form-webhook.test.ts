@@ -369,10 +369,37 @@ describe('web-form webhook processing (after the ack)', () => {
     expect(keys[2]).not.toBe(keys[0]);
   });
 
-  it('uses the vendor entry id as the key when the payload carries one', async () => {
+  it('folds the vendor entry id into the derived key, never uses it as the key on its own (#3448)', async () => {
     await post({ body: JSON.stringify({ ...SUBMISSION, entry_id: '4471023' }) });
+    await post({ body: JSON.stringify({ ...SUBMISSION, entry_id: '4471023' }) });
+    await post({ body: JSON.stringify({ ...SUBMISSION, entry_id: '4471024' }) });
+    await post({ body: JSON.stringify(SUBMISSION) });
     await flush();
-    expect(p.webFormSubmission.create.mock.calls[0][0].data.submission_key).toBe('4471023');
+    const keys = p.webFormSubmission.create.mock.calls.map((c: any) => c[0].data.submission_key);
+    expect(keys[0]).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(keys[0]).not.toContain('4471023');
+    // The same delivery twice is one submission; a different id is another.
+    expect(keys[1]).toBe(keys[0]);
+    expect(keys[2]).not.toBe(keys[0]);
+    expect(keys[3]).not.toBe(keys[0]);
+  });
+
+  it('two forms sending the same per-form counter are two submissions (#3448)', async () => {
+    await post({ body: JSON.stringify({ ...SUBMISSION, form_title: 'Contact Us', entry_id: '17' }) });
+    await post({ body: JSON.stringify({ ...SUBMISSION, form_title: 'Request A Quote', entry_id: '17' }) });
+    await flush();
+    const keys = p.webFormSubmission.create.mock.calls.map((c: any) => c[0].data.submission_key);
+    expect(keys[0]).not.toBe(keys[1]);
+  });
+
+  it('a visitor who posts the next counter value first cannot claim the real submission\'s key (#3448)', async () => {
+    // Anyone can submit the public form with any hidden value. Were the id the
+    // key, posting "18" ahead of time would make the real 18th lead a duplicate.
+    await post({ body: JSON.stringify({ ...SUBMISSION, entry_id: '18', phone_1: '(609) 555-0177', email_1: 'x@example.test' }) });
+    await post({ body: JSON.stringify({ ...SUBMISSION, entry_id: '18' }) });
+    await flush();
+    const keys = p.webFormSubmission.create.mock.calls.map((c: any) => c[0].data.submission_key);
+    expect(keys[0]).not.toBe(keys[1]);
   });
 
   it('a processing failure is logged and never changes the response already sent', async () => {

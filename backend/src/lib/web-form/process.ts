@@ -31,37 +31,42 @@ const FALLBACK_SERVICE_REQUEST = 'Website form submission';
 /**
  * The idempotency key for one submission, WITHIN ONE ORG (plan §3f).
  *
- * The payload carries NO entry id by default, so there is usually nothing
- * exact to key on. When the agency adds the hidden Submission ID field the
- * vendor's own id is used verbatim; until then the key is a hash of
- * (form title, contact handle, receive time truncated to the minute).
+ * Always a hash of (form title, contact handle, receive time truncated to the
+ * minute), with the vendor's own submission id folded in when the payload
+ * carries one. The id is NEVER the key on its own (#3448), for three reasons
+ * found on production data and in review:
+ *  - the id live forms send is a per-FORM counter, so two forms on one site both
+ *    send 13, 14, 17... and a bare id would drop the second form's lead as a
+ *    duplicate;
+ *  - a counter can repeat (entries deleted, a placeholder never filled), and a
+ *    key with no time window would then drop every later lead for good;
+ *  - the id comes from the visitor's browser, so a bare id lets anyone post the
+ *    NEXT numbers first and silently swallow the real leads that follow.
+ * The handle and the minute make the key unguessable in advance; the id then
+ * only separates two genuine submissions by one person inside one minute.
  *
- * NEITHER BRANCH IS GLOBALLY UNIQUE, and neither is meant to be. The vendor's
- * entry id is the form plugin's PER-SITE sequential counter - every site's
- * second submission is `2` - and the derived hash carries nothing org-specific
- * either, so two orgs whose forms share a default title, hit by the same person
- * in the same minute, produce the same digest. The org is supplied by the
- * ledger's unique key (organization_id, provider, submission_key), not by this
- * function; do not add it here, and do not drop it from there.
+ * NOT GLOBALLY UNIQUE, and not meant to be: two orgs whose forms share a
+ * default title, hit by the same person in the same minute, produce the same
+ * digest. The org is supplied by the ledger's unique key (organization_id,
+ * provider, submission_key), not by this function; do not add it here, and do
+ * not drop it from there.
  *
  * That derivation is DELIBERATELY IMPERFECT and must not be hardened further:
  *  - the vendor never retries, so there is no re-delivery to collapse;
- *  - the realistic duplicate is a human pressing submit twice, and under plan
- *    §3d.4 a second submission is a legitimate second lead anyway;
+ *  - the realistic duplicate is a human pressing submit twice (or the plugin
+ *    firing twice), and under plan §3d.4 a second submission is a legitimate
+ *    second lead anyway;
  *  - so the only thing this key has to catch is the same submission arriving
  *    twice inside one minute, which is a double-click and nothing else.
  * Widening the window would start silently swallowing real leads.
  */
 export function submissionKey(e: WebFormSubmissionEvent, receivedAt: Date): string {
-  if (e.vendorSubmissionId) return e.vendorSubmissionId;
   const handle = e.phone ?? e.email ?? '';
   const minute = Math.floor(receivedAt.getTime() / 60_000);
-  const digest = crypto
-    .createHash('sha256')
-    .update(`${e.formTitle ?? ''}|${handle}|${minute}`)
-    .digest('hex');
-  // Prefixed so a derived key is recognisable as such in the table, and can
-  // never collide with a vendor id once the hidden field lands.
+  const parts = [e.formTitle ?? '', handle, String(minute)];
+  if (e.vendorSubmissionId) parts.push(e.vendorSubmissionId);
+  const digest = crypto.createHash('sha256').update(parts.join('|')).digest('hex');
+  // Prefixed so a derived key is recognisable as such in the table.
   return `sha256:${digest}`;
 }
 
@@ -255,7 +260,8 @@ function attributionOfSubmission(e: WebFormSubmissionEvent): Prisma.InputJsonObj
   put('source', t.utm_source);
   put('medium', t.utm_medium);
   put('campaign', t.utm_campaign);
-  put('keyword', t.utm_term);
+  // The site's own keyword field first (it already falls back to utm_term on the site), then utm_term (#3448).
+  put('keyword', t.keyword ?? t.utm_term);
   put('referrer', e.referringUrl);
   put('landing_page', e.landingPageUrl);
   put('gclid', t.gclid);
