@@ -29,7 +29,10 @@ export interface WebFormSubmissionEvent {
   email: string | null;
   /** `textarea_1`, falling back to `text_1`. */
   message: string | null;
-  /** `select_1`. Positional, which is why `field_map` exists. */
+  /**
+   * `select_1`. Positional, which is why `field_map` exists. Becomes the lead's Job Type when it names one of
+   * the org's active Job Types (case, spaces and hyphens ignored); otherwise it rides in the service request as sent.
+   */
   selection: string | null;
   /** `current_url` - the page the form was submitted from. */
   landingPageUrl: string | null;

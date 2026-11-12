@@ -91,6 +91,9 @@ beforeEach(() => {
   p.customer.create.mockResolvedValue({ id: CUSTOMER_ID });
   p.customer.updateMany.mockResolvedValue({ count: 1 });
   p.lead.create.mockResolvedValue({ id: 'lead-1' });
+  // No Job Types by default: neither rows nor the org's own list (clearAllMocks keeps a test's stub otherwise).
+  p.jobType.findMany.mockResolvedValue([]);
+  p.organization.findUnique.mockResolvedValue(null);
 });
 
 describe('a submission from an unknown contact', () => {
@@ -118,7 +121,8 @@ describe('a submission from an unknown contact', () => {
     expect(createData(p.lead)).toMatchObject({
       organization_id: ORG_ID,
       customer_id: CUSTOMER_ID,
-      service_request: 'Looking for a quote on a new front door.',
+      // 'Replacement' names no Job Type of this org, so it rides along in the request.
+      service_request: 'Looking for a quote on a new front door.\n\nSelected option: Replacement',
       created_by_source: 'CLIENT',
     });
   });
@@ -280,13 +284,13 @@ describe('a submission matching an existing customer', () => {
     expect(p.lead.create).toHaveBeenCalledTimes(2);
     expect(createData(p.lead, 0)).toMatchObject({ customer_id: EXISTING_ID });
     expect(createData(p.lead, 1)).toMatchObject({ customer_id: EXISTING_ID });
-    expect(createData(p.lead, 1).service_request).toBe('Following up on my quote request.');
+    expect(createData(p.lead, 1).service_request).toBe('Following up on my quote request.\n\nSelected option: Replacement');
   });
 });
 
 describe('what the office reads on the lead', () => {
   it('uses the message as the service request', async () => {
-    await post(SUBMISSION);
+    await post({ ...SUBMISSION, select_1: '' });
     await flush();
     expect(createData(p.lead).service_request).toBe('Looking for a quote on a new front door.');
   });
@@ -335,6 +339,161 @@ describe('what the office reads on the lead', () => {
     // No creator, so the creator rule has nobody to pre-fill: no Dispatcher either.
     expect(data).not.toHaveProperty('dispatcher_id');
     expect(data).not.toHaveProperty('visits');
+  });
+});
+
+describe('the dropdown: Job Type when it names one of the org\'s, else the service request', () => {
+  /** The org's Job Types as rows, the way the Lists page stores them. */
+  const jobTypes = (...names: Array<string | [string, Date]>) =>
+    p.jobType.findMany.mockResolvedValue(
+      names.map((n) => (Array.isArray(n) ? { name: n[0], archived_at: n[1] } : { name: n, archived_at: null })),
+    );
+
+  it('puts a selection that names a Job Type into Job Type, spelled as the list spells it, and not into the request', async () => {
+    jobTypes('Kitchen Design', 'Custom Design', 'Bath Design');
+    await post({ ...SUBMISSION, select_1: 'Bath-Design' });
+    await flush();
+
+    const lead = createData(p.lead);
+    expect(lead.job_type).toBe('Bath Design');
+    expect(lead.service_request).toBe('Looking for a quote on a new front door.');
+  });
+
+  it.each([
+    'Bath-Design',
+    'bath design',
+    'BATHDESIGN',
+    '  Bath - Design ',
+    'bath--design',
+    'Bath‑Design', // non-breaking hyphen, as a form builder can paste it
+    'Bath‐Design', // typographic hyphen
+    'Bath­Design', // soft hyphen, invisible
+    'Bath​Design', // zero-width space, invisible
+  ])(
+    'ignores case, spaces and hyphens: %j is "Bath Design"',
+    async (value) => {
+      jobTypes('Bath Design');
+      await post({ ...SUBMISSION, select_1: value });
+      await flush();
+      expect(createData(p.lead).job_type).toBe('Bath Design');
+    },
+  );
+
+  it.each(['Bath Designs', 'Bath_Design', 'Bath.Design', 'Bath'])('ignores nothing else: %j is no Job Type', async (value) => {
+    jobTypes('Bath Design');
+    await post({ ...SUBMISSION, select_1: value });
+    await flush();
+    const lead = createData(p.lead);
+    expect(lead.job_type ?? null).toBeNull();
+    expect(lead.service_request).toBe(`Looking for a quote on a new front door.\n\nSelected option: ${value}`);
+  });
+
+  it('adds a selection that names no Job Type to the request exactly as it arrived, with no translation', async () => {
+    // A live form sends its option VALUES, which can be placeholders like `one`. ServWave keeps the value as sent
+    // and never guesses what it meant: no per-form translation list exists anywhere.
+    jobTypes('Kitchen Design', 'Custom Design', 'Bath Design');
+    await post({ ...SUBMISSION, select_1: 'one' });
+    await flush();
+
+    const lead = createData(p.lead);
+    expect(lead.job_type ?? null).toBeNull();
+    expect(lead.service_request).toBe('Looking for a quote on a new front door.\n\nSelected option: one');
+  });
+
+  it('makes an unmatched selection the whole request when there is no message, as before', async () => {
+    jobTypes('Kitchen Design');
+    await post({ ...SUBMISSION, textarea_1: '', text_1: '', select_1: 'two' });
+    await flush();
+    expect(createData(p.lead).service_request).toBe('two');
+  });
+
+  it('keeps the request at the neutral string when the selection went to Job Type and there is no message', async () => {
+    // service_request is NOT-NULL; the selection already has its home in Job Type, so it is not repeated here.
+    jobTypes('Bath Design');
+    await post({ ...SUBMISSION, textarea_1: '', text_1: '', select_1: 'Bath-Design' });
+    await flush();
+
+    const lead = createData(p.lead);
+    expect(lead.job_type).toBe('Bath Design');
+    expect(lead.service_request).toBe('Website form submission');
+  });
+
+  it('never matches an archived Job Type', async () => {
+    jobTypes(['Bath Design', new Date('2026-10-01T00:00:00Z')]);
+    await post({ ...SUBMISSION, select_1: 'Bath-Design' });
+    await flush();
+
+    const lead = createData(p.lead);
+    expect(lead.job_type ?? null).toBeNull();
+    expect(lead.service_request).toBe('Looking for a quote on a new front door.\n\nSelected option: Bath-Design');
+  });
+
+  it('takes the first match in list order when two Job Types differ only by case, spaces or hyphens', async () => {
+    jobTypes('Bath-Design', 'Bath Design');
+    await post({ ...SUBMISSION, select_1: 'bath design' });
+    await flush();
+    expect(createData(p.lead).job_type).toBe('Bath-Design');
+    expect(p.jobType.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ orderBy: [{ sort_order: 'asc' }, { name: 'asc' }] }),
+    );
+  });
+
+  it('reads only the receiving org\'s Job Types', async () => {
+    jobTypes('Bath Design');
+    await post({ ...SUBMISSION, select_1: 'Bath-Design' });
+    await flush();
+    expect(p.jobType.findMany).toHaveBeenCalledTimes(1);
+    expect(p.jobType.findMany.mock.calls[0][0].where).toEqual({ organization_id: ORG_ID });
+  });
+
+  it('falls back to the org\'s own list when its Job Types were never moved into rows', async () => {
+    // org-list-rows.ts DEPLOY OVERLAP: an org with no rows at all still keeps its list in the JSON column.
+    // A non-text entry FIRST, so the list is read past it: the JSON column is not typed.
+    p.organization.findUnique.mockResolvedValue({ job_type_options: [42, null, 'Kitchen Design', 'Bath Design'] });
+    await post({ ...SUBMISSION, select_1: 'bath-design' });
+    await flush();
+
+    expect(p.organization.findUnique.mock.calls[0][0].where).toEqual({ id: ORG_ID });
+    expect(createData(p.lead).job_type).toBe('Bath Design');
+  });
+
+  it('cleans a name from the org\'s own list the way the copy into rows does, so the lead and the later row agree', async () => {
+    p.organization.findUnique.mockResolvedValue({ job_type_options: ['  Bath   Design '] });
+    await post({ ...SUBMISSION, select_1: 'Bath-Design' });
+    await flush();
+    expect(createData(p.lead).job_type).toBe('Bath Design');
+  });
+
+  it('never lets a huge dropdown value push the visitor\'s message out of the request', async () => {
+    jobTypes('Bath Design');
+    await post({ ...SUBMISSION, select_1: 'x'.repeat(25_000) });
+    await flush();
+
+    const lead = createData(p.lead);
+    // 100: the ceiling job_type has in lead.controller, the field a dropdown value is meant for.
+    expect(lead.service_request).toBe(`Looking for a quote on a new front door.\n\nSelected option: ${'x'.repeat(100)}`);
+  });
+
+  it('does not fall back to the org\'s list when it has rows, even if all are archived', async () => {
+    jobTypes(['Bath Design', new Date('2026-10-01T00:00:00Z')]);
+    p.organization.findUnique.mockResolvedValue({ job_type_options: ['Bath Design'] });
+    await post({ ...SUBMISSION, select_1: 'Bath-Design' });
+    await flush();
+    expect(createData(p.lead).job_type ?? null).toBeNull();
+  });
+
+  it('reads no Job Types at all when the form sent no selection', async () => {
+    await post({ ...SUBMISSION, select_1: '' });
+    await flush();
+    expect(p.jobType.findMany).not.toHaveBeenCalled();
+    expect(createData(p.lead).job_type ?? null).toBeNull();
+  });
+
+  it('matches nothing for a selection that is only spaces and hyphens', async () => {
+    jobTypes('Bath Design', ' - ');
+    await post({ ...SUBMISSION, select_1: '- -' });
+    await flush();
+    expect(createData(p.lead).job_type ?? null).toBeNull();
   });
 });
 
@@ -511,6 +670,8 @@ describe('what a public form is allowed to make long', () => {
     const lead = createData(p.lead);
     // 20,000: LONG_TEXT_MAX, the same cap service_request has in lead.controller.
     expect(lead.service_request).toHaveLength(20_000);
+    // The message is what gets cut, never the selection riding after it.
+    expect(lead.service_request.endsWith('\n\nSelected option: Replacement')).toBe(true);
     // 2000: the practical maximum length of a URL; attribution values are URLs and UTM values.
     expect(lead.attribution.landing_page).toHaveLength(2000);
   });

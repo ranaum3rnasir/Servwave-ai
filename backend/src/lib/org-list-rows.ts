@@ -21,7 +21,16 @@ import { Prisma } from '@prisma/client';
 import { prisma } from './prisma';
 import { logger } from './logger';
 import { logAudit } from './audit';
-import { ListTable, LIST_TABLES, JSON_COLUMN, MAX_LIST_ROWS, LIST_FULL_MSG, listRowsFromOrgJsonSql } from './org-list-sql';
+import {
+  ListTable,
+  LIST_TABLES,
+  JSON_COLUMN,
+  MAX_LIST_ROWS,
+  LIST_FULL_MSG,
+  LIST_NAME_MAX,
+  listRowsFromOrgJsonSql,
+  normaliseListName,
+} from './org-list-sql';
 
 // The pure half (constants, name rule, JSON -> rows SQL) lives in org-list-sql.ts so the onboarding SQL can import it
 // without the Prisma client; callers get everything from here.
@@ -132,16 +141,42 @@ export async function activeListsForOrg(orgId: string): Promise<{ job_type_optio
   const out: { job_type_options?: string[]; source_options?: string[] } = {};
   await Promise.all(
     LIST_TABLES.map(async (table) => {
-      const rows = await KIND_BY_TABLE[table].delegate(prisma as unknown as Prisma.TransactionClient).findMany({
-        where: { organization_id: orgId },
-        orderBy: [{ sort_order: 'asc' }, { name: 'asc' }],
-        select: { id: true, name: true, sort_order: true, archived_at: true },
-      });
-      if (rows.length === 0) return;
-      out[JSON_COLUMN[table]] = rows.filter((r) => r.archived_at === null).map((r) => r.name);
+      const names = await activeRowNames(prisma as unknown as Prisma.TransactionClient, orgId, table);
+      if (names) out[JSON_COLUMN[table]] = names;
     }),
   );
   return out;
+}
+
+/**
+ * One list's ACTIVE names as the org's forms offer them, on the caller's client (a transaction works): the rows in
+ * `sort_order`, or, for an org with no rows at all, its JSON column cleaned by the same rule the copy into rows uses.
+ * An org with rows never falls back, even when every row is archived. Read-only, never writes.
+ */
+export async function activeListNames(db: Prisma.TransactionClient, orgId: string, table: ListTable): Promise<string[]> {
+  const names = await activeRowNames(db, orgId, table);
+  if (names) return names;
+  const org = await db.organization.findUnique({
+    where: { id: orgId },
+    select: { job_type_options: true, source_options: true },
+  });
+  const raw = org?.[JSON_COLUMN[table]];
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((v): v is string => typeof v === 'string')
+    .map((v) => normaliseListName(v).slice(0, LIST_NAME_MAX).trim())
+    .filter((v) => v.length > 0);
+}
+
+/** The ACTIVE names of one list in `sort_order`, or null when the org has no rows at all (DEPLOY OVERLAP, above). */
+async function activeRowNames(db: Prisma.TransactionClient, orgId: string, table: ListTable): Promise<string[] | null> {
+  const rows = await KIND_BY_TABLE[table].delegate(db).findMany({
+    where: { organization_id: orgId },
+    orderBy: [{ sort_order: 'asc' }, { name: 'asc' }],
+    select: { id: true, name: true, sort_order: true, archived_at: true },
+  });
+  if (rows.length === 0) return null;
+  return rows.filter((r) => r.archived_at === null).map((r) => r.name);
 }
 
 // --- Handlers --------------------------------------------------------------------------------------------------------

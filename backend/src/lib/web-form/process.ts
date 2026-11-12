@@ -11,6 +11,7 @@ import { CREATED_BY_CLIENT } from '../created-by';
 import { alertLead } from '../../services/notifications/leadEstimateAlerts';
 import type { WebFormSubmissionEvent } from './types';
 import { LONG_TEXT_MAX } from '../text-limits';
+import { activeListNames } from '../org-list-rows';
 
 /**
  * The claim-insert works against either client; the Customer + Lead work owns a
@@ -163,17 +164,22 @@ async function openLead(
             await recordFirstTouchSource(tx, orgId, customerId, resolveSource(e, defaultLeadSource));
           }
 
+          // The org's ACTIVE Job Types in list order, the same list its lead
+          // form offers; an org whose list never moved into rows uses its JSON
+          // column (org-list-rows.ts, DEPLOY OVERLAP).
+          const selection = capped(e.selection, SELECTION_MAX);
+          const jobType = selection ? matchJobType(selection, await activeListNames(tx, orgId, 'job_types')) : null;
+
           const leadNumber = await allocateNumber(tx, 'lead', orgId);
           const lead = await tx.lead.create({
             data: {
               lead_number: leadNumber,
               organization_id: orgId,
               customer_id: customerId,
-              // NOT-NULL, and a form can carry neither field.
-              service_request:
-                capped(e.message, SERVICE_REQUEST_MAX) ??
-                capped(e.selection, SERVICE_REQUEST_MAX) ??
-                FALLBACK_SERVICE_REQUEST,
+              // NOT-NULL, and a form can carry neither field. A selection that
+              // became the Job Type is not repeated in the request.
+              service_request: serviceRequestOf(capped(e.message, SERVICE_REQUEST_MAX), jobType ? null : selection),
+              ...(jobType ? { job_type: jobType } : {}),
               attribution: attributionOfSubmission(e) ?? Prisma.DbNull,
               // No assignee, no commission owner and no visit row: nobody has
               // picked this up yet, and a placeholder trip would put a lead
@@ -298,11 +304,69 @@ const EMAIL_MAX = 254;
 const SERVICE_REQUEST_MAX = LONG_TEXT_MAX;
 const ATTRIBUTION_VALUE_MAX = 2000;
 const AD_SOURCE_MAX = 100;
+/**
+ * A dropdown value is an option name, and Job Type is the field it is meant
+ * for: 100 is the ceiling `job_type` has in lead.controller. It also keeps a
+ * huge value from pushing the visitor's message out of the request.
+ */
+const SELECTION_MAX = 100;
 
 /** Trim and cap one free-text value, keeping null as null. */
 function capped(value: string | null | undefined, max: number): string | null {
   const trimmed = value?.trim();
   return trimmed ? trimmed.slice(0, max) : null;
+}
+
+/**
+ * What the office reads as the request: the message, then the form's dropdown
+ * value on its own line when it did not become the Job Type.
+ *
+ * The label is generic on purpose: the payload carries no field labels, so the
+ * dropdown's own question ("Type of project", say) is not known here.
+ *
+ * The MESSAGE is what gets cut to fit the ceiling, never the selection riding
+ * after it: the selection is already capped at SELECTION_MAX, so there is always
+ * room for it. Truncation is never data loss: the raw body is in the ledger
+ * verbatim.
+ */
+function serviceRequestOf(message: string | null, selection: string | null): string {
+  if (message && selection) {
+    const suffix = `\n\nSelected option: ${selection}`;
+    const room = Math.max(0, SERVICE_REQUEST_MAX - suffix.length);
+    return `${message.slice(0, room)}${suffix}`.slice(0, SERVICE_REQUEST_MAX);
+  }
+  return message ?? selection ?? FALLBACK_SERVICE_REQUEST;
+}
+
+/**
+ * The comparison key of a Job Type name: case, spaces and hyphens do not count,
+ * so a form value `Bath-Design` is the Job Type "Bath Design". Hyphens include
+ * the typographic hyphen and the non-breaking one a form builder can paste in;
+ * invisible format characters (soft hyphen, zero-width space) are dropped the
+ * way the Lists page's name rule drops them. Nothing else is ignored:
+ * `Bath_Design` and `Bath Designs` are different values.
+ */
+function jobTypeKey(name: string): string {
+  return name
+    .replace(/\p{Cf}/gu, '')
+    .toLowerCase()
+    .replace(/[\s\-‐‑]+/g, '');
+}
+
+/**
+ * The Job Type a form's dropdown value names, spelled the way the org's list
+ * spells it, or null.
+ *
+ * There is NO translation list, here or anywhere: a form whose options send
+ * placeholder values (`one`, `two`) matches nothing, and the value is kept in
+ * the request exactly as it arrived. The company makes a value land in Job Type
+ * by naming a Job Type the same way, on its own Lists page. A value that is only
+ * spaces and hyphens has an empty key and matches nothing.
+ */
+function matchJobType(value: string, names: readonly string[]): string | null {
+  const key = jobTypeKey(value);
+  if (!key) return null;
+  return names.find((name) => jobTypeKey(name) === key) ?? null;
 }
 
 /**
