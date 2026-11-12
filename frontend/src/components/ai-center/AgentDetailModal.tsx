@@ -5,13 +5,13 @@ import { Button } from '@/components/ui/button';
 import { Heading } from '@/components/ui/heading';
 import { agentDisplayRole, type AIAgent } from '@/lib/ai-center/agents';
 import { worksWithFor } from '@/lib/ai-center/worksWith';
-import { NOT_AVAILABLE_COPY, useAgentStatus, useAgentSwitchControl } from '@/lib/ai-center/agentStatus';
+import { NOT_AVAILABLE_COPY, useAgentStatus, useAgentDeactivateControl } from '@/lib/ai-center/agentStatus';
 import { useAiCenterStore } from '@/stores/aiCenterStore';
 import { AgentVideoSlot } from './AgentVideoSlot';
 import { AgentPortrait } from './AgentPortrait';
 import { AgentNameTag } from './AgentCard';
 import { AgentStatusChip } from './AgentStatusChip';
-import { AgentControlRow, AgentFooter } from './AgentControls';
+import { AgentFooter, AgentStatusRow } from './AgentControls';
 
 interface AgentDetailModalProps {
   agent: AIAgent | null;
@@ -22,18 +22,21 @@ interface AgentDetailModalProps {
 /**
  * Modal-on-modal: one agent's portrait, status, video slot, tagline, story, and the agents and
  * ServWave modules it works with. The 29 Sep redesign (direction B, compact, white), with the
- * 14 Oct controls (option A): for an agent this company can use, a control row under the header
- * and a footer that follows its switch; for a released agent it does not have, a row that says so
- * and a booking call to turn it on; for every other agent, "Coming soon" and a booking call.
+ * controls of mockup M1 (Ran, 10 Nov): for an agent on this company's account, a status row
+ * (Not active / Active) under the header and, for someone who may manage it, a footer with the way
+ * to its page (and Deactivate while Active); for a released agent it does not have, a row that says
+ * so and a booking call to turn it on; for every other agent, "Coming soon" and a booking call.
  */
 export function AgentDetailModal({ agent, onOpenChange, onBook }: AgentDetailModalProps) {
-  // The status, the switch and the footer all come from the agent registry
+  // The status, Deactivate and the footer all come from the agent registry
   // (lib/ai-center/agentStatus.ts), never from here.
   const status = useAgentStatus(agent?.id);
-  const control = useAgentSwitchControl(agent?.id);
+  const control = useAgentDeactivateControl(agent?.id);
   const comingSoon = status.status === 'coming_soon';
   // Released, but not on this company's account (layer 1): a row that says so, and a booking call.
   const notAvailable = status.status === 'not_available';
+  // Someone who may not manage an agent on the account gets no footer: the status without the buttons.
+  const hasFooter = comingSoon || notAvailable || (status.canManage && !!status.managePath);
   const headerRef = useRef<HTMLDivElement>(null);
   // A "Works with" chip opens that agent through the catalog's own deep link (the path the job
   // page's AI tiles take), so the catalog stays the one owner of which agent is open.
@@ -49,9 +52,9 @@ export function AgentDetailModal({ agent, onOpenChange, onBook }: AgentDetailMod
         layout="own"
         overlayClassName="bg-ocean-900/40"
         className="flex w-[94vw] max-w-[720px] flex-col gap-0 overflow-hidden p-0"
-        // Open on the header (the agent's name and role), not on the first control: that is the
-        // on/off switch, and a stray Space would flip it. Not on the frame either, which would draw
-        // a focus ring round the whole pop-up. Tab goes on to the switch.
+        // Open on the header (the agent's name and role), not on the first control, which a stray
+        // Space would press. Not on the frame either, which would draw a focus ring round the whole
+        // pop-up.
         onOpenAutoFocus={(event) => {
           event.preventDefault();
           headerRef.current?.focus({ preventScroll: true });
@@ -95,7 +98,7 @@ export function AgentDetailModal({ agent, onOpenChange, onBook }: AgentDetailMod
               data-testid="agent-detail-body"
               className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-5 sm:px-6 sm:pb-6"
             >
-              {!comingSoon && <AgentControlRow agent={agent} status={status} control={control} />}
+              {!comingSoon && <AgentStatusRow agent={agent} status={status} />}
               <AgentVideoSlot agent={agent} />
 
               <p className="mb-2 mt-5 text-lg font-bold leading-snug tracking-tight text-text-primary sm:mt-6 sm:text-[19px]">
@@ -157,22 +160,24 @@ export function AgentDetailModal({ agent, onOpenChange, onBook }: AgentDetailMod
             </div>
 
             {/* Footer CTA */}
-            <div className="shrink-0 border-t border-border bg-surface-light px-4 py-3 pb-[max(0.75rem,var(--safe-bottom,0px))] sm:px-6 sm:py-3.5">
-              {comingSoon || notAvailable ? (
-                <div className="flex gap-2.5">
-                  <DialogClose asChild>
-                    <Button variant="outline" tone="neutral">
-                      Close
+            {hasFooter && (
+              <div className="shrink-0 border-t border-border bg-surface-light px-4 py-3 pb-[max(0.75rem,var(--safe-bottom,0px))] sm:px-6 sm:py-3.5">
+                {comingSoon || notAvailable ? (
+                  <div className="flex gap-2.5">
+                    <DialogClose asChild>
+                      <Button variant="outline" tone="neutral">
+                        Close
+                      </Button>
+                    </DialogClose>
+                    <Button variant="solid" tone="ai" className="min-w-0 flex-1" onClick={() => onBook(agent)}>
+                      <span className="truncate">{notAvailable ? NOT_AVAILABLE_COPY.book : `Book a call about ${agent.name}`}</span>
                     </Button>
-                  </DialogClose>
-                  <Button variant="solid" tone="ai" className="min-w-0 flex-1" onClick={() => onBook(agent)}>
-                    <span className="truncate">{notAvailable ? NOT_AVAILABLE_COPY.book : `Book a call about ${agent.name}`}</span>
-                  </Button>
-                </div>
-              ) : (
-                <AgentFooter agent={agent} status={status} control={control} onClose={() => onOpenChange(false)} />
-              )}
-            </div>
+                  </div>
+                ) : (
+                  <AgentFooter agent={agent} status={status} control={control} onClose={() => onOpenChange(false)} />
+                )}
+              </div>
+            )}
           </>
         )}
       </DialogContent>

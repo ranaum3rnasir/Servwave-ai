@@ -1,17 +1,17 @@
 import { cn } from '@/lib/utils';
 
-export type AgentChipState = 'on' | 'off' | 'coming_soon';
+export type AgentChipState = 'active' | 'not_active' | 'coming_soon';
 
 const CHIP: Record<AgentChipState, { label: string; cls: string; dot: string }> = {
-  on: { label: 'On', cls: 'border-success-border bg-success-surface text-success-text', dot: 'bg-success' },
-  off: { label: 'Off', cls: 'border-neutral-border bg-neutral-surface text-neutral-text', dot: 'bg-text-soft' },
+  // Every agent works like an integration (Ran, 10 Nov): Active / Not active.
+  active: { label: 'Active', cls: 'border-success-border bg-success-surface text-success-text', dot: 'bg-success' },
+  not_active: { label: 'Not active', cls: 'border-neutral-border bg-neutral-surface text-neutral-text', dot: 'bg-text-soft' },
   coming_soon: { label: 'Coming soon', cls: 'border-ai-200 bg-ai-50 text-ai-text', dot: 'bg-ai-600' },
 };
 
 /**
- * A read-only status chip: "On", "Off" or "Coming soon". It never links anywhere and never acts:
- * someone who may switch an agent gets the switch itself instead. Which state an agent is in comes
- * from useAgentStatus, never from the call site.
+ * A read-only status chip: "Active", "Not active" or "Coming soon". It never links anywhere and
+ * never acts. Which state an agent is in comes from useAgentStatus, never from the call site.
  */
 export function AgentStatusChip({ state }: { state: AgentChipState }) {
   const { label, cls, dot } = CHIP[state];

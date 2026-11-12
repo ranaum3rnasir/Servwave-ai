@@ -45,6 +45,8 @@ const SETTINGS = '/api/ai-farm/spider/settings';
 const HISTORY = '/api/ai-farm/spider/history';
 const UNREAD = '/api/ai-farm/spider/alerts/unread';
 const STATUS = '/api/ai-farm/spider/status';
+const PREVIEW = '/api/ai-farm/spider/activation-preview';
+const EXCLUSIONS = '/api/ai-farm/spider/exclusions';
 
 type Limit = { enabled: boolean; value: number; unit: string };
 
@@ -59,8 +61,6 @@ function body(overrides: Record<string, unknown> = {}, limits: Record<string, Li
     },
     channels: { in_app: true, red_frame: true, email: false, text: false },
     recipients: { roles: [], user_ids: [], lead_owner: true },
-    watch_all_leads: true,
-    selected_lead_ids: [],
     ...overrides,
   };
 }
@@ -80,13 +80,24 @@ suite('Spider API (real database)', () => {
     return o;
   }
 
-  /** Switches Spider on the only way there is: the switch (PUT /spider/status). */
+  /**
+   * The settings an Admin saves before activating (#3431: Activate needs a status with a time limit): Contacted at one
+   * day, so a test's own save of `body()` (New at two hours) is a stage switched on.
+   */
+  const SETUP = body({}, { NEW: { enabled: false, value: 2, unit: 'HOUR' }, CONTACTED: { enabled: true, value: 1, unit: 'DAY' } });
+
+  /**
+   * Activates Spider the only way there is (PUT /spider/status), after saving SETUP while Not active when nothing with a
+   * time limit is stored yet.
+   */
   async function switchOn(person: Person) {
-    const res = await (await fx.signedInAs(person)).put(STATUS, { isActive: true });
+    const api = await fx.signedInAs(person);
+    if (!(await api.get(STATUS)).body.isSetUp) expect((await api.put(SETTINGS, SETUP)).status).toBe(200);
+    const res = await api.put(STATUS, { isActive: true });
     expect(res.status).toBe(200);
   }
 
-  /** A Spider company whose Admin has switched Spider on (its settings open only while on). */
+  /** A Spider company whose Admin has set Spider up and activated it. */
   async function onOrg() {
     const o = await spiderOrg();
     await switchOn(o.admin);
@@ -104,12 +115,18 @@ suite('Spider API (real database)', () => {
   /**
    * An unread alert for the lead's current stage visit (a NEW lead, from its creation). `priority`
    * lets a test store a row as older code did (#2803 wrote Spider alerts as INTERRUPT).
+   * A lead created in the last 10 minutes (just added by the test) is first moved 30 days back, once, so its New stay is past any limit a test sets, as
+   * every real alert's lead is: an alert whose lead is not past its stage's limit is not open (#3450).
    */
   async function unreadSpiderAlert(
     org: string, recipient: string, leadId: string, extra: Record<string, unknown> = {}, verb = 'spider.alert',
     priority: 'FEED' | 'INTERRUPT' = 'FEED',
   ) {
-    const { created_at } = await db.lead.findUniqueOrThrow({ where: { id: leadId }, select: { created_at: true } });
+    let { created_at } = await db.lead.findUniqueOrThrow({ where: { id: leadId }, select: { created_at: true } });
+    if (created_at.getTime() > Date.now() - 10 * 60_000) {
+      created_at = new Date(Date.now() - 30 * 86_400_000);
+      await db.lead.update({ where: { id: leadId }, data: { created_at } });
+    }
     const n = await db.notification.create({
       data: {
         organization_id: org, verb, category: 'LEAD', priority,
@@ -144,7 +161,7 @@ suite('Spider API (real database)', () => {
       const { sales } = await staff(org);
       for (const person of [admin, sales]) {
         const api = await fx.signedInAs(person);
-        for (const res of [await api.get(SETTINGS), await api.put(SETTINGS, body()), await api.get(HISTORY), await api.get(UNREAD), await api.get(STATUS), await api.put(STATUS, { isActive: true })]) {
+        for (const res of [await api.get(SETTINGS), await api.put(SETTINGS, body()), await api.get(HISTORY), await api.get(UNREAD), await api.get(STATUS), await api.put(STATUS, { isActive: true }), await api.get(PREVIEW)]) {
           expect(res.status).toBe(404);
           expect(res.body).toEqual({ error: 'FEATURE_DISABLED', feature: 'spider' });
         }
@@ -155,7 +172,7 @@ suite('Spider API (real database)', () => {
       const { org, admin } = await fx.newOrg();
       await db.organization.update({ where: { id: org }, data: { is_demo: true, plan: 'PRO' } });
       const api = await fx.signedInAs(admin);
-      for (const res of [await api.get(SETTINGS), await api.get(HISTORY), await api.get(UNREAD), await api.get(STATUS), await api.put(STATUS, { isActive: false })]) {
+      for (const res of [await api.get(SETTINGS), await api.get(HISTORY), await api.get(UNREAD), await api.get(STATUS), await api.put(STATUS, { isActive: false }), await api.get(PREVIEW)]) {
         expect(res.status).toBe(404);
       }
       // Nothing was created behind the gate.
@@ -189,7 +206,7 @@ suite('Spider API (real database)', () => {
       await withPilotList('00000000-0000-4000-8000-0000000000b2', async () => {
         for (const person of [admin, sales]) {
           const api = await fx.signedInAs(person);
-          for (const res of [await api.get(SETTINGS), await api.put(SETTINGS, body()), await api.get(HISTORY), await api.get(UNREAD), await api.get(STATUS), await api.put(STATUS, { isActive: true })]) {
+          for (const res of [await api.get(SETTINGS), await api.put(SETTINGS, body()), await api.get(HISTORY), await api.get(UNREAD), await api.get(STATUS), await api.put(STATUS, { isActive: true }), await api.get(PREVIEW)]) {
             expect(res.status).toBe(404);
             expect(res.body).toEqual({ error: 'FEATURE_DISABLED', feature: 'spider' });
           }
@@ -203,9 +220,10 @@ suite('Spider API (real database)', () => {
       await withPilotList(org, async () => {
         const asAdmin = await fx.signedInAs(admin);
         expect((await asAdmin.get(STATUS)).status).toBe(200);
-        expect((await asAdmin.put(STATUS, { isActive: true })).status).toBe(200);
         expect((await asAdmin.get(SETTINGS)).status).toBe(200);
         expect((await asAdmin.put(SETTINGS, body())).status).toBe(200);
+        expect((await asAdmin.get(PREVIEW)).status).toBe(200);
+        expect((await asAdmin.put(STATUS, { isActive: true })).status).toBe(200);
         expect((await asAdmin.get(HISTORY)).status).toBe(200);
         expect((await asAdmin.get(SUMMARY)).status).toBe(200);
         expect((await asAdmin.get(UNREAD)).status).toBe(200);
@@ -213,6 +231,7 @@ suite('Spider API (real database)', () => {
         const asSales = await fx.signedInAs(sales);
         expect((await asSales.get(SETTINGS)).status).toBe(403);
         expect((await asSales.get(HISTORY)).status).toBe(403);
+        expect((await asSales.get(PREVIEW)).status).toBe(403);
         expect((await asSales.get(STATUS)).status).toBe(200);
         expect((await asSales.get(UNREAD)).status).toBe(200);
       });
@@ -228,7 +247,7 @@ suite('Spider API (real database)', () => {
       await db.organization.update({ where: { id: org }, data });
       await withPilotList(org, async () => {
         const api = await fx.signedInAs(admin);
-        for (const res of [await api.get(SETTINGS), await api.put(SETTINGS, body()), await api.get(HISTORY), await api.get(UNREAD), await api.get(STATUS), await api.put(STATUS, { isActive: true })]) {
+        for (const res of [await api.get(SETTINGS), await api.put(SETTINGS, body()), await api.get(HISTORY), await api.get(UNREAD), await api.get(STATUS), await api.put(STATUS, { isActive: true }), await api.get(PREVIEW)]) {
           expect(res.status).toBe(404);
           expect(res.body).toEqual({ error: 'FEATURE_DISABLED', feature: 'spider' });
         }
@@ -265,9 +284,9 @@ suite('Spider API (real database)', () => {
       const api = await fx.signedInAs(admin);
       const res = await api.get(SETTINGS);
       expect(res.status).toBe(200);
-      // Switched on, nothing set up yet, watching all open leads.
+      // Active. The leads it watches are not part of the settings (#3436): the picker reads them a page at a time.
       expect(res.body.settings.is_active).toBe(true);
-      expect(res.body.settings.watch_all_leads).toBe(true);
+      expect(res.body.settings).not.toHaveProperty('selected_lead_ids');
       // The screen draws its unit list from here: Minute, Hour and Day, no Second.
       expect(res.body.options.units.map((u: { value: string }) => u.value)).toEqual(['MINUTE', 'HOUR', 'DAY']);
       // The three stages Spider acts on (Ran, 15 Oct, D2).
@@ -278,6 +297,7 @@ suite('Spider API (real database)', () => {
     it('rejects unknown statuses, unknown units, and zero or negative limits', async () => {
       const { admin } = await onOrg();
       const api = await fx.signedInAs(admin);
+      const before = (await api.get(SETTINGS)).body.settings;
       const bad = [
         body({}, { WON: { enabled: true, value: 1, unit: 'DAY' } }),
         body({}, { NEW: { enabled: true, value: 1, unit: 'SECOND' } }),
@@ -289,10 +309,8 @@ suite('Spider API (real database)', () => {
         expect(res.status, JSON.stringify(b.status_limits)).toBe(400);
         expect(res.body.error).toBe('Validation failed');
       }
-      // Nothing was stored by any of them: the settings are still the defaults the switch created.
-      const { status_limits } = (await api.get(SETTINGS)).body.settings;
-      expect(Object.keys(status_limits)).toEqual(['NEW', 'CONTACTED', 'WALKTHROUGH_COMPLETED']);
-      expect(Object.values(status_limits as Record<string, Limit>).every((l) => !l.enabled && l.value === 1 && l.unit === 'MINUTE')).toBe(true);
+      // Nothing was stored by any of them: the settings are still the ones saved before activating.
+      expect((await api.get(SETTINGS)).body.settings).toEqual(before);
     });
 
     // Ran, 15 Oct (D3): the contractor's three required checks, on the server too, in his words.
@@ -328,7 +346,7 @@ suite('Spider API (real database)', () => {
         'Please assign at least one recipient (Admin Roles, Lead Owner, or Specific Users).',
       ]);
       expect(await row()).toEqual(before);
-      expect((await api.get(STATUS)).body).toEqual({ isActive: true, isSetUp: false });
+      expect((await api.get(STATUS)).body).toEqual({ isActive: true, isSetUp: true });
     });
 
     // The frontend and backend deploy separately: the screen from before 15 Oct still sends the five
@@ -353,7 +371,7 @@ suite('Spider API (real database)', () => {
       const { org, admin } = await spiderOrg();
       const api = await fx.signedInAs(admin);
       const row = () => db.spiderSettings.findUniqueOrThrow({ where: { organization_id: org } });
-      expect((await api.put(STATUS, { isActive: true })).status).toBe(200);
+      await switchOn(admin);
       const switchedOn = (await row()).activated_at!;
       await new Promise((r) => setTimeout(r, 15));
       expect((await api.put(SETTINGS, body())).status).toBe(200);
@@ -375,6 +393,7 @@ suite('Spider API (real database)', () => {
       it('switching on records one; switching off, or on again while on, records none', async () => {
         const { org, admin } = await spiderOrg();
         const api = await fx.signedInAs(admin);
+        expect((await api.put(SETTINGS, SETUP)).status).toBe(200);
         const before = Date.now();
         expect((await api.put(STATUS, { isActive: true })).status).toBe(200);
         const first = await trigger(org);
@@ -392,10 +411,10 @@ suite('Spider API (real database)', () => {
         expect((await trigger(org)).kind).toBe('SWITCHED_ON');
       });
 
-      it('a save records one for a stage switched on, a limit shortened, or more leads watched, and none otherwise', async () => {
+      it('a save records one for a stage switched on, a limit shortened, or a lead included again, and none otherwise', async () => {
         const { org, admin, customer } = await onOrg();
         const api = await fx.signedInAs(admin);
-        const lead = await fx.addLead(org, customer);
+        await fx.addLead(org, customer);
         const other = await fx.addLead(org, customer);
         await clear(org);
 
@@ -404,28 +423,38 @@ suite('Spider API (real database)', () => {
         expect((await trigger(org)).kind).toBe('STAGE_ADDED');
         await clear(org);
 
-        // Recipients, channels, a longer limit, a stage switched off, fewer leads: none.
+        // Recipients, channels, a longer limit, a stage switched off: none.
         const quiet = [
           body({ recipients: { roles: ['ADMIN'], user_ids: [], lead_owner: false } }),
           body({ channels: { in_app: true, red_frame: false, email: true, text: true } }),
           body({}, { NEW: { enabled: true, value: 5, unit: 'HOUR' } }),
-          body({ watch_all_leads: false, selected_lead_ids: [lead.id] }, { NEW: { enabled: true, value: 5, unit: 'HOUR' } }),
         ];
         for (const b of quiet) {
           expect((await api.put(SETTINGS, b)).status).toBe(200);
           expect(await trigger(org), JSON.stringify(b)).toEqual({ at: null, kind: null });
         }
+        // A lead excluded with the picker's Save: none.
+        expect((await api.patch(EXCLUSIONS, { exclude: [other.id], include: [] })).status).toBe(200);
+        expect(await trigger(org)).toEqual({ at: null, kind: null });
 
         // A shorter limit.
-        expect((await api.put(SETTINGS, body({ watch_all_leads: false, selected_lead_ids: [lead.id] }, { NEW: { enabled: true, value: 1, unit: 'HOUR' } }))).status).toBe(200);
+        expect((await api.put(SETTINGS, body({}, { NEW: { enabled: true, value: 1, unit: 'HOUR' } }))).status).toBe(200);
         expect((await trigger(org)).kind).toBe('LIMIT_SHORTENED');
         await clear(org);
 
-        // A lead added to the selection, then "Auto-select new leads" turned on.
-        expect((await api.put(SETTINGS, body({ watch_all_leads: false, selected_lead_ids: [lead.id, other.id] }, { NEW: { enabled: true, value: 1, unit: 'HOUR' } }))).status).toBe(200);
+        // The excluded lead included again (#3434: taken off the exclusion list), then excluded and included again; a
+        // settings save never widens what is watched (#3436: it never touches the list).
+        expect((await api.patch(EXCLUSIONS, { exclude: [], include: [other.id] })).status).toBe(200);
         expect((await trigger(org)).kind).toBe('SCOPE_WIDENED');
         await clear(org);
+        expect((await api.patch(EXCLUSIONS, { exclude: [other.id], include: [] })).status).toBe(200);
+        expect(await trigger(org)).toEqual({ at: null, kind: null });
         expect((await api.put(SETTINGS, body({}, { NEW: { enabled: true, value: 1, unit: 'HOUR' } }))).status).toBe(200);
+        expect(await trigger(org)).toEqual({ at: null, kind: null });
+        // An older page's "watch every lead" is refused (409) and records nothing either.
+        expect((await api.put(SETTINGS, body({ watch_all_leads: true, selected_lead_ids: [] }, { NEW: { enabled: true, value: 1, unit: 'HOUR' } }))).status).toBe(409);
+        expect(await trigger(org)).toEqual({ at: null, kind: null });
+        expect((await api.patch(EXCLUSIONS, { exclude: [], include: [other.id] })).status).toBe(200);
         expect((await trigger(org)).kind).toBe('SCOPE_WIDENED');
 
         // A refused save records nothing, even one that would have started watching a new stage.
@@ -441,7 +470,7 @@ suite('Spider API (real database)', () => {
       it('folds a save into a trigger still waiting: switching on keeps its name, two kinds read as settings changed', async () => {
         const { org, admin } = await spiderOrg();
         const api = await fx.signedInAs(admin);
-        expect((await api.put(STATUS, { isActive: true })).status).toBe(200);
+        await switchOn(admin);
         const switched = await trigger(org);
         await new Promise((r) => setTimeout(r, 15));
         expect((await api.put(SETTINGS, body())).status).toBe(200);
@@ -462,26 +491,64 @@ suite('Spider API (real database)', () => {
 
     });
 
-    // Ran, 14 Oct, layer 3: Spider's settings open only while it is on, and the switch is the only
-    // way to turn it on or off.
-    it('refuse a save while Spider is off, or before it was ever switched on, with 409, storing nothing', async () => {
+    // #3431 (Ran, 10 Nov): Spider works like an integration. Its settings are saved while Not active, and that save
+    // starts nothing: no starting trigger, and the sweep sends nothing.
+    it('saves while Not active, before it was ever activated or after a Deactivate, recording no trigger', async () => {
+      const { org, admin, customer } = await spiderOrg();
+      const api = await fx.signedInAs(admin);
+      const row = () => db.spiderSettings.findUniqueOrThrow({ where: { organization_id: org } });
+      const backlog = await fx.addLead(org, customer);
+      await db.lead.update({ where: { id: backlog.id }, data: { created_at: new Date(Date.now() - 5 * 3_600_000) } });
+
+      // Never activated: the save makes the row, Not active, with what was saved.
+      const first = await api.put(SETTINGS, body());
+      expect(first.status).toBe(200);
+      expect(first.body.settings).toMatchObject({ is_active: false, activated_at: null });
+      expect(first.body.settings.status_limits.NEW).toEqual({ enabled: true, value: 2, unit: 'HOUR' });
+      expect(await row()).toMatchObject({ is_active: false, activated_at: null, summary_trigger_at: null, summary_trigger_kind: null, summary_trigger_since: null });
+      expect((await api.get(STATUS)).body).toEqual({ isActive: false, isSetUp: true });
+
+      // A save that would be a trigger while Active (a stage switched on, more leads) records none while Not active.
+      const widened = await api.put(SETTINGS, body({}, { CONTACTED: { enabled: true, value: 1, unit: 'DAY' } }));
+      expect(widened.status).toBe(200);
+      expect(await row()).toMatchObject({ is_active: false, summary_trigger_at: null, summary_trigger_kind: null });
+      // The sweep sends nothing for the company, long after the backlog went past its limit.
+      await runSpiderSweep(new Date(Date.now() + 15 * 60_000));
+      expect(await db.spiderAlert.count({ where: { organization_id: org } })).toBe(0);
+      expect(await db.spiderSummary.count({ where: { organization_id: org } })).toBe(0);
+
+      // Activated, then deactivated with its trigger cleared: a save is stored and records nothing.
+      expect((await api.put(STATUS, { isActive: true })).status).toBe(200);
+      expect((await api.put(STATUS, { isActive: false })).status).toBe(200);
+      await db.spiderSettings.update({ where: { organization_id: org }, data: { summary_trigger_at: null, summary_trigger_kind: null, summary_trigger_since: null } });
+      const activatedAt = (await row()).activated_at;
+      const off = await api.put(SETTINGS, body({}, { WALKTHROUGH_COMPLETED: { enabled: true, value: 9, unit: 'DAY' } }));
+      expect(off.status).toBe(200);
+      expect(off.body.settings.status_limits.WALKTHROUGH_COMPLETED).toEqual({ enabled: true, value: 9, unit: 'DAY' });
+      expect(await row()).toMatchObject({ is_active: false, activated_at: activatedAt, summary_trigger_at: null, summary_trigger_kind: null });
+    });
+
+    it('a save racing an Activate stores nothing and answers 409', async () => {
       const { org, admin } = await spiderOrg();
       const api = await fx.signedInAs(admin);
-      // Never switched on: no row, and the save creates none.
-      const never = await api.put(SETTINGS, body());
-      expect(never.status).toBe(409);
-      expect(never.body).toEqual({ error: 'Spider is off. Turn it on to change its settings.' });
-      expect(await db.spiderSettings.count({ where: { organization_id: org } })).toBe(0);
-
-      // Switched on, saved, switched off: the save is refused and the stored settings are kept.
-      await switchOn(admin);
-      expect((await api.put(SETTINGS, body())).status).toBe(200);
-      expect((await api.put(STATUS, { isActive: false })).status).toBe(200);
+      expect((await api.put(SETTINGS, SETUP)).status).toBe(200);
       const before = await db.spiderSettings.findUniqueOrThrow({ where: { organization_id: org } });
-      const off = await api.put(SETTINGS, body({ watch_all_leads: false }, { WALKTHROUGH_COMPLETED: { enabled: true, value: 9, unit: 'DAY' } }));
-      expect(off.status).toBe(409);
-      expect(off.body).toEqual({ error: 'Spider is off. Turn it on to change its settings.' });
-      expect(await db.spiderSettings.findUniqueOrThrow({ where: { organization_id: org } })).toEqual(before);
+      // Activated by another Admin between the save's read and its write: the write is conditional on Not active.
+      const update = db.spiderSettings.updateMany.bind(db.spiderSettings);
+      const spy = vi.spyOn(db.spiderSettings, 'updateMany').mockImplementationOnce((async (args: Parameters<typeof update>[0]) => {
+        await update({ where: { organization_id: org }, data: { is_active: true } });
+        return update(args);
+      }) as never);
+      try {
+        const res = await api.put(SETTINGS, body());
+        expect(res.status).toBe(409);
+        expect(res.body).toEqual({ error: 'Spider was activated or deactivated while you were saving. Save again.' });
+      } finally {
+        spy.mockRestore();
+      }
+      const after = await db.spiderSettings.findUniqueOrThrow({ where: { organization_id: org } });
+      expect(after.status_limits).toEqual(before.status_limits);
+      expect(after.summary_trigger_at).toBeNull();
     });
 
     // The frontend and backend deploy separately: a frontend from before the switch moved still
@@ -506,9 +573,9 @@ suite('Spider API (real database)', () => {
       expect((await row()).activated_at).toEqual(activatedAt);
       expect((await row()).is_active).toBe(true);
 
-      // Off: is_active true in a save never switches it back on.
+      // Not active: is_active true in a save is stored as a save and never activates.
       expect((await api.put(STATUS, { isActive: false })).status).toBe(200);
-      expect((await api.put(SETTINGS, { ...body(), is_active: true })).status).toBe(409);
+      expect((await api.put(SETTINGS, { ...body(), is_active: true })).status).toBe(200);
       expect((await row()).is_active).toBe(false);
 
       // Anything that is not a boolean is still refused.
@@ -533,13 +600,12 @@ suite('Spider API (real database)', () => {
       const api = await fx.signedInAs(a.admin);
       const res = await api.put(SETTINGS, body({
         recipients: { roles: ['SALES'], user_ids: [a.admin.id, b.admin.id], lead_owner: false },
-        watch_all_leads: false,
-        selected_lead_ids: [ownLead.id, otherLead.id],
       }));
       expect(res.status).toBe(200);
       expect(res.body.settings.recipients.user_ids).toEqual([a.admin.id]);
-      expect(res.body.settings.selected_lead_ids).toEqual([ownLead.id]);
-      expect(res.body.selected_leads).toEqual([{ id: ownLead.id, lead_number: `L-${ownLead.id.slice(0, 8)}`, customer_name: 'Pat Payer' }]);
+      // Leads go through the picker's Save, which keeps only this company's (#3435).
+      expect((await api.patch(EXCLUSIONS, { exclude: [ownLead.id, otherLead.id], include: [] })).status).toBe(200);
+      expect((await db.spiderSettings.findUniqueOrThrow({ where: { organization_id: a.org } })).excluded_lead_ids).toEqual([ownLead.id]);
     });
   });
 
@@ -609,46 +675,58 @@ suite('Spider API (real database)', () => {
       expect(await row(org)).toEqual(before);
     });
 
-    // Ran, 14 Oct: the switch always works for an Admin; Spider watches nothing until it is set up.
-    it('switches on a company that never set Spider up, creating its row with the default settings', async () => {
+    // #3431: Activate is refused while no status has a time limit switched on, and changes nothing.
+    it('refuses Activate with 409 while no status has a time limit, creating and changing nothing', async () => {
       const { org, admin } = await spiderOrg();
       const api = await fx.signedInAs(admin);
-      const before = Date.now();
-      const res = await api.put(STATUS, { isActive: true });
-      expect(res.status).toBe(200);
-      expect(res.body).toEqual({ isActive: true, isSetUp: false });
-      const created = await row(org);
-      expect(created.is_active).toBe(true);
-      expect(created.activated_at!.getTime()).toBeGreaterThanOrEqual(before - 1000);
-      expect((await api.get(STATUS)).body).toEqual({ isActive: true, isSetUp: false });
-      // The settings read as the contractor's defaults (Ran, 15 Oct, D3): every stage off, every
-      // channel on, all four roles and the lead's owner, new leads auto-selected.
-      const { settings } = (await api.get(SETTINGS)).body;
-      expect(settings.is_active).toBe(true);
-      expect(Object.values(settings.status_limits as Record<string, Limit>).every((l) => !l.enabled)).toBe(true);
-      expect(settings.channels).toEqual({ in_app: true, red_frame: true, email: true, text: true });
-      expect(settings.recipients).toEqual({ roles: ['ADMIN', 'SALES', 'DISPATCHER', 'TECHNICIAN'], user_ids: [], lead_owner: true });
-      expect(settings.watch_all_leads).toBe(true);
+      const refused = { error: 'Switch on a time limit for at least one status before activating Spider.' };
 
-      // Off again with nothing set up: straight off.
-      expect((await api.put(STATUS, { isActive: false })).body).toEqual({ isActive: false, isSetUp: false });
-      expect((await row(org)).is_active).toBe(false);
+      // No settings row: refused, and none is made.
+      const none = await api.put(STATUS, { isActive: true, startingSummary: 'send' });
+      expect(none.status).toBe(409);
+      expect(none.body).toEqual(refused);
+      expect(await db.spiderSettings.count({ where: { organization_id: org } })).toBe(0);
+
+      // A row whose statuses are all off (or unreadable): refused, and the row is unchanged.
+      await db.spiderSettings.create({
+        data: { organization_id: org, is_active: false, status_limits: { NEW: { enabled: false, value: 2, unit: 'HOUR' }, CONTACTED: { enabled: true, value: 0, unit: 'DAY' } } },
+      });
+      const before = await row(org);
+      const off = await api.put(STATUS, { isActive: true });
+      expect(off.status).toBe(409);
+      expect(off.body).toEqual(refused);
+      expect(await row(org)).toEqual(before);
+      expect((await api.get(STATUS)).body).toEqual({ isActive: false, isSetUp: false });
+
+      // Active from before this rule, with nothing set up: Activate again is refused too, and changes nothing.
+      await db.spiderSettings.update({ where: { organization_id: org }, data: { is_active: true, activated_at: new Date() } });
+      const activeBefore = await row(org);
+      expect((await api.put(STATUS, { isActive: true })).status).toBe(409);
+      expect(await row(org)).toEqual(activeBefore);
     });
 
-    it('switches on a company whose stored statuses are all off', async () => {
-      const { org, admin } = await spiderOrg();
-      const api = await fx.signedInAs(admin);
-      await db.spiderSettings.create({ data: { organization_id: org, is_active: false, status_limits: { NEW: { enabled: false, value: 2, unit: 'HOUR' } } } });
-      const res = await api.put(STATUS, { isActive: true });
-      expect(res.status).toBe(200);
-      expect(res.body).toEqual({ isActive: true, isSetUp: false });
-      expect((await row(org)).is_active).toBe(true);
+    it('Activate takes startingSummary send, or reads a missing one as send: either records the starting trigger', async () => {
+      for (const extra of [{ startingSummary: 'send' }, {}]) {
+        const { org, admin } = await spiderOrg();
+        const api = await fx.signedInAs(admin);
+        expect((await api.put(SETTINGS, SETUP)).status).toBe(200);
+        const before = Date.now();
+        const res = await api.put(STATUS, { isActive: true, ...extra });
+        expect(res.status, JSON.stringify(extra)).toBe(200);
+        expect(res.body).toEqual({ isActive: true, isSetUp: true });
+        const r = await row(org);
+        expect(r.is_active).toBe(true);
+        expect(r.activated_at!.getTime()).toBeGreaterThanOrEqual(before - 1000);
+        expect(r.summary_trigger_kind).toBe('SWITCHED_ON');
+        expect(r.summary_trigger_at).toEqual(r.activated_at);
+      }
     });
 
-    it('two Admins switching on a company with no row at once leave one row, switched on once', async () => {
+    it('two Admins activating at once leave one row, activated once', async () => {
       const { org, admin } = await spiderOrg();
       const second = await fx.addUser(org, 'second-admin', 'ADMIN');
       const [a, b] = await Promise.all([fx.signedInAs(admin), fx.signedInAs(second)]);
+      expect((await a.put(SETTINGS, SETUP)).status).toBe(200);
       const [ra, rb] = await Promise.all([a.put(STATUS, { isActive: true }), b.put(STATUS, { isActive: true })]);
       expect([ra.status, rb.status]).toEqual([200, 200]);
       expect(await db.spiderSettings.count({ where: { organization_id: org } })).toBe(1);
@@ -663,10 +741,13 @@ suite('Spider API (real database)', () => {
       expect(await db.spiderSettings.count({ where: { organization_id: org } })).toBe(0);
     });
 
-    it('rejects a body that is not exactly { isActive: boolean }', async () => {
+    it('rejects a body that is not exactly { isActive: boolean, startingSummary?: send | skip }', async () => {
       const { admin } = await spiderOrg();
       const api = await fx.signedInAs(admin);
-      for (const b of [{}, { isActive: 'yes' }, { isActive: true, status_limits: {} }, { is_active: true }]) {
+      expect((await api.put(SETTINGS, SETUP)).status).toBe(200);
+      const bodies = [{}, { isActive: 'yes' }, { isActive: true, status_limits: {} }, { is_active: true },
+        { isActive: true, startingSummary: 'later' }, { isActive: true, startingSummary: true }];
+      for (const b of bodies) {
         const res = await api.put(STATUS, b);
         expect(res.status, JSON.stringify(b)).toBe(400);
         expect(res.body.error).toBe('Validation failed');
@@ -687,11 +768,11 @@ suite('Spider API (real database)', () => {
         { WALKTHROUGH_COMPLETED: { enabled: true, value: 5, unit: 'DAY' } },
       );
       // Stored while off, as an earlier settings save left it.
-      await db.spiderSettings.create({ data: { organization_id: org, is_active: false, ...saved } });
+      await db.spiderSettings.create({ data: { organization_id: org, is_active: false, ...saved, excluded_lead_ids: [lead.id] } });
       const start = await row(org);
       expect(start.activated_at).toBeNull();
-      const kept = ({ status_limits, channels, recipients, watch_all_leads, selected_lead_ids }: typeof start) =>
-        ({ status_limits, channels, recipients, watch_all_leads, selected_lead_ids });
+      const kept = ({ status_limits, channels, recipients, watch_all_leads, selected_lead_ids, excluded_lead_ids }: typeof start) =>
+        ({ status_limits, channels, recipients, watch_all_leads, selected_lead_ids, excluded_lead_ids });
 
       const on = await api.put(STATUS, { isActive: true });
       expect(on.status).toBe(200);
@@ -750,7 +831,7 @@ suite('Spider API (real database)', () => {
 
       const res = await api.put(STATUS, { isActive: false });
       expect(res.status).toBe(200);
-      expect(res.body).toEqual({ isActive: false, isSetUp: false });
+      expect(res.body).toEqual({ isActive: false, isSetUp: true });
 
       for (const r of [adminAlert, salesAlert, salesFrame]) {
         const stored = await db.notificationRecipient.findUnique({ where: { id: r.id } });
@@ -774,6 +855,8 @@ suite('Spider API (real database)', () => {
       await unreadSpiderAlert(a.org, a.admin.id, aLead.id);
       const bAlert = await unreadSpiderAlert(b.org, b.admin.id, bLead.id);
       const bFrame = await unreadSpiderAlert(b.org, b.admin.id, bLead.id, {}, 'spider.frame');
+      // B watches New (2 hours), so its alert is an open one (#3450).
+      expect((await (await fx.signedInAs(b.admin)).put(SETTINGS, body())).status).toBe(200);
       const bBefore = await row(b.org);
 
       expect((await (await fx.signedInAs(a.admin)).put(STATUS, { isActive: false })).status).toBe(200);
@@ -808,7 +891,7 @@ suite('Spider API (real database)', () => {
       expect((await (await fx.signedInAs(b.admin)).put(SETTINGS, body())).status).toBe(200);
       const bBefore = await row(b.org);
 
-      expect((await (await fx.signedInAs(a.admin)).put(STATUS, { isActive: true })).status).toBe(200);
+      await switchOn(a.admin);
       expect((await row(a.org)).is_active).toBe(true);
       expect(await row(b.org)).toEqual(bBefore);
 
@@ -902,12 +985,12 @@ suite('Spider API (real database)', () => {
     // was recorded but not sent leaves the lead New, and a text never ends a Contacted visit.
     it('only a contact the server records ends an alert; a text that did not go out leaves it open', async () => {
       const { org, admin, customer } = await onOrg();
-      // New watched at 2 hours, Contacted not watched: the sweep below raises nothing new.
-      await (await fx.signedInAs(admin)).put(SETTINGS, body());
+      // New watched at 2 hours, Contacted at 1 day: every alert below is for a lead past its limit, so open (#3450).
+      await (await fx.signedInAs(admin)).put(SETTINGS, body({}, { CONTACTED: { enabled: true, value: 1, unit: 'DAY' } }));
       const a = await fx.addLead(org, customer);
       const b = await fx.addLead(org, customer);
       const c = await fx.addLead(org, customer);
-      const contactedAt = new Date(Date.now() - 60_000);
+      const contactedAt = new Date(Date.now() - 2 * 86_400_000);
       await db.lead.update({ where: { id: c.id }, data: { status: 'CONTACTED', contacted_at: contactedAt } });
       const alertA = await unreadSpiderAlert(org, admin.id, a.id);
       const alertB = await unreadSpiderAlert(org, admin.id, b.id);
@@ -1008,6 +1091,8 @@ suite('Spider API (real database)', () => {
 
     it('an in-app Spider alert never reaches the bell: not listed, not counted, not seen and not read by it', async () => {
       const { org, admin, customer } = await onOrg();
+      // New watched (2 hours), so the alert below is an open one (#3450).
+      expect((await (await fx.signedInAs(admin)).put(SETTINGS, body())).status).toBe(200);
       const lead = await fx.addLead(org, customer);
       // Stored as #2803 wrote it (INTERRUPT), so the hide must not depend on the priority.
       const spider = await unreadSpiderAlert(org, admin.id, lead.id, {}, 'spider.alert', 'INTERRUPT');
@@ -1110,6 +1195,105 @@ suite('Spider API (real database)', () => {
       const api = await fx.signedInAs(admin);
       expect((await api.patch(`/api/notifications/${alert.id}/read`)).status).toBe(200);
       expect((await api.get(UNREAD)).body.alerts).toEqual([]);
+    });
+  });
+
+  // #3450 (Ran, 11 Nov): an open alert follows the settings saved now. Excluding its lead, switching its stage's limit
+  // off, or lengthening the limit past where the lead is clears its card and red frame on the next read. A shorter limit
+  // or more recipients clears nothing.
+  describe('an open alert follows the saved settings (#3450)', () => {
+    const NEW_2H: Limit = { enabled: true, value: 2, unit: 'HOUR' };
+    const CONTACTED_ON: Limit = { enabled: true, value: 1, unit: 'DAY' };
+
+    /** An active company watching New at 2 hours, with a Sales person who has an in-app alert and a red-frame-only record. */
+    async function alertedCompany() {
+      const o = await onOrg();
+      const { sales } = await staff(o.org);
+      const api = await fx.signedInAs(o.admin);
+      expect((await api.put(SETTINGS, body({}, { NEW: NEW_2H, CONTACTED: CONTACTED_ON }))).status).toBe(200);
+      return { ...o, sales, api };
+    }
+
+    /** A New lead `hoursIn` hours into its stay, with an open in-app alert and a red-frame-only record for `person`. */
+    async function alertedLead(org: string, customer: string, person: Person, hoursIn: number) {
+      const lead = await fx.addLead(org, customer);
+      await db.lead.update({ where: { id: lead.id }, data: { created_at: new Date(Date.now() - hoursIn * 3_600_000) } });
+      const alert = await unreadSpiderAlert(org, person.id, lead.id);
+      const frame = await unreadSpiderAlert(org, person.id, lead.id, {}, 'spider.frame');
+      return { lead, alert, frame };
+    }
+
+    const listed = async (person: Person) => (await (await fx.signedInAs(person)).get(UNREAD)).body;
+    const ids = (b: { alerts: { id: string }[] }) => b.alerts.map((a) => a.id).sort();
+    /** What a person's frame shows when only red-frame-only records are open (the in-app alerts read). */
+    async function frameOnlyShows(person: Person, alerts: { id: string }[]) {
+      await db.notificationRecipient.updateMany({ where: { id: { in: alerts.map((a) => a.id) } }, data: { read_at: new Date() } });
+      return (await listed(person)).frame as boolean;
+    }
+
+    it('excluding a lead clears its card at once, and its red frame once nothing else is open; the read writes nothing', async () => {
+      const { org, customer, sales, api } = await alertedCompany();
+      const a = await alertedLead(org, customer, sales, 3);
+      const b = await alertedLead(org, customer, sales, 3);
+      expect(ids(await listed(sales))).toEqual([a.alert.id, b.alert.id].sort());
+
+      expect((await api.patch(EXCLUSIONS, { exclude: [a.lead.id], include: [] })).status).toBe(200);
+      const after = await listed(sales);
+      expect(ids(after)).toEqual([b.alert.id]);
+      expect(after.frame).toBe(true);
+      expect((await db.notificationRecipient.findUniqueOrThrow({ where: { id: a.alert.id } })).read_at).toBeNull();
+
+      // Excluding the other one too: nothing open, so no card and no frame - the red-frame-only records included.
+      expect((await api.patch(EXCLUSIONS, { exclude: [b.lead.id], include: [] })).status).toBe(200);
+      expect(await listed(sales)).toMatchObject({ alerts: [], frame: false });
+      // Only the red-frame-only records left open: the frame stays off for excluded leads.
+      expect(await frameOnlyShows(sales, [a.alert, b.alert])).toBe(false);
+    });
+
+    it("switching a stage's limit off clears every open alert of that stage, red-frame-only records included", async () => {
+      const { org, customer, sales, api } = await alertedCompany();
+      const a = await alertedLead(org, customer, sales, 3);
+      const contactedAt = new Date(Date.now() - 2 * 86_400_000);
+      const c = await fx.addLead(org, customer);
+      await db.lead.update({ where: { id: c.id }, data: { status: 'CONTACTED', contacted_at: contactedAt } });
+      const cAlert = await unreadSpiderAlert(org, sales.id, c.id, { status: 'CONTACTED', status_label: 'Contacted', entered_status_at: contactedAt.toISOString() });
+      expect(ids(await listed(sales))).toEqual([a.alert.id, cAlert.id].sort());
+
+      const off: Limit = { enabled: false, value: 2, unit: 'HOUR' };
+      expect((await api.put(SETTINGS, body({}, { NEW: off, CONTACTED: CONTACTED_ON }))).status).toBe(200);
+      const after = await listed(sales);
+      expect(ids(after)).toEqual([cAlert.id]);
+      // The Contacted alert closed too: only New's red-frame-only record is open, and New is off.
+      expect(await frameOnlyShows(sales, [cAlert, a.alert])).toBe(false);
+    });
+
+    it('a longer limit clears an alert whose lead is no longer past it, and keeps one still past it', async () => {
+      const { org, customer, sales, api } = await alertedCompany();
+      const notPast = await alertedLead(org, customer, sales, 3);
+      const stillPast = await alertedLead(org, customer, sales, 30);
+
+      expect((await api.put(SETTINGS, body({}, { NEW: { enabled: true, value: 1, unit: 'DAY' }, CONTACTED: CONTACTED_ON }))).status).toBe(200);
+      const after = await listed(sales);
+      expect(ids(after)).toEqual([stillPast.alert.id]);
+      expect(after.frame).toBe(true);
+      // Red-frame-only: the one still past its limit keeps the frame; with it gone too, the frame goes.
+      expect(await frameOnlyShows(sales, [notPast.alert, stillPast.alert])).toBe(true);
+      expect((await api.put(SETTINGS, body({}, { NEW: { enabled: true, value: 2, unit: 'DAY' }, CONTACTED: CONTACTED_ON }))).status).toBe(200);
+      expect(await listed(sales)).toMatchObject({ alerts: [], frame: false });
+    });
+
+    it('a shorter limit or more recipients clears nothing', async () => {
+      const { org, customer, admin, sales, api } = await alertedCompany();
+      const a = await alertedLead(org, customer, sales, 3);
+      const before = await listed(sales);
+      expect(ids(before)).toEqual([a.alert.id]);
+
+      expect((await api.put(SETTINGS, body({}, { NEW: { enabled: true, value: 1, unit: 'HOUR' }, CONTACTED: CONTACTED_ON }))).status).toBe(200);
+      expect((await api.put(SETTINGS, body({ recipients: { roles: ['ADMIN', 'SALES'], user_ids: [admin.id], lead_owner: true } }, { NEW: { enabled: true, value: 1, unit: 'HOUR' }, CONTACTED: CONTACTED_ON }))).status).toBe(200);
+      const after = await listed(sales);
+      expect(ids(after)).toEqual([a.alert.id]);
+      expect(after.frame).toBe(true);
+      expect(await frameOnlyShows(sales, [a.alert])).toBe(true);
     });
   });
 
@@ -1593,7 +1777,7 @@ suite('Spider API (real database)', () => {
       const { org, admin, customer } = await spiderOrg();
       const lead = await fx.addLead(org, customer);
       const api = await fx.signedInAs(admin);
-      await api.put(STATUS, { isActive: true });
+      await switchOn(admin);
       const row = await alertRow(org, lead.id, [admin.id], new Date());
       const record = await unreadSpiderAlert(org, admin.id, lead.id, { spider_alert_id: row.id });
       const before = (await api.get(HISTORY)).body.items;

@@ -1,7 +1,7 @@
 import { ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { agentDisplayRole, type AIAgent } from '@/lib/ai-center/agents';
-import { NOT_AVAILABLE_COPY, useAgentStatus, type AgentStatus } from '@/lib/ai-center/agentStatus';
+import { NOT_AVAILABLE_COPY, agentOnAccount, useAgentStatus, type AgentStatus } from '@/lib/ai-center/agentStatus';
 import { AgentPortrait } from './AgentPortrait';
 
 interface AgentCardProps {
@@ -21,34 +21,45 @@ export function AgentNameTag({ children }: { children: string }) {
   );
 }
 
-type StripTone = 'on' | 'off' | 'setup' | 'soon' | 'none';
+/**
+ * "Available" beside the name: the agent is on this company's account (mockup M1, Ran 10 Nov). The
+ * strip at the foot says whether it is running; the tag only that the company has it.
+ */
+export function AgentAvailableTag() {
+  return (
+    <span
+      data-agent-available
+      className="inline-flex shrink-0 items-center rounded-full border border-success-border bg-success-surface px-2 py-px text-[11px] font-bold tracking-wide text-success-text"
+    >
+      Available
+    </span>
+  );
+}
+
+type StripTone = 'active' | 'not_active' | 'soon' | 'none';
 
 const STRIP_TONE: Record<StripTone, { strip: string; text: string; dot: string }> = {
-  on: { strip: 'bg-success-surface', text: 'text-success-text', dot: 'bg-success' },
-  off: { strip: '', text: 'text-text-secondary', dot: 'bg-text-soft' },
-  setup: { strip: '', text: 'text-warning-text', dot: 'bg-warning' },
+  active: { strip: 'bg-success-surface', text: 'text-success-text', dot: 'bg-success' },
+  not_active: { strip: '', text: 'text-text-secondary', dot: 'bg-text-soft' },
   soon: { strip: '', text: 'text-ai-text', dot: 'bg-ai-600' },
   none: { strip: '', text: '', dot: '' },
 };
 
 /**
- * What the card's strip says, from the agent's status. The strip follows the switch: an agent that
- * is on before it is set up says so in amber, and an agent that is off is plainly "Off", set up or
- * not. Reading the switch claims nothing until it is read, and nothing at all when it cannot be.
+ * What the card's strip says, from the agent's status: "Active" (green) or "Not active" (grey), with
+ * no second line. It claims nothing until the status is read, and nothing at all when it cannot be.
  */
-function stripFor({ status, isSetUp, copy }: AgentStatus): { tone: StripTone; words: string | null } {
+function stripFor({ status }: AgentStatus): { tone: StripTone; words: string | null } {
   switch (status) {
     case 'coming_soon':
       return { tone: 'soon', words: 'Coming soon' };
     // Released, but not on this company's account: the same indigo as "Coming soon", and a way to add it.
     case 'not_available':
       return { tone: 'soon', words: NOT_AVAILABLE_COPY.card };
-    case 'on':
-      return isSetUp
-        ? { tone: 'on', words: copy?.cardOn ?? 'On' }
-        : { tone: 'setup', words: copy?.cardOnNotSetUp ?? 'On' };
-    case 'off':
-      return { tone: 'off', words: 'Off' };
+    case 'active':
+      return { tone: 'active', words: 'Active' };
+    case 'not_active':
+      return { tone: 'not_active', words: 'Not active' };
     default:
       return { tone: 'none', words: null };
   }
@@ -57,8 +68,9 @@ function stripFor({ status, isSetUp, copy }: AgentStatus): { tone: StripTone; wo
 /**
  * One agent in the catalog grid (redesign B, Compact, with the status strip of the 14 Oct controls
  * design, option B): the animated circle portrait, the name, the role without "AI", a three-line
- * blurb, and a strip along the card's foot that says where the agent stands ("Coming soon", or
- * On / Off (or On, not set up yet) for an agent this company can use). The whole card is ONE button that
+ * blurb, and a strip along the card's foot that says where the agent stands ("Coming soon", "Book a
+ * call to add it", or Not active / Active for an agent on this company's account, which also carries
+ * the "Available" tag beside its name). The whole card is ONE button that
  * opens the detail pop-up, so the strip holds no control of its own. Its status comes from
  * useAgentStatus, never from this card.
  */
@@ -88,6 +100,7 @@ export function AgentCard({ agent, onClick, animate = true }: AgentCardProps) {
         <span data-agent-card-text className="block min-w-0 flex-1">
           <span className="flex min-w-0 items-center gap-2 text-[15px] font-bold leading-snug text-text-primary">
             <span className="truncate">{agent.name}</span>
+            {agentOnAccount(agentStatus.status) && <AgentAvailableTag />}
             {agent.isNew && <AgentNameTag>New</AgentNameTag>}
           </span>
           <span className="block truncate text-[13px] font-medium text-text-secondary">{agentDisplayRole(agent.role)}</span>
@@ -99,14 +112,13 @@ export function AgentCard({ agent, onClick, animate = true }: AgentCardProps) {
       </span>
 
       {/* The status strip: the card's full width along its foot, the same height in every state
-          (a placeholder while the switch is read), so nothing moves when the answer arrives. */}
+          (a placeholder while the status is read), so nothing moves when the answer arrives. */}
       <span
         data-agent-strip={agentStatus.status}
-        data-agent-set-up={agentStatus.isSetUp}
         className={cn(
           '-mx-4 mt-auto flex min-h-[46px] items-center gap-2 border-t border-border pl-4 pr-2.5 transition-colors duration-200 motion-reduce:transition-none',
           t.strip,
-          tone === 'on' && 'border-success-border',
+          tone === 'active' && 'border-success-border',
         )}
       >
         {agentStatus.status === 'loading' ? (

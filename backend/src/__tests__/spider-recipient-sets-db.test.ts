@@ -104,8 +104,7 @@ suite('Spider stores each recipient list once (#3107, real database)', () => {
   describe('a list already stored is reused', () => {
     it('two starting summaries told the same people write one set, and their rows hold no copy of the list', async () => {
       const c = await spiderCompany(db, orgs, { leads: 4, trigger: true });
-      // Spider watches only these four leads at first.
-      await db.spiderSettings.update({ where: { organization_id: c.org }, data: { watch_all_leads: false, selected_lead_ids: c.leads } });
+      // Spider watches these four leads at first.
       await sweep(T0);
       expect(await db.spiderAlert.count({ where: { organization_id: c.org, kind: 'SUMMARIZED' } })).toBe(4);
 
@@ -114,7 +113,7 @@ suite('Spider stores each recipient list once (#3107, real database)', () => {
       await addLead(db, c, at(-2 * DAY - 101 * MIN));
       await db.spiderSettings.update({
         where: { organization_id: c.org },
-        data: { watch_all_leads: true, selected_lead_ids: [], summary_trigger_at: at(MIN), summary_trigger_since: at(MIN), summary_trigger_kind: 'SCOPE_WIDENED' },
+        data: { summary_trigger_at: at(MIN), summary_trigger_since: at(MIN), summary_trigger_kind: 'SCOPE_WIDENED' },
       });
       await sweep(at(10 * MIN));
 

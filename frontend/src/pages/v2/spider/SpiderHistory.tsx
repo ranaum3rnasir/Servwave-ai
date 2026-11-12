@@ -164,8 +164,8 @@ const dotClass = (status: string) =>
 export interface SpiderHistoryProps {
   /** Whether Spider is on (his empty state differs). */
   isSpiderActive: boolean;
-  /** His "{n} lead targets": the saved selection, as the save review counts it. */
-  watchedLeads: number;
+  /** His "{n} lead targets": the open leads Spider watches (the picker header's N, #3436); unset while not known. */
+  watchedLeads?: number;
   /** Refresh also re-reads the tab's count. */
   onRefresh?: () => void;
 }
@@ -508,7 +508,8 @@ export function SpiderHistory({ isSpiderActive, watchedLeads, onRefresh }: Spide
           <p className="text-xs text-text-secondary max-w-md mx-auto mt-1">
             {!isFiltered
               ? isSpiderActive
-                ? `Spider is actively monitoring ${watchedLeads} lead targets in the background. When overdue alerts trigger, notification logs and message previews will appear here.`
+                ? // No count read (the overview failed or is still loading): the number's sentence is left out, never "0".
+                  `${watchedLeads === undefined ? '' : `Spider is actively monitoring ${watchedLeads} lead targets in the background. `}When overdue alerts trigger, notification logs and message previews will appear here.`
                 : 'Spider is currently deactivated. Historical logs from past alert sweeps will remain visible here whenever available.'
               : 'Try adjusting your search criteria or stage filter.'}
           </p>

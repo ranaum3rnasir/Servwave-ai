@@ -151,7 +151,9 @@ suite('Spider recipients, looked up once per company per run (#2989, real databa
 
   async function overdueLead(org: string, customer: string, opts: Parameters<typeof fx.addLead>[2] = {}) {
     const { id } = await fx.addLead(org, customer, opts);
-    await db.lead.update({ where: { id }, data: { created_at: new Date(T0.getTime() - DAY), status: 'NEW' } });
+    // Created a day before now, so past its limit both at the sweep's clock (T0, 30 days ahead) and at the real clock the
+    // unread-alerts read checks an open alert against (#3450).
+    await db.lead.update({ where: { id }, data: { created_at: new Date(Date.now() - DAY), status: 'NEW' } });
     return id;
   }
 
@@ -465,7 +467,6 @@ suite('Spider recipients, looked up once per company per run (#2989, real databa
       const dispatcher = await person(o.org, 'jdisp', 'DISPATCHER');
       const tech = await person(o.org, 'jtech', 'TECHNICIAN');
       const admin = await fx.signedInAs(o.admin);
-      expect((await admin.put(STATUS, { isActive: true })).status).toBe(200);
       const save = await admin.put(SETTINGS, {
         status_limits: {
           NEW: { enabled: true, value: 2, unit: 'HOUR' },
@@ -474,10 +475,9 @@ suite('Spider recipients, looked up once per company per run (#2989, real databa
         },
         channels: { in_app: true, red_frame: true, email: false, text: false },
         recipients: { roles: ['DISPATCHER'], user_ids: [tech.id], lead_owner: true },
-        watch_all_leads: true,
-        selected_lead_ids: [],
       });
       expect(save.status).toBe(200);
+      expect((await admin.put(STATUS, { isActive: true })).status).toBe(200);
       // The switch started a starting summary; this journey is the per-lead alert, so the trigger is not waiting.
       await db.spiderSettings.update({
         where: { organization_id: o.org },

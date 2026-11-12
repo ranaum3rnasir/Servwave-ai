@@ -12,8 +12,8 @@ import {
 
 /**
  * The "Starting summary" card on the Spider page (#2794, placement A, as the demo shows it): directly
- * under the header card with the on/off switch, above Configuration | History. It shows only while
- * Spider is on (the page mounts it then) and a summary exists; otherwise nothing at all.
+ * under the header card with the status, above Configuration | History. It shows only while
+ * Spider is Active (the page mounts it then) and a summary exists; otherwise nothing at all.
  *
  * View opens the company-wide summary; Download CSV saves the whole company's list, read again so
  * "Now" is as of the download.

@@ -66,8 +66,7 @@ vi.mock('../../../lib/prisma', () => ({
             },
             channels: { in_app: true, red_frame: true, email: true, text: true },
             recipients: { roles: ['ADMIN'], user_ids: [], lead_owner: false },
-            watch_all_leads: true,
-            selected_lead_ids: [],
+            excluded_lead_ids: [],
           };
           h.at('settings');
           return settings;

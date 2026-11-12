@@ -40,6 +40,7 @@ function spiderStatus(answer: { isActive: boolean; isSetUp: boolean } | 'error' 
     return Promise.resolve({ data: answer });
   });
 }
+// The server's answer still says whether Spider was set up; the farm never reads it (#3433).
 const ON = { isActive: true, isSetUp: true };
 const OFF = { isActive: false, isSetUp: true };
 const NEVER_SET_UP = { isActive: false, isSetUp: false };
@@ -94,56 +95,52 @@ describe('AiCenterModal — available to all orgs', () => {
   });
 });
 
-// Ran, 14 Oct (controls design, card option B): a strip along the card's foot says where an agent
-// stands. No switch on the card, and the strip is never a link: the whole card is one button.
-describe('the card status strip', () => {
-  it('reads "On, watching your leads" on a green strip while Spider is on', async () => {
+// Mockup M1 "AI Agentic Farm card and pop-up" (Ran, 10 Nov): two facts, each shown once. The
+// Available tag beside the name says the company has the agent; the strip says Not active or Active.
+// No switch on the card, and the strip is never a link: the whole card is one button.
+describe('the card: Available tag and status strip', () => {
+  const tag = (id: string) => card(id).querySelector<HTMLElement>('[data-agent-available]');
+
+  it('reads "Active" on a green strip while Spider is Active, with the Available tag', async () => {
     setSpiderCompany();
     spiderStatus(ON);
     renderWithProviders(<AiCenterModal />);
-    expect(await within(strip('spider')).findByText('On, watching your leads')).toBeInTheDocument();
-    expect(strip('spider')).toHaveAttribute('data-agent-strip', 'on');
+    expect(await within(strip('spider')).findByText('Active')).toBeInTheDocument();
+    expect(strip('spider')).toHaveAttribute('data-agent-strip', 'active');
     expect(strip('spider')).toHaveClass('bg-success-surface');
+    expect(tag('spider')).toHaveTextContent('Available');
     expect(screen.getAllByText('Coming soon')).toHaveLength(AI_AGENT_COUNT - 1);
   });
 
-  it('reads "Off" while Spider is off', async () => {
+  it.each([
+    ['an Admin', 'ADMIN', true],
+    ['a Sales user', 'SALES', false],
+  ])('reads "Not active" on a grey strip, with the Available tag, to %s', async (_l, role, is_admin) => {
+    signIn({ org_is_demo: true, org_features: ['leads', 'spider'], role, is_admin });
+    spiderStatus(OFF);
+    renderWithProviders(<AiCenterModal />);
+    expect(await within(strip('spider')).findByText('Not active')).toBeInTheDocument();
+    expect(strip('spider')).toHaveAttribute('data-agent-strip', 'not_active');
+    expect(strip('spider')).not.toHaveClass('bg-success-surface');
+    expect(tag('spider')).toHaveTextContent('Available');
+  });
+
+  // Ran, 10 Nov: no second lines, and set up or not never changes the strip.
+  it.each([
+    ['Active', ON, 'Active'],
+    ['Active, never set up', ON_NOT_SET_UP, 'Active'],
+    ['Not active', OFF, 'Not active'],
+    ['Not active, never set up', NEVER_SET_UP, 'Not active'],
+  ] as const)('while %s the strip says only "%s"', async (_l, answer, words) => {
     setSpiderCompany();
+    spiderStatus(answer);
     renderWithProviders(<AiCenterModal />);
-    expect(await within(strip('spider')).findByText('Off')).toBeInTheDocument();
-    expect(strip('spider')).not.toHaveClass('bg-success-surface');
+    await within(strip('spider')).findByText(words);
+    expect(strip('spider').textContent).toBe(words);
+    expect(card('spider').textContent).not.toMatch(/\bOn\b|\bOff\b|watching your leads|not set up/);
   });
 
-  // Ran, 14 Oct: the strip follows the switch. Off is "Off", set up or not.
-  it.each([
-    ['an Admin', 'ADMIN'],
-    ['a Sales user', 'SALES'],
-  ])('reads plain "Off" to %s while Spider is off and was never set up', async (_l, role) => {
-    signIn({ org_is_demo: true, org_features: ['leads', 'spider'], role });
-    spiderStatus(NEVER_SET_UP);
-    renderWithProviders(<AiCenterModal />);
-    expect(await within(strip('spider')).findByText('Off')).toBeInTheDocument();
-    expect(strip('spider')).toHaveAttribute('data-agent-strip', 'off');
-    expect(within(strip('spider')).queryByText(/set up/)).toBeNull();
-  });
-
-  it.each([
-    ['an Admin', 'ADMIN'],
-    ['a Sales user', 'SALES'],
-  ])('reads "On, not set up yet" in amber to %s while Spider is on but was never set up', async (_l, role) => {
-    signIn({ org_is_demo: true, org_features: ['leads', 'spider'], role });
-    spiderStatus(ON_NOT_SET_UP);
-    renderWithProviders(<AiCenterModal />);
-    const words = await within(strip('spider')).findByText('On, not set up yet');
-    expect(strip('spider')).toHaveAttribute('data-agent-strip', 'on');
-    expect(strip('spider')).toHaveAttribute('data-agent-set-up', 'false');
-    // Amber words, not the green strip of an agent that is working.
-    expect(words.parentElement).toHaveClass('text-warning-text');
-    expect(strip('spider')).not.toHaveClass('bg-success-surface');
-    expect(within(strip('spider')).queryByText('On, watching your leads')).toBeNull();
-  });
-
-  it('holds the strip with a placeholder of the same height while the switch is read', async () => {
+  it('holds the strip with a placeholder of the same height while the status is read, tag already shown', async () => {
     setSpiderCompany();
     spiderStatus('never');
     renderWithProviders(<AiCenterModal />);
@@ -152,9 +149,10 @@ describe('the card status strip', () => {
     expect(s.querySelector('[data-agent-strip-placeholder]')).not.toBeNull();
     expect(s).toHaveClass('min-h-[46px]');
     expect(s.textContent).toBe('');
+    expect(tag('spider')).not.toBeNull();
   });
 
-  it('says no status at all when the switch cannot be read', async () => {
+  it('says no status at all when the status cannot be read', async () => {
     setSpiderCompany();
     spiderStatus('error');
     renderWithProviders(<AiCenterModal />);
@@ -162,26 +160,43 @@ describe('the card status strip', () => {
     expect(strip('spider').textContent).toBe('');
   });
 
+  // "Coming soon" agents look exactly as today: no tag, the indigo "Coming soon" strip.
+  it('gives no Available tag to any agent the company cannot use', async () => {
+    setSpiderCompany();
+    spiderStatus(ON);
+    renderWithProviders(<AiCenterModal />);
+    await within(strip('spider')).findByText('Active');
+    for (const id of cards().filter((c) => c !== 'spider')) {
+      expect(tag(id!), id).toBeNull();
+      expect(strip(id!)).toHaveAttribute('data-agent-strip', 'coming_soon');
+      expect(strip(id!).textContent).toBe('Coming soon');
+      expect(strip(id!).querySelector('.text-ai-text')).not.toBeNull();
+    }
+    expect(screen.getAllByText('Available')).toHaveLength(1);
+  });
+
   it('holds no control: no link and no switch, on any card', async () => {
     setSpiderCompany();
     spiderStatus(ON);
     renderWithProviders(<AiCenterModal />);
-    await within(strip('spider')).findByText('On, watching your leads');
+    await within(strip('spider')).findByText('Active');
     for (const id of cards()) {
       expect(card(id!).querySelector('a, [role="switch"], button button')).toBeNull();
     }
   });
 
-  // A reader hears the card once, in order: "Spider, New, Lead manager, ..., Off".
-  it('reads the name first, then the role, then the status, each once', async () => {
+  // A reader hears the card once, in order: "Spider, Available, New, Lead manager, ..., Not active".
+  it('reads the name first, then the tag, the role, then the status, each once', async () => {
     setSpiderCompany();
     renderWithProviders(<AiCenterModal />);
-    await within(strip('spider')).findByText('Off');
+    await within(strip('spider')).findByText('Not active');
     const name = computeAccessibleName(card('spider'));
     expect(name.startsWith('Spider')).toBe(true);
     expect(name.match(/Spider/g)).toHaveLength(1);
-    expect(name.match(/\bOff\b/g)).toHaveLength(1);
-    expect(name.indexOf('Off')).toBeGreaterThan(name.indexOf('Lead manager'));
+    expect(name.match(/Available/g)).toHaveLength(1);
+    expect(name.match(/Not active/g)).toHaveLength(1);
+    expect(name.indexOf('Available')).toBeLessThan(name.indexOf('Lead manager'));
+    expect(name.indexOf('Not active')).toBeGreaterThan(name.indexOf('Lead manager'));
     const other = AI_AGENTS.find((a) => a.id !== 'spider')!;
     const otherName = computeAccessibleName(card(other.id));
     expect(otherName.startsWith(other.name)).toBe(true);
@@ -189,14 +204,14 @@ describe('the card status strip', () => {
     expect(otherName.indexOf('Coming soon')).toBeGreaterThan(otherName.indexOf(agentDisplayRole(other.role)));
   });
 
-  it('opening the catalog at a Spider company asks for the switch once, whatever the number of places that show it', async () => {
+  it('opening the catalog at a Spider company asks for the status once, whatever the number of places that show it', async () => {
     setSpiderCompany();
     // The Spider card and the Spider pop-up both show the status.
     useAiCenterStore.setState({ focusAgentId: 'spider' });
     renderWithProviders(<AiCenterModal />);
     const dialog = await screen.findByRole('dialog', { name: 'Spider' });
-    expect(await within(dialog).findByText('Spider is off')).toBeInTheDocument();
-    await within(strip('spider')).findByText('Off');
+    expect(await within(dialog).findByText('Not active', { selector: '[data-agent-chip]' })).toBeInTheDocument();
+    await within(strip('spider')).findByText('Not active');
     expect(spiderCalls().map(([url]) => url)).toEqual([STATUS]);
   });
 });
@@ -206,77 +221,71 @@ function fakeEntry(overrides: Partial<LiveAgent> = {}): LiveAgent {
   return {
     released: true,
     isAccessible: () => true,
-    useSwitch: () => ({ data: { isActive: true, isSetUp: true }, isError: false }),
+    useActive: () => ({ data: { isActive: true }, isError: false }),
     useSetActive: () => ({ mutate: () => {}, isPending: false }),
     canManage: () => true,
     managePath: '/fake-agent',
     copy: {
-      cardOn: 'On, herding your jobs',
-      cardOnNotSetUp: 'On, no flock yet',
-      onDetail: 'Herding your open jobs',
-      offDetail: 'No jobs are being herded',
-      onNotSetUpDetail: 'Pick the jobs to herd so it can start',
-      offNotSetUpDetail: 'Turn it on, then pick the jobs to herd',
-      notSetUpMemberDetail: 'An Admin has not set it up yet',
-      memberOnNote: 'The fake agent is on for your company.',
-      memberOnNotSetUpNote: 'The fake agent is on, waiting for its flock.',
-      memberOffNote: 'An Admin turns the fake agent on or off.',
-      turnOffWarning: ['The fake agent stops herding.'],
+      notActiveHelp: 'The fake agent herds nothing yet.',
+      deactivateWarning: ['The fake agent stops herding.'],
     },
     ...overrides,
   };
 }
 
-// SPEC-5: a real (non-demo) company on the server's Spider pilot list gets what a demo company gets.
+// SPEC-5: a real (non-demo) company on the Spider pilot list gets what a demo company gets.
 describe('a company on the Spider pilot list', () => {
   // Admin is the flag on the person (P15), so a non-Admin pilot user carries is_admin: false.
   const signInPilot = (role = 'ADMIN', is_admin = true) =>
     signIn({ org_is_demo: false, org_is_spider_pilot: true, org_features: ['leads', 'spider'], role, is_admin });
 
-  it('an Admin sees Spider Off on the card and the switch in its pop-up, never "Coming soon" or the booking call', async () => {
+  it('an Admin sees Spider Available and Not active, and "Set up Spider" in its pop-up, never "Coming soon" or the booking call', async () => {
     signInPilot();
     useAiCenterStore.setState({ focusAgentId: 'spider' });
     renderWithProviders(<AiCenterModal />);
-    expect(await within(strip('spider')).findByText('Off')).toBeInTheDocument();
+    expect(await within(strip('spider')).findByText('Not active')).toBeInTheDocument();
+    expect(card('spider').querySelector('[data-agent-available]')).not.toBeNull();
     const dialog = await screen.findByRole('dialog', { name: 'Spider' });
-    expect(await within(dialog).findByRole('switch', { name: 'Switch Spider on or off' })).not.toBeChecked();
+    expect(await within(dialog).findByRole('button', { name: 'Set up Spider' })).toBeInTheDocument();
+    expect(within(dialog).queryByRole('switch')).toBeNull();
     expect(within(dialog).queryByText('Coming soon')).toBeNull();
     expect(within(dialog).queryByText('Book a call about Spider')).toBeNull();
     expect(within(card('spider')).queryByText('Coming soon')).toBeNull();
   });
 
-  it('a Sales user sees the status and the staff note, and no switch', async () => {
+  it('a Sales user sees the tag and the status, and no button', async () => {
     signInPilot('SALES', false);
     spiderStatus(ON);
     useAiCenterStore.setState({ focusAgentId: 'spider' });
     renderWithProviders(<AiCenterModal />);
-    expect(await within(strip('spider')).findByText('On, watching your leads')).toBeInTheDocument();
+    expect(await within(strip('spider')).findByText('Active')).toBeInTheDocument();
+    expect(card('spider').querySelector('[data-agent-available]')).not.toBeNull();
     const dialog = await screen.findByRole('dialog', { name: 'Spider' });
-    expect(await within(dialog).findByText('Spider is on')).toBeInTheDocument();
-    expect(within(dialog).getByText('Watching your open leads')).toBeInTheDocument();
+    expect(await within(dialog).findByText('Active', { selector: '[data-agent-chip]' })).toBeInTheDocument();
     expect(within(dialog).queryByRole('switch')).toBeNull();
+    expect(within(dialog).queryByRole('button', { name: /Open Spider|Set up Spider|Deactivate/ })).toBeNull();
   });
 });
 
-// The registry asks for an agent's switch only for a company that can use the agent: it passes
-// `enabled: accessible` to the switch hook. This fake hook does NOT check any gate of its own, so
+// The registry asks for an agent's status only for a company that can use the agent: it passes
+// `enabled: accessible` to the read hook. This fake hook does NOT check any gate of its own, so
 // only the registry stands between a company without access and the request.
 describe('a live agent the company cannot use', () => {
   const fake = AI_AGENTS.find((a) => a.id === 'mike')!;
-  const fetchSwitch = vi.fn(async () => ({ isActive: true, isSetUp: true }));
-  function useUngatedSwitch({ enabled }: { enabled: boolean }) {
-    return useQuery({ queryKey: ['fake-agent-switch'], queryFn: fetchSwitch, enabled });
+  const fetchStatus = vi.fn(async () => ({ isActive: true }));
+  function useUngatedRead({ enabled }: { enabled: boolean }) {
+    return useQuery({ queryKey: ['fake-agent-status'], queryFn: fetchStatus, enabled });
   }
 
   beforeEach(() => {
-    fetchSwitch.mockClear();
-    LIVE_AGENTS[fake.id] = fakeEntry({ released: false, isAccessible: () => false, useSwitch: useUngatedSwitch });
+    fetchStatus.mockClear();
+    LIVE_AGENTS[fake.id] = fakeEntry({ released: false, isAccessible: () => false, useActive: useUngatedRead });
   });
   afterEach(() => {
     delete LIVE_AGENTS[fake.id];
   });
 
-  it('never asks for its switch, on the card or in the pop-up, and shows Coming soon', async () => {
+  it('never asks for its status, on the card or in the pop-up, and shows Coming soon with no tag', async () => {
     setDemoOrg(false);
     useAiCenterStore.setState({ focusAgentId: fake.id });
     renderWithProviders(<AiCenterModal />);
@@ -284,24 +293,25 @@ describe('a live agent the company cannot use', () => {
     expect(within(dialog).getByText('Coming soon')).toBeInTheDocument();
     expect(within(dialog).getByText(`Book a call about ${fake.name}`)).toBeInTheDocument();
     expect(within(strip(fake.id)).getByText('Coming soon')).toBeInTheDocument();
+    expect(card(fake.id).querySelector('[data-agent-available]')).toBeNull();
     await new Promise((r) => setTimeout(r, 50));
-    expect(fetchSwitch).not.toHaveBeenCalled();
+    expect(fetchStatus).not.toHaveBeenCalled();
   });
 });
 
 // Layer 1, the other "no": the agent is released to customers, but this company does not have it
 // (plan, payment or anything else). One text for every agent, never naming a plan, and a booking
-// call to turn it on. Still no request about its switch.
+// call to turn it on. No Available tag, and still no request about its status: exactly as before #3433.
 describe('a released agent the company does not have', () => {
   const fake = AI_AGENTS.find((a) => a.id === 'mike')!;
-  const fetchSwitch = vi.fn(async () => ({ isActive: true, isSetUp: true }));
-  function useUngatedSwitch({ enabled }: { enabled: boolean }) {
-    return useQuery({ queryKey: ['fake-released-switch'], queryFn: fetchSwitch, enabled });
+  const fetchStatus = vi.fn(async () => ({ isActive: true }));
+  function useUngatedRead({ enabled }: { enabled: boolean }) {
+    return useQuery({ queryKey: ['fake-released-status'], queryFn: fetchStatus, enabled });
   }
 
   beforeEach(() => {
-    fetchSwitch.mockClear();
-    LIVE_AGENTS[fake.id] = fakeEntry({ released: true, isAccessible: () => false, useSwitch: useUngatedSwitch });
+    fetchStatus.mockClear();
+    LIVE_AGENTS[fake.id] = fakeEntry({ released: true, isAccessible: () => false, useActive: useUngatedRead });
   });
   afterEach(() => {
     delete LIVE_AGENTS[fake.id];
@@ -318,17 +328,21 @@ describe('a released agent the company does not have', () => {
     expect(row).toHaveAttribute('data-agent-control-row', 'not_available');
     expect(within(row).getByText(`${fake.name} is not on your account yet`)).toBeInTheDocument();
     expect(within(row).getByText("Book a call and we'll turn it on for you.")).toBeInTheDocument();
+    // The row as it was before #3433: the title a polite live region, and the row's own spacing and padding.
+    expect(within(row).getByRole('status')).toHaveTextContent(`${fake.name} is not on your account yet`);
+    expect(row).toHaveClass('gap-3', 'pr-1.5', 'transition-colors');
     expect(within(dialog).queryByRole('switch')).toBeNull();
     expect(row.querySelector('[data-agent-chip]')).toBeNull();
     // Not "Coming soon", and nothing about plans or tiers.
     expect(within(dialog).queryByText('Coming soon')).toBeNull();
     expect(dialog.textContent).not.toMatch(/\b(plan|tier|upgrade|Scale|Pro)\b/i);
     expect(within(dialog).getByText('Close', { selector: 'button' })).toBeInTheDocument();
-    expect(within(dialog).queryByRole('button', { name: new RegExp(`(Open|Set up) ${fake.name}`) })).toBeNull();
+    expect(within(dialog).queryByRole('button', { name: new RegExp(`(Open|Set up) ${fake.name}|Deactivate`) })).toBeNull();
 
     const s = strip(fake.id);
     expect(s).toHaveAttribute('data-agent-strip', 'not_available');
     expect(within(s).getByText('Book a call to add it')).toBeInTheDocument();
+    expect(card(fake.id).querySelector('[data-agent-available]')).toBeNull();
     // Not counted as coming soon.
     expect(screen.getByText(`${AI_AGENT_COUNT - 1} AI agents coming soon. Meet them, and book a call to be first in line.`)).toBeInTheDocument();
 
@@ -338,23 +352,23 @@ describe('a released agent the company does not have', () => {
     expect(await screen.findByRole('dialog', { name: `Book a call about ${fake.name}` })).toBeInTheDocument();
 
     await new Promise((r) => setTimeout(r, 30));
-    expect(fetchSwitch).not.toHaveBeenCalled();
+    expect(fetchStatus).not.toHaveBeenCalled();
   });
 
-  it('turns into the usable agent, with its switch, once the company has it', async () => {
+  it('turns into the usable agent, Available with its status, once the company has it', async () => {
     LIVE_AGENTS[fake.id] = fakeEntry({ released: true });
     setDemoOrg(false);
     useAiCenterStore.setState({ focusAgentId: fake.id });
     renderWithProviders(<AiCenterModal />);
     const dialog = await screen.findByRole('dialog', { name: fake.name });
-    expect(within(dialog).getByText(`${fake.name} is on`)).toBeInTheDocument();
-    expect(within(dialog).getByRole('switch', { name: `Switch ${fake.name} on or off` })).toBeInTheDocument();
+    expect(within(dialog).getByText('Active', { selector: '[data-agent-chip]' })).toBeInTheDocument();
+    expect(card(fake.id).querySelector('[data-agent-available]')).not.toBeNull();
     expect(within(dialog).queryByText(/not on your account/)).toBeNull();
   });
 });
 
 // The next live agent is one registry entry. Nothing in a component names Spider, so a second
-// entry must flip its card, its pop-up row, its switch and its footer on its own.
+// entry must flip its card, its tag, its pop-up row and its footer on its own.
 describe('a second live agent', () => {
   const fake = AI_AGENTS.find((a) => a.id === 'mike')!;
   const mutate = vi.fn();
@@ -367,35 +381,36 @@ describe('a second live agent', () => {
     delete LIVE_AGENTS[fake.id];
   });
 
-  it('flips its card, the header count, its pop-up row, its switch and its footer', async () => {
+  it('Active: its tag, its strip, the header count, its badge, and Deactivate with its own words', async () => {
     setDemoOrg(false);
     useAiCenterStore.setState({ focusAgentId: fake.id });
     const user = userEvent.setup();
     renderWithProviders(<AiCenterModal />);
 
     const dialog = await screen.findByRole('dialog', { name: fake.name });
-    expect(within(dialog).getByText(`${fake.name} is on`)).toBeInTheDocument();
-    expect(within(dialog).getByText('Herding your open jobs')).toBeInTheDocument();
+    expect(within(dialog).getByText('Active', { selector: '[data-agent-chip]' })).toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: `Open ${fake.name}` })).toBeInTheDocument();
     expect(within(dialog).queryByText(`Book a call about ${fake.name}`)).toBeNull();
     expect(within(dialog).queryByText('Coming soon')).toBeNull();
+    expect(within(dialog).queryByRole('switch')).toBeNull();
 
-    // Its switch asks before turning it off, then calls its own write hook.
-    await user.click(within(dialog).getByRole('switch', { name: `Switch ${fake.name} on or off` }));
-    const confirm = await screen.findByRole('alertdialog', { name: `Turn off ${fake.name}?` });
+    await user.click(within(dialog).getByRole('button', { name: 'Deactivate' }));
+    const confirm = await screen.findByRole('alertdialog', { name: `Deactivate ${fake.name}?` });
     expect(within(confirm).getByText('The fake agent stops herding.')).toBeInTheDocument();
-    await user.click(within(confirm).getByRole('button', { name: 'Turn off' }));
+    await user.click(within(confirm).getByRole('button', { name: 'Deactivate' }));
     expect(mutate).toHaveBeenCalledWith(false);
+    expect(mutate).toHaveBeenCalledTimes(1);
 
-    expect(within(strip(fake.id)).getByText('On, herding your jobs')).toBeInTheDocument();
+    expect(within(strip(fake.id)).getByText('Active')).toBeInTheDocument();
+    expect(card(fake.id).querySelector('[data-agent-available]')).not.toBeNull();
     expect(screen.getByText(`${AI_AGENT_COUNT - 1} AI agents coming soon. Meet them, and book a call to be first in line.`)).toBeInTheDocument();
     // Spider is still closed to this company: no Spider request.
     expect(spiderCalls()).toHaveLength(0);
   });
 
-  it('on before it is set up: its own words on the card and row, "Set up" open, and off with no question', async () => {
+  it('Not active: its own ? words, "Set up", and nothing that activates it', async () => {
     LIVE_AGENTS[fake.id] = fakeEntry({
-      useSwitch: () => ({ data: { isActive: true, isSetUp: false }, isError: false }),
+      useActive: () => ({ data: { isActive: false }, isError: false }),
       useSetActive: () => ({ mutate, isPending: false }),
     });
     setDemoOrg(false);
@@ -404,45 +419,18 @@ describe('a second live agent', () => {
     renderWithProviders(<AiCenterModal />);
 
     const dialog = await screen.findByRole('dialog', { name: fake.name });
-    expect(within(dialog).getByText(`${fake.name} is on`)).toBeInTheDocument();
-    expect(within(dialog).getByText('Pick the jobs to herd so it can start')).toBeInTheDocument();
-    const setUp = within(dialog).getByRole('button', { name: `Set up ${fake.name}` });
-    expect(setUp).not.toHaveAttribute('aria-disabled');
-    expect(within(strip(fake.id)).getByText('On, no flock yet')).toBeInTheDocument();
-
-    // Nothing to lose: straight off, no question.
-    await user.click(within(dialog).getByRole('switch', { name: `Switch ${fake.name} on or off` }));
-    expect(screen.queryByRole('alertdialog')).toBeNull();
-    expect(mutate).toHaveBeenCalledWith(false);
+    expect(within(dialog).getByText('Not active', { selector: '[data-agent-chip]' })).toBeInTheDocument();
+    expect(within(strip(fake.id)).getByText('Not active')).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: `Set up ${fake.name}` })).not.toHaveAttribute('aria-disabled');
+    expect(within(dialog).queryByRole('button', { name: 'Deactivate' })).toBeNull();
+    await user.click(within(dialog).getByRole('button', { name: 'About Not active' }));
+    expect(await screen.findByText('The fake agent herds nothing yet.')).toBeInTheDocument();
+    expect(mutate).not.toHaveBeenCalled();
   });
 
-  it('off and never set up: its own words, a working switch and a locked "Set up"', async () => {
+  it('to someone who cannot manage it: the tag and the status, without the buttons', async () => {
     LIVE_AGENTS[fake.id] = fakeEntry({
-      useSwitch: () => ({ data: { isActive: false, isSetUp: false }, isError: false }),
-      useSetActive: () => ({ mutate, isPending: false }),
-    });
-    setDemoOrg(false);
-    useAiCenterStore.setState({ focusAgentId: fake.id });
-    const user = userEvent.setup();
-    renderWithProviders(<AiCenterModal />);
-
-    const dialog = await screen.findByRole('dialog', { name: fake.name });
-    expect(within(dialog).getByText(`${fake.name} is off`)).toBeInTheDocument();
-    expect(within(dialog).getByText('Turn it on, then pick the jobs to herd')).toBeInTheDocument();
-    const locked = within(dialog).getByRole('button', { name: `Set up ${fake.name}` });
-    expect(locked).toHaveAttribute('aria-disabled', 'true');
-    expect(locked).toHaveAccessibleDescription(`${fake.name} is off. Turn it on to set it up.`);
-    expect(within(strip(fake.id)).getByText('Off')).toBeInTheDocument();
-
-    const sw = within(dialog).getByRole('switch', { name: `Switch ${fake.name} on or off` });
-    expect(sw).not.toHaveAttribute('aria-disabled');
-    await user.click(sw);
-    expect(mutate).toHaveBeenCalledWith(true);
-  });
-
-  it('to someone who cannot manage it: its own words for on-but-not-set-up, and no switch', async () => {
-    LIVE_AGENTS[fake.id] = fakeEntry({
-      useSwitch: () => ({ data: { isActive: true, isSetUp: false }, isError: false }),
+      useActive: () => ({ data: { isActive: false }, isError: false }),
       canManage: () => false,
     });
     setDemoOrg(false);
@@ -450,11 +438,10 @@ describe('a second live agent', () => {
     renderWithProviders(<AiCenterModal />);
 
     const dialog = await screen.findByRole('dialog', { name: fake.name });
-    expect(within(dialog).getByText(`${fake.name} is on`)).toBeInTheDocument();
-    expect(within(dialog).getByText('An Admin has not set it up yet')).toBeInTheDocument();
-    expect(within(dialog).getByText('The fake agent is on, waiting for its flock.')).toBeInTheDocument();
-    expect(within(dialog).queryByRole('switch')).toBeNull();
-    expect(within(dialog).queryByRole('button', { name: new RegExp(`(Open|Set up) ${fake.name}`) })).toBeNull();
+    expect(within(dialog).getByText('Not active', { selector: '[data-agent-chip]' })).toBeInTheDocument();
+    expect(card(fake.id).querySelector('[data-agent-available]')).not.toBeNull();
+    expect(within(dialog).queryByRole('button', { name: new RegExp(`(Open|Set up) ${fake.name}|Deactivate|About Not active`) })).toBeNull();
+    expect(within(dialog).queryByText('Close', { selector: 'button' })).toBeNull();
   });
 });
 

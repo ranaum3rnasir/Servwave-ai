@@ -10,9 +10,10 @@
  *   switched off or the gate is revoked. A company that is switched off, or no longer passes the
  *   gate, has every open alert ended by every run (D4: off means none open; SPEC-5 R10: losing
  *   access behaves like off).
- * - Which leads: every open lead (no row cap; read in pages of 500, pages.ts) in a stage the company switched on, or only the
- *   selected leads when "Auto-select new leads" (watch_all_leads) is off. Won, Lost and Cancelled
- *   never.
+ * - Which leads: every open lead (no row cap; read in pages of 500, pages.ts) in a stage the company switched on, except
+ *   the leads it excluded (spider_settings.excluded_lead_ids, #3434; Ran 3 Nov: every open lead is watched by default, new
+ *   ones included). The exclusion list is left out in memory, so the reads do not grow with it. Won, Lost and Cancelled
+ *   never; a lead that closes drops out by itself, and an excluded lead that is reopened stays excluded.
  * - Stage and time in it: the lead's stage and the instant it entered it come from the lead's own
  *   timestamps, by the contractor's rules (config.ts `spiderStageOf`, Ran 15 Oct). Time is now minus
  *   that instant - never floored at when Spider was switched on (#2794): the starting summary is what
@@ -46,7 +47,8 @@
  *   effect from the next run (Ran, 2026-11-04, "Next run"): at most about 45 s, up to 100 alerts already in that run
  *   may still go out. Their bell and frame records are ended at once by the end step's switch check.
  * - Ending: an unread spider.alert whose lead has left the alerted stage visit (another stage or
- *   none, or the same stage entered again later) is marked read for every recipient.
+ *   none, or the same stage entered again later), or that the saved settings no longer alert (the lead excluded, its
+ *   stage's limit off, or a longer limit it is not past; #3450), is marked read for every recipient (alertStillOpen).
  *
  * - How much per run (#2991, runCaps.ts): at most 100 per-lead alerts per company, the ones overdue
  *   longest first, and at most about 45 s per company, stopping between two alerts. The rest stay
@@ -78,6 +80,7 @@ import {
   spiderStageOf,
   type SpiderChannels,
   type SpiderStatus,
+  type SpiderStatusLimit,
   type SpiderUnit,
 } from './config';
 import { spiderAvailableForOrg } from './gate';
@@ -303,36 +306,111 @@ interface StageVisit {
  * Each lead's current stage visit: its Spider stage and the instant it entered it (spiderStageOf).
  * Leads in no stage are left out. No row cap, but never all of a company's leads in one read (#2992, pages.ts): every
  * open lead in keyset pages of SWEEP_PAGE_SIZE by lead id, or the given leads in chunks of SWEEP_PAGE_SIZE ids. `open`
- * leaves out the leads that are Won, Lost or Cancelled before reading them, which spiderStageOf would leave out anyway.
+ * leaves out the leads that are Won, Lost or Cancelled before reading them, which spiderStageOf would leave out anyway,
+ * and then the company's excluded leads (#3434), in memory: the number of reads never depends on how many are excluded.
  */
 async function currentStageVisits(
   orgId: string,
-  filter: { leadIds?: readonly string[]; open?: boolean },
+  filter: { leadIds: readonly string[] } | { open: true; excludedLeadIds: readonly string[] },
 ): Promise<StageVisit[]> {
-  if (filter.leadIds && filter.leadIds.length === 0) return [];
-  const where: Prisma.LeadWhereInput = {
-    organization_id: orgId,
-    ...(filter.open ? { status: { notIn: ['WON', 'LOST'] }, won_at: null, lost_at: null, cancelled_at: null } : {}),
-  };
-  const select = { id: true, commission_owner_id: true, ...SPIDER_LEAD_TIMES_SELECT } as const;
-  const leads = filter.leadIds
-    ? await leadsInChunks([...new Set(filter.leadIds)], (ids) => prisma.lead.findMany({ where: { ...where, id: { in: ids } }, select }))
-    : await allKeysetPages(
-        (after) =>
-          prisma.lead.findMany({
-            where: { ...where, ...(after ? { id: { gt: after } } : {}) },
-            select,
-            orderBy: { id: 'asc' },
-            take: SWEEP_PAGE_SIZE,
-          }),
-        (l) => l.id,
-      );
+  let leads: Prisma.LeadGetPayload<{ select: typeof STAGE_VISIT_SELECT }>[];
+  if ('leadIds' in filter) {
+    if (filter.leadIds.length === 0) return [];
+    leads = await leadsInChunks([...new Set(filter.leadIds)], (ids) =>
+      prisma.lead.findMany({ where: { organization_id: orgId, id: { in: ids } }, select: STAGE_VISIT_SELECT }),
+    );
+  } else {
+    const excluded = new Set(filter.excludedLeadIds);
+    leads = (await allOpenLeads(orgId)).filter((l) => !excluded.has(l.id));
+  }
   return leads.flatMap((l) => {
     const visit = spiderStageOf(l);
     return visit
       ? [{ id: l.id, status: visit.stage, entered_at: visit.enteredAt, lead_status: l.status, created_at: l.created_at, owner_id: l.commission_owner_id ?? null }]
       : [];
   });
+}
+
+const STAGE_VISIT_SELECT = { id: true, commission_owner_id: true, ...SPIDER_LEAD_TIMES_SELECT } as const;
+
+/**
+ * A company's open leads, as the sweep counts them: not Won or Lost, and no won, lost or cancelled stamp. The migration
+ * that filled spider_settings.excluded_lead_ids (20261110090000) uses the same condition.
+ */
+export function openLeadsWhere(orgId: string): Prisma.LeadWhereInput {
+  return { organization_id: orgId, status: { notIn: ['WON', 'LOST'] }, won_at: null, lost_at: null, cancelled_at: null };
+}
+
+/** Every open lead of the company, in keyset pages of SWEEP_PAGE_SIZE by lead id (#2992, #3058): the one paged read of them. */
+function allOpenLeads(orgId: string) {
+  const where = openLeadsWhere(orgId);
+  return allKeysetPages(
+    (after) =>
+      prisma.lead.findMany({
+        where: { ...where, ...(after ? { id: { gt: after } } : {}) },
+        select: STAGE_VISIT_SELECT,
+        orderBy: { id: 'asc' },
+        take: SWEEP_PAGE_SIZE,
+      }),
+    (l) => l.id,
+  );
+}
+
+/** The settings that say which leads Spider watches. */
+export interface WatchedSettings {
+  status_limits: Prisma.JsonValue;
+  excluded_lead_ids: string[];
+  /**
+   * The stays already past their limit when Spider was activated with "Skip them" (#3431, skippedStayKey): never
+   * reported, neither per lead nor in a later starting summary. Empty otherwise.
+   */
+  backlog_skipped_stays: string[];
+}
+
+/**
+ * One lead stay: the lead, its Spider stage and the instant it entered it. A lead that leaves the stage and comes back
+ * has a new stay with a new key.
+ */
+export function skippedStayKey(v: { id: string; status: string; entered_at: Date }): string {
+  return `${v.id}|${v.status}|${v.entered_at.getTime()}`;
+}
+
+/**
+ * What Spider watches for a company with these settings, at `now`, in the active period that started at `activatedAt`:
+ * the ONE rule, used by the sweep and by the activation preview (#3431), so the review's numbers are the sweep's.
+ *
+ * - `visits`: every open lead that is not excluded (#3434) whose current stage has its time limit switched on. None
+ *   while no stage has one (`noLimits`).
+ * - `overdue`: of those, the stays already past their limit. Time in the stage counts from when the lead entered it
+ *   (#2794); `countedFrom`, the later of that and `activatedAt`, only names the active period in the claim key (D5).
+ *   The stays skipped by an Activate with "Skip them" (`backlog_skipped_stays`) are left out; nothing else is.
+ */
+export async function watchedVisits(orgId: string, settings: WatchedSettings, now: Date, activatedAt: Date) {
+  const limits = readStatusLimits(settings.status_limits);
+  const noLimits = !SPIDER_WATCHED_STATUSES.some((s) => limits[s].enabled);
+  const visits = !noLimits
+    ? (await currentStageVisits(orgId, { open: true, excludedLeadIds: settings.excluded_lead_ids })).filter(
+        (v) => limits[v.status].enabled,
+      )
+    : [];
+  const skipped = new Set(settings.backlog_skipped_stays);
+  const overdue = visits.flatMap((v) => {
+    const limit = limits[v.status];
+    if (!isPastLimit(v.entered_at, limit, now)) return [];
+    if (skipped.has(skippedStayKey(v))) return [];
+    const countedFrom = v.entered_at > activatedAt ? v.entered_at : activatedAt;
+    return [{ ...v, countedFrom, limit }];
+  });
+  return { noLimits, visits, overdue };
+}
+
+/**
+ * Whether a stay entered at `enteredAt` is past this stage's limit at `now`: the limit is switched on and the time in the
+ * stage has reached it. The one rule for "overdue": the sweep alerts by it (watchedVisits) and an open alert stays open
+ * only while it still holds (alertStillOpen, #3450).
+ */
+export function isPastLimit(enteredAt: Date, limit: SpiderStatusLimit, now: Date): boolean {
+  return limit.enabled && now.getTime() - enteredAt.getTime() >= limitMs(limit.value, limit.unit);
 }
 
 /** One read per chunk of ids, one after another (the sweep's one connection), in order. */
@@ -362,7 +440,9 @@ async function sweepCompany(
   timeUp: () => boolean,
   progress: CompanyProgress = newProgress(),
 ): Promise<CompanyResult> {
-  const alertsEnded = await endFinishedAlerts(orgId, now);
+  // Read once for the whole company run: the end step checks open alerts against them (#3450), the rest alerts by them.
+  const settings = await prisma.spiderSettings.findUnique({ where: { organization_id: orgId } });
+  const alertsEnded = await endFinishedAlerts(orgId, now, openAlertRulesOf(settings));
   const done = (r: Partial<CompanyResult> = {}): CompanyResult => ({
     leadsChecked: 0,
     alertsSent: 0,
@@ -376,7 +456,6 @@ async function sweepCompany(
   if (!available) {
     return { ...done({ skipped: 'outside_gate' }), alertsEnded: alertsEnded + (await endOpenSpiderRecords(orgId, now)) };
   }
-  const settings = await prisma.spiderSettings.findUnique({ where: { organization_id: orgId } });
   // Switched off: no open alert may remain (D4). The switch ends them itself; this repairs anything
   // it missed, within one run.
   if (settings && !settings.is_active) {
@@ -396,24 +475,7 @@ async function sweepCompany(
   const waitedOut = !!waitingSince && now.getTime() - waitingSince.getTime() >= SUMMARY_MAX_WAIT_MS;
   if (trigger && now.getTime() - trigger.getTime() < SUMMARY_QUIET_MS && !waitedOut) return done({ skipped: 'summary_waiting' });
 
-  const limits = readStatusLimits(settings.status_limits);
-  const noLimits = !SPIDER_WATCHED_STATUSES.some((s) => limits[s].enabled);
-  const visits = !noLimits
-    ? (
-        await currentStageVisits(orgId, {
-          leadIds: settings.watch_all_leads ? undefined : settings.selected_lead_ids,
-          open: true,
-        })
-      ).filter((v) => limits[v.status].enabled)
-    : [];
-
-  // Time in the stage counts from when the lead entered it (#2794). countedFrom, the later of that and
-  // activated_at, only names the switched-on period in the claim key (D5).
-  const overdue = visits.flatMap((v) => {
-    const limit = limits[v.status];
-    const countedFrom = v.entered_at > activatedAt ? v.entered_at : activatedAt;
-    return now.getTime() - v.entered_at.getTime() >= limitMs(limit.value, limit.unit) ? [{ ...v, countedFrom, limit }] : [];
-  });
+  const { noLimits, visits, overdue } = await watchedVisits(orgId, settings, now, activatedAt);
 
   // Skip visits already alerted (or summarized) in this switched-on period before doing any work for
   // them, by the same five parts as the unique key. The insert is still the authoritative claim; this
@@ -1132,11 +1194,59 @@ export async function currentVisitsByLead(orgId: string, leadIds: readonly strin
 
 /**
  * Whether the lead has left the alerted stage visit: a different stage now or none, the same stage
- * entered again at a later instant, or the lead is gone. The one rule for ending an alert - the
- * sweep marks such alerts read, and the unread-alerts list leaves them out at once.
+ * entered again at a later instant, or the lead is gone. Half of the ending rule (alertStillOpen); the other half is the
+ * saved settings (#3450).
  */
 export function hasLeftAlertedVisit(alerted: AlertedVisit, visit: StageVisit | undefined): boolean {
   return !visit || visit.status !== alerted.status || visit.entered_at.toISOString() !== alerted.enteredAt;
+}
+
+/**
+ * The saved settings an open alert is checked against (#3450, Ran 11 Nov: an open alert follows the settings saved now).
+ * `null` when the company has no settings row: then only the stage visit decides.
+ */
+export interface OpenAlertRules {
+  limits: Record<SpiderStatus, SpiderStatusLimit>;
+  /** Whether the company excluded this lead (spider_settings.excluded_lead_ids, #3434). */
+  isExcluded: (leadId: string) => boolean;
+}
+
+/** The rules from a settings row the caller already read (the exclusion list in memory: the sweep has the whole row). */
+export function openAlertRulesOf(
+  settings: { status_limits: Prisma.JsonValue; excluded_lead_ids: readonly string[] } | null,
+): OpenAlertRules | null {
+  if (!settings) return null;
+  const excluded = new Set(settings.excluded_lead_ids);
+  return { limits: readStatusLimits(settings.status_limits), isExcluded: (id) => excluded.has(id) };
+}
+
+/**
+ * Which of these leads the company excluded: only those ids, never the whole list (it can hold thousands, and the
+ * unread-alerts read runs every 30 s per person). One query, whatever the number of leads.
+ */
+export async function excludedAmong(orgId: string, leadIds: readonly string[]): Promise<Set<string>> {
+  const ids = [...new Set(leadIds)];
+  if (ids.length === 0) return new Set();
+  const rows = await prisma.$queryRaw<{ id: string }[]>`
+    SELECT x::text AS id FROM (
+      SELECT unnest(excluded_lead_ids) AS x FROM spider_settings WHERE organization_id = ${orgId}::uuid
+      INTERSECT
+      SELECT unnest(${ids}::uuid[])
+    ) t`;
+  return new Set(rows.map((r) => r.id));
+}
+
+/**
+ * Whether an alert is still open: the ONE rule both the unread-alerts read and the sweep's end step use. Open while the
+ * lead is still in the alerted stage visit (hasLeftAlertedVisit) and, under the settings saved now, the lead would still
+ * be alerted: not excluded, its stage's limit switched on, and still past that limit (isPastLimit). So excluding the lead,
+ * switching the stage off or lengthening the limit past where the lead is ends it; a shorter limit or more recipients
+ * never does (an alerted lead is already past the old, longer limit).
+ */
+export function alertStillOpen(alerted: AlertedVisit, visit: StageVisit | undefined, rules: OpenAlertRules | null, now: Date): boolean {
+  if (!visit || hasLeftAlertedVisit(alerted, visit)) return false;
+  if (!rules) return true;
+  return !rules.isExcluded(alerted.leadId) && isPastLimit(visit.entered_at, rules.limits[visit.status], now);
 }
 
 /** One unread Spider record, with only what the ending rule reads from its data (alertedVisitOf). */
@@ -1171,13 +1281,14 @@ function openSpiderRecordsPage(orgId: string, after: string | undefined): Promis
 }
 
 /**
- * Marks read every unread Spider record (in-app alert or red-frame-only) in this company whose
- * lead has left the alerted stage visit (hasLeftAlertedVisit). Touches Spider rows only, and only
+ * Marks read every unread Spider record (in-app alert or red-frame-only) in this company that is no
+ * longer open (alertStillOpen): its lead has left the alerted stage visit, or the saved settings no longer alert it
+ * (#3450). `rules` is read once per company run. Touches Spider rows only, and only
  * this company's. Page by page (#2992): each page of records, its leads' current visits, and the end of the page's
  * finished records, before the next page; a record ended on one page is behind the next page's start, so none is read
  * twice or skipped.
  */
-async function endFinishedAlerts(orgId: string, now: Date): Promise<number> {
+async function endFinishedAlerts(orgId: string, now: Date, rules: OpenAlertRules | null): Promise<number> {
   let ended = 0;
   await forEachKeysetPage(
     (after) => openSpiderRecordsPage(orgId, after),
@@ -1188,7 +1299,7 @@ async function endFinishedAlerts(orgId: string, now: Date): Promise<number> {
 
       const current = await currentVisitsByLead(orgId, [...alerted.values()].map((v) => v.leadId));
       const finished = [...alerted.entries()]
-        .filter(([, a]) => hasLeftAlertedVisit(a, current.get(a.leadId)))
+        .filter(([, a]) => !alertStillOpen(a, current.get(a.leadId), rules, now))
         .map(([notificationId]) => notificationId);
       if (finished.length === 0) return;
 

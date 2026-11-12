@@ -4,24 +4,24 @@ import { isSpiderAdminUser, spiderAvailableFor } from '@/lib/spider/gate';
 import { useSetSpiderActive, useSpiderStatus } from '@/lib/api/spider';
 
 /**
- * The status every AI Agentic Farm agent shows, for the signed-in company. Three layers decide it,
- * for every agent (Ran, 13-14 Oct):
- *   1. Available: may this company use the agent at all?
+ * The status every AI Agentic Farm agent shows, for the signed-in company. Two facts decide it, for
+ * every agent, each shown once (Ran 13-14 Oct; works like an integration, Ran 10 Nov):
+ *   1. On the account: may this company use the agent at all?
  *        no, and it is not released to customers yet  -> "Coming soon" (every agent by default)
- *        no, but it is released (this company does not have it)  -> "Not on your account yet",
+ *        no, but it is released (this company does not have it)  -> "Book a call to add it",
  *          one text for every agent and every reason, never naming a plan, so it can sell later
- *   2. On / off: the Admin's switch.                    -> "On" / "Off"
- *   3. Access: the agent's page opens only while it is on.
- * Beside the switch it carries whether the agent has been set up (it may be on before it is: an
- * Admin turns it on first, then sets it up). The footer's button is the way in, only while on.
- * Until the switch is read the answer is "loading", and when it cannot be read it is "unknown":
+ *        yes  -> an "Available" tag beside the name (see agentOnAccount)
+ *   2. Running: Not active / Active, read from the server. There is no switch: an agent is
+ *      activated only on its own page, after its review; the pop-up can Deactivate it (with the
+ *      same question as the page) and opens the page.
+ * Until the status is read the answer is "loading", and when it cannot be read it is "unknown":
  * neither ever claims a state.
  *
- * The card, the detail pop-up (its control row AND its footer), the header count and the agent's
+ * The card, the detail pop-up (its status row AND its footer), the header count and the agent's
  * own page all read this, and no catalog component names an agent. LIVE_AGENTS is the only list of
  * built agents: making the next agent live is one entry here, with its own words.
  */
-export type AgentDisplayStatus = 'coming_soon' | 'not_available' | 'on' | 'off' | 'loading' | 'unknown';
+export type AgentDisplayStatus = 'coming_soon' | 'not_available' | 'active' | 'not_active' | 'loading' | 'unknown';
 
 /**
  * The words for a released agent this company does not have (layer 1). The same for every agent
@@ -51,49 +51,30 @@ export type AgentUser =
   | null
   | undefined;
 
-/** What reading an agent's on/off switch returns (a react-query result fits it). */
-export interface AgentSwitchResult {
-  data: { isActive: boolean; isSetUp: boolean } | undefined;
+/** What reading whether an agent is Active returns (a react-query result fits it). */
+export interface AgentActiveRead {
+  data: { isActive: boolean } | undefined;
   isError: boolean;
 }
 
 /**
- * What switching an agent on or off returns (a react-query mutation fits it). The hook moves the
- * switch at once, moves it back if the save fails and says so itself, so the pop-up only calls it.
+ * What deactivating an agent returns (a react-query mutation fits it). The hook shows the new state
+ * at once, puts it back if the save fails and says so itself, so the pop-up only calls it.
  */
 export interface AgentSetActiveResult {
   mutate: (isActive: boolean) => void;
   isPending: boolean;
 }
 
-/**
- * The words the generic card and pop-up need about one agent. Everything that names the agent's
- * own job lives here; the parts built from its name ("Spider is on", "Turn off Spider?") are put
- * together by the components from the catalog name.
- */
+/** The words the generic card and pop-up need about one agent, beyond its catalog name. */
 export interface AgentCopy {
-  /** The card's strip while the agent is on and set up ("On, watching your leads"). */
-  cardOn: string;
-  /** ...while it is on but not set up yet ("On, not set up yet"). */
-  cardOnNotSetUp: string;
-  /** The pop-up row's second line while on and set up ("Watching your open leads"). */
-  onDetail: string;
-  /** ...while off and set up ("No new lead alerts are going out"). */
-  offDetail: string;
-  /** ...while on but not set up, to someone who may set it up: what is left to do. */
-  onNotSetUpDetail: string;
-  /** ...while off and never set up, to someone who may set it up: turn it on first. */
-  offNotSetUpDetail: string;
-  /** ...while not set up (on or off), to everyone else. */
-  notSetUpMemberDetail: string;
-  /** The pop-up footer note for someone who cannot manage it, while it is on and set up. */
-  memberOnNote: string;
-  /** ...while it is on but not set up yet. */
-  memberOnNotSetUpNote: string;
-  /** ...while it is off (set up or not). */
-  memberOffNote: string;
-  /** What turning it off does, one paragraph each, shown before it is turned off. */
-  turnOffWarning: readonly string[];
+  /** The ? beside "Not active" in the pop-up, for someone who may manage the agent. */
+  notActiveHelp: string;
+  /**
+   * What Deactivate does, one paragraph each, in the "Deactivate {name}?" question asked first, on
+   * the agent's page (#3432) and in the pop-up (#3433): the same question in both places.
+   */
+  deactivateWarning: readonly string[];
 }
 
 export interface LiveAgent {
@@ -106,19 +87,23 @@ export interface LiveAgent {
   /** Layer 1: may this company use the agent? Checked before any request about it is made. */
   isAccessible: (user: AgentUser) => boolean;
   /**
-   * Question 2: the agent's on/off switch. A hook. `enabled` is false for a company that cannot
-   * use the agent (it must then ask nothing). Every place that shows the status shares one cached
-   * read, so the whole catalog asks once.
+   * Fact 2: whether the agent is Active. A hook. `enabled` is false for a company that cannot use
+   * the agent (it must then ask nothing). Every place that shows the status shares one cached read,
+   * so the whole catalog asks once.
    */
-  useSwitch: (options: { enabled: boolean }) => AgentSwitchResult;
-  /** Switching the agent on or off. A hook; it makes no request until it is called. */
+  useActive: (options: { enabled: boolean }) => AgentActiveRead;
+  /**
+   * Saving Active or Not active. A hook; it makes no request until it is called. The farm and the
+   * agent's page only ever deactivate with it (see useAgentDeactivateControl): activating goes through
+   * the page's own review.
+   */
   useSetActive: () => AgentSetActiveResult;
   /**
-   * Who may switch the agent on or off and open its page (layers 2 and 3). Must match the server's
-   * own guard on the agent's write routes, so nobody is shown a switch the server would refuse.
-   * Today that is an Admin for every agent; everyone else reads the state in words. A later Roles &
-   * Permissions "AI Farm" section will let Admins grant an agent to roles or users, and this check
-   * (with the server's guard) is where that grant will be read.
+   * Who may deactivate the agent and open its page. Must match the server's own guard on the
+   * agent's write routes, so nobody is shown a button the server would refuse. Today that is an
+   * Admin for every agent; everyone else reads the tag and the status. A later Roles & Permissions
+   * "AI Farm" section will let Admins grant an agent to roles or users, and this check (with the
+   * server's guard) is where that grant will be read.
    */
   canManage: (user: AgentUser) => boolean;
   /** The agent's own page, where it is set up. */
@@ -136,26 +121,19 @@ export const LIVE_AGENTS: Record<string, LiveAgent> = {
     // "Not on your account yet".
     released: false,
     isAccessible: spiderAvailableFor,
-    useSwitch: useSpiderStatus,
+    useActive: useSpiderStatus,
     useSetActive: useSetSpiderActive,
     // requireSpiderAdmin on the server: an Admin (who is never also on a custom role). The future
     // Roles & Permissions "AI Farm" grant is read here and in requireSpiderAdmin.
     canManage: isSpiderAdminUser,
     managePath: '/spider',
     copy: {
-      cardOn: 'On, watching your leads',
-      cardOnNotSetUp: 'On, not set up yet',
-      onDetail: 'Watching your open leads',
-      offDetail: 'No new lead alerts are going out',
-      onNotSetUpDetail: 'Choose the statuses to watch so it can start',
-      offNotSetUpDetail: 'Turn it on, then choose the statuses to watch',
-      notSetUpMemberDetail: 'An Admin has not set it up yet',
-      memberOnNote: 'Spider is on for your company. You get its alerts when you are on watch.',
-      memberOnNotSetUpNote: 'Spider is on for your company. You will get its alerts once an Admin sets it up.',
-      memberOffNote: 'An Admin turns Spider on or off. You will get its alerts once it is on.',
-      turnOffWarning: [
+      // Mockup M1 "AI Agentic Farm card and pop-up" (Ran, 10 Nov), word for word.
+      notActiveHelp: 'Spider watches nothing and sends nothing. Open it, check the settings, then press Activate.',
+      // Mockup M1 "Activating and deactivating" (Ran, 10 Nov), word for word.
+      deactivateWarning: [
         'Spider stops watching your leads and sends no new alerts. Any open Spider alerts are cleared for everyone, and Spider History keeps a record of them.',
-        'Your statuses, time limits and who gets alerted are all kept. When you turn it back on, Spider sends one summary of the leads still past their time limit.',
+        'Your statuses, time limits and who gets alerted are all kept. When you activate it again, the review asks whether to send one summary of the leads still past their time limit.',
       ],
     },
   },
@@ -176,30 +154,25 @@ export function agentReleased(agentId: string | null | undefined): boolean {
   return (agentId ? LIVE_AGENTS[agentId]?.released : undefined) === true;
 }
 
-/**
- * The status shown, from the answers. `released` only matters to a company that cannot use the
- * agent. Set up or not never changes it: see agentIsSetUp.
- */
-export function displayStatusFor(accessible: boolean, sw: AgentSwitchResult, released = false): AgentDisplayStatus {
+/** The status shown, from the answers. `released` only matters to a company that cannot use the agent. */
+export function displayStatusFor(accessible: boolean, read: AgentActiveRead, released = false): AgentDisplayStatus {
   if (!accessible) return released ? 'not_available' : 'coming_soon';
-  if (sw.data) return sw.data.isActive ? 'on' : 'off';
-  return sw.isError ? 'unknown' : 'loading';
+  if (read.data) return read.data.isActive ? 'active' : 'not_active';
+  return read.isError ? 'unknown' : 'loading';
 }
 
-/** Whether the agent has been set up. Only an answer that was read says yes. */
-export function agentIsSetUp(accessible: boolean, sw: AgentSwitchResult): boolean {
-  return accessible && sw.data?.isSetUp === true;
+/**
+ * Whether the agent is on this company's account, which the "Available" tag beside its name says.
+ * True while its status is being read too: that it is on the account is known before.
+ */
+export function agentOnAccount(status: AgentDisplayStatus): boolean {
+  return status !== 'coming_soon' && status !== 'not_available';
 }
 
 export interface AgentStatus {
-  /** On or off (or coming soon, loading, unknown): the switch alone. */
+  /** Active or Not active, or coming soon, not on the account, loading, unknown. */
   status: AgentDisplayStatus;
-  /**
-   * Whether the agent has been set up, alongside the switch, so an agent that is on before it is
-   * set up still reads as on. Only meaningful while the status is "on" or "off".
-   */
-  isSetUp: boolean;
-  /** Whether this person may switch the agent and open its page (false unless it is available). */
+  /** Whether this person may deactivate the agent and open its page (false unless it is on the account). */
   canManage: boolean;
   /** The agent's page, only for someone who may manage it. */
   managePath: string | undefined;
@@ -209,17 +182,16 @@ export interface AgentStatus {
 
 const COMING_SOON: AgentStatus = {
   status: 'coming_soon',
-  isSetUp: false,
   canManage: false,
   managePath: undefined,
   copy: undefined,
 };
 
 /**
- * An agent's status for the signed-in company. Reads the switch only for an agent this company can
- * use, so a company without access makes no request about it.
+ * An agent's status for the signed-in company. Reads it only for an agent this company can use, so
+ * a company without access makes no request about it.
  *
- * Every registered agent's switch hook runs on every call, in registry order, with only the asked
+ * Every registered agent's read hook runs on every call, in registry order, with only the asked
  * agent's enabled: LIVE_AGENTS does not change while the app runs, so the hook order is stable
  * whichever agent a card or the pop-up is showing.
  */
@@ -228,15 +200,14 @@ export function useAgentStatus(agentId: string | null | undefined): AgentStatus 
   let result = COMING_SOON;
   for (const [id, entry] of Object.entries(LIVE_AGENTS)) {
     const accessible = id === agentId && entry.isAccessible(user);
-    const sw = entry.useSwitch({ enabled: accessible });
+    const read = entry.useActive({ enabled: accessible });
     if (id === agentId && !accessible && entry.released) {
       result = { ...COMING_SOON, status: 'not_available' };
     }
     if (accessible) {
       const canManage = entry.canManage(user);
       result = {
-        status: displayStatusFor(true, sw),
-        isSetUp: agentIsSetUp(true, sw),
+        status: displayStatusFor(true, read),
         canManage,
         managePath: canManage ? entry.managePath : undefined,
         copy: entry.copy,
@@ -246,21 +217,24 @@ export function useAgentStatus(agentId: string | null | undefined): AgentStatus 
   return result;
 }
 
-export interface AgentSwitchControl {
-  /** Switch the agent on or off. Undefined unless this person may manage an agent this company has. */
-  setActive: ((isActive: boolean) => void) | undefined;
+export interface AgentDeactivateControl {
+  /**
+   * Deactivate the agent. Only ever false: activating happens on the agent's page, after its review,
+   * never from here. Undefined unless this person may manage an agent this company has.
+   */
+  setActive: ((isActive: false) => void) | undefined;
   /** A save is on its way. */
   saving: boolean;
 }
 
 /**
- * The on/off control for one agent, for the pop-up. Same stable hook order as useAgentStatus: every
+ * Deactivating one agent, for the pop-up and the agent's page. Same stable hook order as useAgentStatus: every
  * registered agent's write hook runs, and only the asked one is handed back, and only to someone
  * who may manage it at a company that can use it.
  */
-export function useAgentSwitchControl(agentId: string | null | undefined): AgentSwitchControl {
+export function useAgentDeactivateControl(agentId: string | null | undefined): AgentDeactivateControl {
   const user = useAuthStore((s) => s.user);
-  let result: AgentSwitchControl = { setActive: undefined, saving: false };
+  let result: AgentDeactivateControl = { setActive: undefined, saving: false };
   for (const [id, entry] of Object.entries(LIVE_AGENTS)) {
     const write = entry.useSetActive();
     if (id === agentId && entry.isAccessible(user) && entry.canManage(user)) {

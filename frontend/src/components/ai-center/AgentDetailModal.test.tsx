@@ -22,10 +22,12 @@ const SPIDER_COMPANY = { id: 'u1', role: 'ADMIN', is_admin: true, org_is_demo: t
 const PILOT_COMPANY = { id: 'u1', role: 'ADMIN', is_admin: true, org_is_demo: false, org_is_spider_pilot: true, org_features: ['leads', 'spider'] };
 const STATUS = '/api/ai-farm/spider/status';
 const mockApi = vi.mocked(api);
+// The server's answer still says whether Spider was set up; the pop-up never reads it (#3433).
 const ON = { isActive: true, isSetUp: true };
 const OFF = { isActive: false, isSetUp: true };
 const NEVER_SET_UP = { isActive: false, isSetUp: false };
 const ON_NOT_SET_UP = { isActive: true, isSetUp: false };
+const NOT_ACTIVE_HELP = 'Spider watches nothing and sends nothing. Open it, check the settings, then press Activate.';
 /** A server whose switch moves when it is saved: the status route reads back what was put. */
 function spiderServer(initial: { isActive: boolean; isSetUp: boolean }) {
   let state = { ...initial };
@@ -223,278 +225,172 @@ describe('AgentDetailModal: an agent the company cannot use', () => {
   });
 });
 
-// Ran, 14 Oct (controls design, pop-up option A): a control row under the header says where the
-// agent stands; an Admin switches it right there. No status tag in the header any more.
-describe('AgentDetailModal: the control row', () => {
+// Mockup M1 "AI Agentic Farm card and pop-up" (Ran, 10 Nov): a status row with a Not active / Active
+// badge, the ? on Not active, and no switch anywhere.
+describe('AgentDetailModal: the status row', () => {
   const row = (dialog: HTMLElement) => dialog.querySelector<HTMLElement>('[data-agent-control-row]');
 
-  it('an Admin sees "Spider is on", "Watching your open leads" and the switch on, above the video', async () => {
+  it.each([
+    ['Active', ON],
+    ['Active', ON_NOT_SET_UP],
+    ['Not active', OFF],
+    ['Not active', NEVER_SET_UP],
+  ] as const)('an Admin sees "Status" and the %s badge, above the video, with no switch', async (words, answer) => {
     signIn(SPIDER_COMPANY);
-    spiderSwitch(ON);
+    spiderSwitch(answer);
     const dialog = openOn('spider');
-    const sw = await within(dialog).findByRole('switch', { name: 'Switch Spider on or off' });
-    expect(sw).toBeChecked();
-    expect(within(row(dialog)!).getByText('Spider is on')).toBeInTheDocument();
-    expect(sw).toHaveAccessibleDescription('Watching your open leads');
-    // On / Off is written beside the track.
-    expect(sw).toHaveTextContent('On');
-    // The row sits above the video slot, and nothing in the header claims a status.
+    const badge = await within(dialog).findByText(words, { selector: '[data-agent-chip]' });
+    expect(within(row(dialog)!).getByText('Status')).toBeInTheDocument();
+    expect(row(dialog)!.contains(badge)).toBe(true);
+    // A polite live region: a screen reader hears the badge change after Deactivate.
+    expect(badge.parentElement).toHaveAttribute('role', 'status');
     const slot = within(dialog).getByText('Feature video coming soon');
     expect(row(dialog)!.compareDocumentPosition(slot) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(dialog).queryByRole('switch')).toBeNull();
     expect(dialog.querySelector('[data-agent-status]')).toBeNull();
-    expect(within(dialog).queryByRole('link')).toBeNull();
-    expect(within(dialog).queryByText(/Active/)).toBeNull();
+    // No second line and none of the old on/off words.
+    for (const old of [/Spider is (on|off)/, /Watching your open leads/, /No new lead alerts/, /not set up/i, /Turn it on/]) {
+      expect(within(dialog).queryByText(old)).toBeNull();
+    }
   });
 
-  // A stray Space on open must not flip the switch, and no focus ring is drawn round the frame.
-  it('opens with focus on the header, not on the switch or the frame; Tab then reaches the switch', async () => {
+  it("an Admin gets the ? beside Not active, with the mockup's words, and none beside Active", async () => {
     signIn(SPIDER_COMPANY);
-    spiderSwitch(ON);
+    spiderSwitch(OFF);
     const user = userEvent.setup();
     const dialog = openOn('spider');
-    const sw = await within(dialog).findByRole('switch', { name: 'Switch Spider on or off' });
+    const help = await within(dialog).findByRole('button', { name: 'About Not active' });
+    expect(row(dialog)!.contains(help)).toBe(true);
+    await user.click(help);
+    expect(await screen.findByText(NOT_ACTIVE_HELP)).toBeInTheDocument();
+  });
+
+  it('shows no ? while Spider is Active', async () => {
+    signIn(SPIDER_COMPANY);
+    spiderSwitch(ON);
+    const dialog = openOn('spider');
+    await within(dialog).findByText('Active', { selector: '[data-agent-chip]' });
+    expect(within(dialog).queryByRole('button', { name: /About/ })).toBeNull();
+  });
+
+  // A stray Space on open must not press anything, and no focus ring is drawn round the frame.
+  it('opens with focus on the header, not on a control or the frame', async () => {
+    signIn(SPIDER_COMPANY);
+    spiderSwitch(ON);
+    const dialog = openOn('spider');
+    await within(dialog).findByRole('button', { name: 'Deactivate' });
     const header = dialog.querySelector<HTMLElement>('[data-agent-detail-header]')!;
     await waitFor(() => expect(header).toHaveFocus());
     expect(header).toHaveAttribute('tabindex', '-1');
     expect(header).toHaveClass('outline-none');
-    await user.tab();
-    expect(sw).toHaveFocus();
   });
 
-  it('an Admin sees "Spider is off" and "No new lead alerts are going out" with the switch off', async () => {
-    signIn(SPIDER_COMPANY);
-    spiderSwitch(OFF);
-    const dialog = openOn('spider');
-    const sw = await within(dialog).findByRole('switch', { name: 'Switch Spider on or off' });
-    expect(sw).not.toBeChecked();
-    expect(sw).toHaveTextContent('Off');
-    expect(within(row(dialog)!).getByText('Spider is off')).toBeInTheDocument();
-    expect(within(row(dialog)!).getByText('No new lead alerts are going out')).toBeInTheDocument();
-  });
-
-  // Ran, 14 Oct: the switch always works for an Admin, set up or not. It says whether Spider is
-  // applied; setting it up comes after, from the footer, while it is on.
-  it('an Admin at a company that never set Spider up gets a working switch, off, saying to turn it on first', async () => {
-    signIn(SPIDER_COMPANY);
-    spiderSwitch(NEVER_SET_UP);
-    const dialog = openOn('spider');
-    const sw = await within(dialog).findByRole('switch', { name: 'Switch Spider on or off' });
-    expect(within(row(dialog)!).getByText('Spider is off')).toBeInTheDocument();
-    expect(sw).toHaveAccessibleDescription('Turn it on, then choose the statuses to watch');
-    expect(sw).not.toBeChecked();
-    expect(sw).not.toHaveAttribute('aria-disabled');
-    expect(sw).toHaveTextContent('Off');
-    expect(within(dialog).queryByText(/not set up yet/)).toBeNull();
-  });
-
-  it('an Admin with Spider on but never set up sees "Spider is on" and what is left to do, in amber', async () => {
-    signIn(SPIDER_COMPANY);
-    spiderSwitch(ON_NOT_SET_UP);
-    const dialog = openOn('spider');
-    const sw = await within(dialog).findByRole('switch', { name: 'Switch Spider on or off' });
-    expect(sw).toBeChecked();
-    expect(sw).toHaveTextContent('On');
-    expect(sw).not.toHaveAttribute('aria-disabled');
-    expect(within(row(dialog)!).getByText('Spider is on')).toBeInTheDocument();
-    expect(sw).toHaveAccessibleDescription('Choose the statuses to watch so it can start');
-    // Applied, not working yet: the amber of the card's "On, not set up yet", not the green of a working agent.
-    expect(row(dialog)).toHaveAttribute('data-agent-set-up', 'false');
-    expect(row(dialog)).toHaveClass('border-warning-border');
-    expect(row(dialog)).not.toHaveClass('border-success-border');
-  });
-
-  it('keeps the green row for an agent that is on and set up', async () => {
-    signIn(SPIDER_COMPANY);
-    spiderSwitch(ON);
-    const dialog = openOn('spider');
-    await within(dialog).findByRole('switch', { name: 'Switch Spider on or off' });
-    expect(row(dialog)).toHaveClass('border-success-border');
-    expect(row(dialog)).toHaveAttribute('data-agent-set-up', 'true');
-  });
-
-  it.each([
-    ['on', ON, 'Spider is on', 'Watching your open leads', 'on'],
-    ['off', OFF, 'Spider is off', 'No new lead alerts are going out', 'off'],
-    ['on but never set up', ON_NOT_SET_UP, 'Spider is on', 'An Admin has not set it up yet', 'on'],
-    ['off and never set up', NEVER_SET_UP, 'Spider is off', 'An Admin has not set it up yet', 'off'],
-  ] as const)('someone who is not an Admin sees the %s lines and a read-only chip, no switch', async (_l, answer, title, detail, chip) => {
-    signIn({ ...SPIDER_COMPANY, role: 'SALES', is_admin: false });
-    spiderSwitch(answer);
-    const dialog = openOn('spider');
-    expect(await within(dialog).findByText(title)).toBeInTheDocument();
-    expect(within(row(dialog)!).getByText(detail)).toBeInTheDocument();
-    expect(row(dialog)!.querySelector(`[data-agent-chip="${chip}"]`)).not.toBeNull();
-    expect(within(dialog).queryByRole('switch')).toBeNull();
-  });
-
-  it('holds the row with a placeholder of the same height while the switch is read', () => {
+  it('holds the row with a placeholder while the status is read', () => {
     signIn(SPIDER_COMPANY);
     spiderSwitch('never');
     const dialog = openOn('spider');
     expect(row(dialog)).toHaveAttribute('data-agent-control-row', 'loading');
-    expect(row(dialog)).toHaveClass('min-h-[58px]');
+    expect(row(dialog)).toHaveClass('min-h-[48px]');
     expect(row(dialog)!.textContent).toBe('');
-    expect(within(dialog).queryByRole('switch')).toBeNull();
   });
 
-  it('claims nothing when the switch cannot be read', async () => {
+  it('claims nothing when the status cannot be read', async () => {
     signIn(SPIDER_COMPANY);
     spiderSwitch('error');
     const dialog = openOn('spider');
     await waitFor(() => expect(row(dialog)).toBeNull());
-    for (const words of ['Spider is on', 'Spider is off', 'On', 'Off']) {
+    for (const words of ['Active', 'Not active', 'On', 'Off']) {
       expect(within(dialog).queryByText(words)).toBeNull();
     }
-    expect(within(dialog).queryByRole('switch')).toBeNull();
   });
 });
 
 // SPEC-5: a pilot company gets what a demo company gets.
 describe('AgentDetailModal: a company on the Spider pilot list', () => {
-  const row = (dialog: HTMLElement) => dialog.querySelector<HTMLElement>('[data-agent-control-row]');
-
-  it('an Admin sees the switch row, never "Coming soon" or the booking call', async () => {
+  it('an Admin sees the status and the way to Spider, never "Coming soon" or the booking call', async () => {
     signIn(PILOT_COMPANY);
     spiderSwitch(OFF);
     const dialog = openOn('spider');
-    const sw = await within(dialog).findByRole('switch', { name: 'Switch Spider on or off' });
-    expect(sw).not.toBeChecked();
-    expect(within(row(dialog)!).getByText('Spider is off')).toBeInTheDocument();
+    expect(await within(dialog).findByText('Not active', { selector: '[data-agent-chip]' })).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Set up Spider' })).toBeInTheDocument();
     expect(within(dialog).queryByText('Coming soon')).toBeNull();
     expect(within(dialog).queryByText('Book a call about Spider')).toBeNull();
   });
+});
 
-  it('Sales sees the staff note and a read-only chip, no switch', async () => {
-    signIn({ ...PILOT_COMPANY, role: 'SALES', is_admin: false });
-    spiderSwitch(ON);
+// Ran, 10 Nov (Q2 A, Q3 A): someone without Spider's Admin access sees the status without the buttons.
+describe('AgentDetailModal: someone who may not manage Spider', () => {
+  it.each([
+    ['Active', 'SALES', ON],
+    ['Active', 'TECHNICIAN', ON_NOT_SET_UP],
+    ['Not active', 'SALES', OFF],
+    ['Not active', 'TECHNICIAN', NEVER_SET_UP],
+  ] as const)('sees the %s badge (%s) and no button, no ? and no switch', async (words, role, answer) => {
+    signIn({ ...SPIDER_COMPANY, role, is_admin: false });
+    spiderSwitch(answer);
     const dialog = openOn('spider');
-    expect(await within(dialog).findByText('Spider is on')).toBeInTheDocument();
-    expect(within(row(dialog)!).getByText('Watching your open leads')).toBeInTheDocument();
-    expect(row(dialog)!.querySelector('[data-agent-chip="on"]')).not.toBeNull();
+    expect(await within(dialog).findByText(words, { selector: '[data-agent-chip]' })).toBeInTheDocument();
+    // No footer at all (the pop-up's own X still closes it): no Close, Set up, Open, Deactivate, ? or booking call.
+    expect(within(dialog).queryByText('Close', { selector: 'button' })).toBeNull();
+    expect(within(dialog).getByRole('button', { name: 'Close' })).not.toHaveTextContent('Close');
+    expect(within(dialog).queryByRole('button', { name: /Open Spider|Set up Spider|Deactivate|About|Book a call/ })).toBeNull();
     expect(within(dialog).queryByRole('switch')).toBeNull();
-    expect(within(dialog).queryByText('Coming soon')).toBeNull();
+    expect(within(dialog).queryByText(/Spider is on for your company|An Admin turns Spider on or off/)).toBeNull();
   });
 });
 
-describe('AgentDetailModal: switching Spider on and off', () => {
-  it('turning on saves at once, with no question and no toast; the status line announces it', async () => {
-    signIn(SPIDER_COMPANY);
-    spiderServer(OFF);
-    const user = userEvent.setup();
-    const dialog = openOn('spider');
-    await user.click(await within(dialog).findByRole('switch', { name: 'Switch Spider on or off' }));
-    expect(screen.queryByRole('alertdialog')).toBeNull();
-    expect(mockApi.put).toHaveBeenCalledWith('/api/ai-farm/spider/status', { isActive: true }, expect.anything());
-    const line = await within(dialog).findByText('Spider is on');
-    // A polite live region, so a screen reader hears the change without a toast.
-    expect(line).toHaveAttribute('role', 'status');
-    await waitFor(() => expect(within(dialog).getByRole('switch', { name: 'Switch Spider on or off' })).not.toHaveAttribute('aria-busy'));
-    // The switch is its own confirmation: no success toast covering the pop-up on a phone.
-    expect(toast.success).not.toHaveBeenCalled();
-  });
-
-  it('turning off asks first, with focus on "Keep it on", which keeps it on', async () => {
+describe('AgentDetailModal: Deactivate from the pop-up', () => {
+  it('asks first with the same question as the Spider page; "Keep it active" sends nothing', async () => {
     signIn(SPIDER_COMPANY);
     spiderSwitch(ON);
     const user = userEvent.setup();
     const dialog = openOn('spider');
-    await user.click(await within(dialog).findByRole('switch', { name: 'Switch Spider on or off' }));
-    const confirm = await screen.findByRole('alertdialog', { name: 'Turn off Spider?' });
-    // SPEC-2 (D4): turning off clears the open alerts, and History keeps them. SPEC-3 (D5) with #2794
-    // (Ran, 27 Oct): switching back on reports the leads still past their limit in one summary.
+    await user.click(await within(dialog).findByRole('button', { name: 'Deactivate' }));
+    const confirm = await screen.findByRole('alertdialog', { name: 'Deactivate Spider?' });
     expect(within(confirm).getByText('Spider stops watching your leads and sends no new alerts. Any open Spider alerts are cleared for everyone, and Spider History keeps a record of them.')).toBeInTheDocument();
-    expect(within(confirm).getByText('Your statuses, time limits and who gets alerted are all kept. When you turn it back on, Spider sends one summary of the leads still past their time limit.')).toBeInTheDocument();
-    const keep = within(confirm).getByRole('button', { name: 'Keep it on' });
+    expect(within(confirm).getByText('Your statuses, time limits and who gets alerted are all kept. When you activate it again, the review asks whether to send one summary of the leads still past their time limit.')).toBeInTheDocument();
+    const keep = within(confirm).getByRole('button', { name: 'Keep it active' });
     await waitFor(() => expect(keep).toHaveFocus());
     await user.click(keep);
     await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
     expect(mockApi.put).not.toHaveBeenCalled();
-    expect(within(dialog).getByRole('switch', { name: 'Switch Spider on or off' })).toBeChecked();
+    expect(within(dialog).getByText('Active', { selector: '[data-agent-chip]' })).toBeInTheDocument();
   });
 
-  it('"Turn off" saves Spider off', async () => {
+  it('"Deactivate" saves Spider Not active; the badge and the footer follow', async () => {
     signIn(SPIDER_COMPANY);
     spiderServer(ON);
     const user = userEvent.setup();
     const dialog = openOn('spider');
-    await user.click(await within(dialog).findByRole('switch', { name: 'Switch Spider on or off' }));
-    const confirm = await screen.findByRole('alertdialog', { name: 'Turn off Spider?' });
-    await user.click(within(confirm).getByRole('button', { name: 'Turn off' }));
+    await user.click(await within(dialog).findByRole('button', { name: 'Deactivate' }));
+    const confirm = await screen.findByRole('alertdialog', { name: 'Deactivate Spider?' });
+    await user.click(within(confirm).getByRole('button', { name: 'Deactivate' }));
+    expect(mockApi.put).toHaveBeenCalledTimes(1);
     expect(mockApi.put).toHaveBeenCalledWith('/api/ai-farm/spider/status', { isActive: false }, expect.anything());
-    expect(await within(dialog).findByRole('status')).toHaveTextContent('Spider is off');
-    await waitFor(() => expect(within(dialog).getByRole('switch', { name: 'Switch Spider on or off' })).not.toHaveAttribute('aria-busy'));
-    expect(toast.success).not.toHaveBeenCalled();
+    expect(await within(dialog).findByText('Not active', { selector: '[data-agent-chip]' })).toBeInTheDocument();
+    expect(await within(dialog).findByRole('button', { name: 'Set up Spider' })).toBeInTheDocument();
+    expect(within(dialog).queryByRole('button', { name: 'Deactivate' })).toBeNull();
+    // The status read again once the save settles.
+    await waitFor(() => expect(mockApi.get.mock.calls.filter(([u]) => u === STATUS).length).toBeGreaterThanOrEqual(2));
     expect(toast.error).not.toHaveBeenCalled();
   });
 
-  // Nothing to lose: an agent that was never set up does no work, so it switches straight off.
-  it('turning off an agent that was never set up switches straight off, with no question', async () => {
+  it("puts Active back with the server's sentence when Deactivate fails", async () => {
     signIn(SPIDER_COMPANY);
-    spiderServer(ON_NOT_SET_UP);
-    const user = userEvent.setup();
-    const dialog = openOn('spider');
-    await user.click(await within(dialog).findByRole('switch', { name: 'Switch Spider on or off' }));
-    expect(screen.queryByRole('alertdialog')).toBeNull();
-    expect(mockApi.put).toHaveBeenCalledWith('/api/ai-farm/spider/status', { isActive: false }, expect.anything());
-    expect(await within(dialog).findByRole('status')).toHaveTextContent('Spider is off');
-    expect(within(dialog).getByText('Turn it on, then choose the statuses to watch')).toBeInTheDocument();
-    expect(toast.success).not.toHaveBeenCalled();
-  });
-
-  it('turning on an agent that was never set up saves at once, and the row says what is left to do', async () => {
-    signIn(SPIDER_COMPANY);
-    spiderServer(NEVER_SET_UP);
-    const user = userEvent.setup();
-    const dialog = openOn('spider');
-    await user.click(await within(dialog).findByRole('switch', { name: 'Switch Spider on or off' }));
-    expect(screen.queryByRole('alertdialog')).toBeNull();
-    expect(mockApi.put).toHaveBeenCalledWith('/api/ai-farm/spider/status', { isActive: true }, expect.anything());
-    expect(await within(dialog).findByRole('status')).toHaveTextContent('Spider is on');
-    // Switching on never claims it is set up, before or after the server answers.
-    expect(within(dialog).getByText('Choose the statuses to watch so it can start')).toBeInTheDocument();
-    await waitFor(() => expect(within(dialog).getByRole('switch', { name: 'Switch Spider on or off' })).not.toHaveAttribute('aria-busy'));
-    expect(within(dialog).getByText('Choose the statuses to watch so it can start')).toBeInTheDocument();
-  });
-
-  it('moves the switch at once with a spinner, and back again with the server\'s sentence when the save fails', async () => {
-    signIn(SPIDER_COMPANY);
-    spiderSwitch(OFF);
-    let fail: (e: unknown) => void = () => {};
-    mockApi.put.mockImplementation(() => new Promise((_res, rej) => { fail = rej; }));
-    const user = userEvent.setup();
-    const dialog = openOn('spider');
-    const sw = await within(dialog).findByRole('switch', { name: 'Switch Spider on or off' });
-    await user.click(sw);
-    // Optimistic: on straight away, saving.
-    await waitFor(() => expect(sw).toBeChecked());
-    expect(sw).toHaveAttribute('aria-busy', 'true');
-    expect(sw.querySelector('[data-slot="switch-spinner"]')).not.toBeNull();
-    fail(Object.assign(new Error('400'), {
-      response: {
-        status: 400,
-        data: {
-          error: 'Validation failed',
-          details: [{ field: 'isActive', message: 'Spider could not be switched on just now' }],
-        },
-      },
+    spiderSwitch(ON);
+    mockApi.put.mockRejectedValue(Object.assign(new Error('400'), {
+      response: { status: 400, data: { error: 'Validation failed', details: [{ field: 'isActive', message: 'Spider could not be deactivated just now' }] } },
     }));
-    await waitFor(() => expect(sw).not.toBeChecked());
-    expect(toast.error).toHaveBeenCalledWith('Spider could not be switched on just now');
-    expect(String(vi.mocked(toast.error).mock.calls[0]![0])).not.toMatch(/isActive/);
-    expect(within(dialog).getByText('Spider is off')).toBeInTheDocument();
-  });
-
-  it('re-reads the status and the Spider settings once a save settles', async () => {
-    signIn(SPIDER_COMPANY);
-    spiderServer(OFF);
     const user = userEvent.setup();
     const dialog = openOn('spider');
-    await user.click(await within(dialog).findByRole('switch', { name: 'Switch Spider on or off' }));
-    await waitFor(() => expect(mockApi.get.mock.calls.filter(([u]) => u === STATUS).length).toBeGreaterThanOrEqual(2));
+    await user.click(await within(dialog).findByRole('button', { name: 'Deactivate' }));
+    await user.click(within(await screen.findByRole('alertdialog', { name: 'Deactivate Spider?' })).getByRole('button', { name: 'Deactivate' }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Spider could not be deactivated just now'));
+    expect(await within(dialog).findByText('Active', { selector: '[data-agent-chip]' })).toBeInTheDocument();
   });
 });
 
-describe('AgentDetailModal: the footer for an agent the company can use', () => {
+describe('AgentDetailModal: the footer for an Admin', () => {
   function openRouted(agentId: string) {
     useAiCenterStore.getState().openModal(agentId);
     renderWithProviders(
@@ -506,94 +402,25 @@ describe('AgentDetailModal: the footer for an agent the company can use', () => 
     return screen.getByRole('dialog', { name: AI_AGENTS.find((a) => a.id === agentId)!.name });
   }
 
-  it('an Admin with Spider on gets Close and "Open Spider", which closes the farm and opens its page', async () => {
-    signIn(SPIDER_COMPANY);
-    spiderSwitch(ON);
-    const user = userEvent.setup();
-    const dialog = openRouted('spider');
-    await within(dialog).findByText('Spider is on');
-    expect(within(dialog).getByText('Close', { selector: 'button' })).toBeInTheDocument();
-    await user.click(within(dialog).getByRole('button', { name: 'Open Spider' }));
-    expect(await screen.findByText('Spider page')).toBeInTheDocument();
-    expect(useAiCenterStore.getState().open).toBe(false);
-  });
-
-  it('an Admin with Spider off gets a locked "Open Spider" that does nothing, and a "Turn it on" that does', async () => {
-    signIn(SPIDER_COMPANY);
-    spiderServer(OFF);
-    const user = userEvent.setup();
-    const dialog = openRouted('spider');
-    const locked = await within(dialog).findByRole('button', { name: 'Open Spider' });
-    expect(locked).toHaveAttribute('aria-disabled', 'true');
-    expect(locked).toHaveAccessibleDescription('Spider is off. Turn it on to open it.');
-    locked.focus();
-    expect(locked).toHaveFocus();
-    await user.click(locked);
-    expect(screen.queryByText('Spider page')).toBeNull();
-    expect(useAiCenterStore.getState().open).toBe(true);
-    expect(mockApi.put).not.toHaveBeenCalled();
-
-    await user.click(within(dialog).getByRole('button', { name: 'Turn it on' }));
-    expect(screen.queryByRole('alertdialog')).toBeNull();
-    expect(mockApi.put).toHaveBeenCalledWith('/api/ai-farm/spider/status', { isActive: true }, expect.anything());
-    // Once on, the footer opens Spider.
-    const open = await within(dialog).findByRole('button', { name: 'Open Spider' });
-    await waitFor(() => expect(open).not.toHaveAttribute('aria-disabled'));
-  });
-
-  // Ran, 14 Oct: "The whole idea of it being off is that it's greyed out." Set up included.
-  it('an Admin with Spider off and never set up gets a locked "Set up Spider", and "Turn it on" unlocks it', async () => {
-    signIn(SPIDER_COMPANY);
-    spiderServer(NEVER_SET_UP);
-    const user = userEvent.setup();
-    const dialog = openRouted('spider');
-    const locked = await within(dialog).findByRole('button', { name: 'Set up Spider' });
-    expect(locked).toHaveAttribute('aria-disabled', 'true');
-    expect(locked).toHaveAttribute('data-agent-locked');
-    expect(locked).toHaveAccessibleDescription('Spider is off. Turn it on to set it up.');
-    expect(locked.querySelector('svg.lucide-lock')).not.toBeNull();
-    // Still in the tab order, and does nothing.
-    locked.focus();
-    expect(locked).toHaveFocus();
-    await user.click(locked);
-    expect(screen.queryByText('Spider page')).toBeNull();
-    expect(useAiCenterStore.getState().open).toBe(true);
-    expect(mockApi.put).not.toHaveBeenCalled();
-    expect(within(dialog).queryByRole('button', { name: 'Open Spider' })).toBeNull();
-
-    await user.click(within(dialog).getByRole('button', { name: 'Turn it on' }));
-    expect(screen.queryByRole('alertdialog')).toBeNull();
-    expect(mockApi.put).toHaveBeenCalledWith('/api/ai-farm/spider/status', { isActive: true }, expect.anything());
-    // On: the same button is the way in, still "Set up" because nothing is set up yet.
-    const setUp = await within(dialog).findByRole('button', { name: 'Set up Spider' });
-    await waitFor(() => expect(setUp).not.toHaveAttribute('aria-disabled'));
-    expect(setUp).not.toHaveAttribute('data-agent-locked');
-  });
-
-  it('an Admin with Spider on but never set up gets an active "Set up Spider", which opens its page', async () => {
-    signIn(SPIDER_COMPANY);
-    spiderSwitch(ON_NOT_SET_UP);
-    const user = userEvent.setup();
-    const dialog = openRouted('spider');
-    const setUp = await within(dialog).findByRole('button', { name: 'Set up Spider' });
-    expect(setUp).not.toHaveAttribute('aria-disabled');
-    expect(within(dialog).queryByText(/Turn it on to/)).toBeNull();
-    await user.click(setUp);
-    expect(await screen.findByText('Spider page')).toBeInTheDocument();
-    expect(useAiCenterStore.getState().open).toBe(false);
-  });
-
   it.each([
-    ['on', ON, 'Spider is on for your company. You get its alerts when you are on watch.'],
-    ['off', OFF, 'An Admin turns Spider on or off. You will get its alerts once it is on.'],
-    ['on but never set up', ON_NOT_SET_UP, 'Spider is on for your company. You will get its alerts once an Admin sets it up.'],
-    ['off and never set up', NEVER_SET_UP, 'An Admin turns Spider on or off. You will get its alerts once it is on.'],
-  ] as const)('someone who is not an Admin gets one note and no button while Spider is %s', async (_l, answer, note) => {
-    signIn({ ...SPIDER_COMPANY, role: 'TECHNICIAN', is_admin: false });
+    ['Active', ON, ['Close', 'Deactivate', 'Open Spider'], 'Open Spider'],
+    ['Active, never set up', ON_NOT_SET_UP, ['Close', 'Deactivate', 'Open Spider'], 'Open Spider'],
+    ['Not active', OFF, ['Close', 'Set up Spider'], 'Set up Spider'],
+    ['Not active, never set up', NEVER_SET_UP, ['Close', 'Set up Spider'], 'Set up Spider'],
+  ] as const)('while %s: %j, and "%s" opens the Spider page and changes nothing', async (_l, answer, buttons, way) => {
+    signIn(SPIDER_COMPANY);
     spiderSwitch(answer);
-    const dialog = openOn('spider');
-    expect(await within(dialog).findByText(note)).toBeInTheDocument();
-    expect(within(dialog).queryByRole('button', { name: /Open Spider|Set up Spider|Book a call/ })).toBeNull();
+    const user = userEvent.setup();
+    const dialog = openRouted('spider');
+    const open = await within(dialog).findByRole('button', { name: way });
+    const footer = open.parentElement!;
+    expect(within(footer).getAllByRole('button').map((b) => b.textContent?.trim())).toEqual(buttons);
+    expect(open).not.toHaveAttribute('aria-disabled');
+    expect(within(dialog).queryByRole('button', { name: /Activate$|Turn it on/ })).toBeNull();
+    await user.click(open);
+    expect(await screen.findByText('Spider page')).toBeInTheDocument();
+    expect(useAiCenterStore.getState().open).toBe(false);
+    expect(mockApi.put).not.toHaveBeenCalled();
   });
 });
 

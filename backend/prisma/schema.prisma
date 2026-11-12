@@ -6600,9 +6600,13 @@ model SpiderSettings {
   channels          Json      @default("{}")
   // { roles: Role[], user_ids: uuid[], lead_owner: boolean }.
   recipients        Json      @default("{}")
+  // Neither read nor written since #3436 (the exclusion list below replaced them; the settings save ignores them). Dropped
+  // by #3437.
   watch_all_leads   Boolean   @default(true)
-  // Only read when watch_all_leads is off.
   selected_lead_ids String[]  @default([]) @db.Uuid
+  // The leads Spider does NOT watch (#3434, Ran 3 Nov): every open lead of the company is watched, new ones included,
+  // except these. A lead that closes drops out by itself; one excluded and reopened stays excluded.
+  excluded_lead_ids String[]  @default([]) @db.Uuid
   // The latest starting trigger (#2794) not yet acted on: Spider switched on, a stage switched on, a
   // limit shortened, or more leads brought under watch. The sweep turns the backlog that is already
   // past its limit into one starting summary once the settings have been quiet for a sweep
@@ -6613,6 +6617,12 @@ model SpiderSettings {
   // When the waiting trigger first started waiting. Later saves move summary_trigger_at on, never this:
   // the sweep acts at most 10 minutes after it, and gives up retrying a failed summary then.
   summary_trigger_since DateTime?
+  // Set to the activation moment when Spider was activated with "Skip them" (#3431); NULL after "Send one starting
+  // summary".
+  backlog_skipped_at DateTime? @db.Timestamptz(6)
+  // The stays already past their limit at that Activate, "<lead id>|<stage>|<entered ms>" (sweep.ts skippedStayKey): the
+  // sweep never reports them, per lead or in a later summary. Every other stay alerts as normal. Emptied on "Send".
+  backlog_skipped_stays String[] @default([])
   created_at        DateTime  @default(now())
   updated_at        DateTime  @updatedAt
 

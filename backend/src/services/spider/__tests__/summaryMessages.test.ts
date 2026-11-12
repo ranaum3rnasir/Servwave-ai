@@ -170,28 +170,30 @@ describe('what starts watching something new', () => {
   });
   const scope = (over: Partial<WatchedScope> = {}): WatchedScope => ({
     status_limits: limits({ enabled: true, value: 2, unit: 'DAY' }),
-    watch_all_leads: true,
-    selected_lead_ids: [],
+    excluded_lead_ids: [],
     ...over,
   });
 
-  it('a stage switched on, a limit shortened, or more leads watched', () => {
+  it('a stage switched on, a limit shortened, or a lead included again', () => {
     expect(settingsTriggerKind(scope(), scope({ status_limits: limits({ enabled: true, value: 2, unit: 'DAY' }, { enabled: true, value: 1, unit: 'DAY' }) }))).toBe('STAGE_ADDED');
     expect(settingsTriggerKind(scope(), scope({ status_limits: limits({ enabled: true, value: 36, unit: 'HOUR' }) }))).toBe('LIMIT_SHORTENED');
-    expect(settingsTriggerKind(scope({ watch_all_leads: false, selected_lead_ids: ['a'] }), scope())).toBe('SCOPE_WIDENED');
-    expect(settingsTriggerKind(scope({ watch_all_leads: false, selected_lead_ids: ['a'] }), scope({ watch_all_leads: false, selected_lead_ids: ['a', 'b'] }))).toBe('SCOPE_WIDENED');
+    expect(settingsTriggerKind(scope({ excluded_lead_ids: ['a'] }), scope())).toBe('SCOPE_WIDENED');
+    expect(settingsTriggerKind(scope({ excluded_lead_ids: ['a', 'b'] }), scope({ excluded_lead_ids: ['b'] }))).toBe('SCOPE_WIDENED');
+    // One included again while another is excluded: more leads were brought under watch all the same.
+    expect(settingsTriggerKind(scope({ excluded_lead_ids: ['a'] }), scope({ excluded_lead_ids: ['b'] }))).toBe('SCOPE_WIDENED');
   });
 
-  it('not a longer limit, a stage switched off, fewer leads, or the same settings', () => {
+  it('not a longer limit, a stage switched off, a lead excluded, or the same settings', () => {
     expect(settingsTriggerKind(scope(), scope())).toBeNull();
     expect(settingsTriggerKind(scope(), scope({ status_limits: limits({ enabled: true, value: 3, unit: 'DAY' }) }))).toBeNull();
     expect(settingsTriggerKind(scope(), scope({ status_limits: limits(null) }))).toBeNull();
-    expect(settingsTriggerKind(scope(), scope({ watch_all_leads: false, selected_lead_ids: ['a'] }))).toBeNull();
-    expect(settingsTriggerKind(scope({ watch_all_leads: false, selected_lead_ids: ['a', 'b'] }), scope({ watch_all_leads: false, selected_lead_ids: ['a'] }))).toBeNull();
+    expect(settingsTriggerKind(scope(), scope({ excluded_lead_ids: ['a'] }))).toBeNull();
+    expect(settingsTriggerKind(scope({ excluded_lead_ids: ['a'] }), scope({ excluded_lead_ids: ['a', 'b'] }))).toBeNull();
+    expect(settingsTriggerKind(scope({ excluded_lead_ids: ['a', 'b'] }), scope({ excluded_lead_ids: ['b', 'a'] }))).toBeNull();
   });
 
   it('several kinds at once, or one after another, read as settings changed; switching on wins', () => {
-    expect(settingsTriggerKind(scope({ watch_all_leads: false }), scope({ status_limits: limits({ enabled: true, value: 1, unit: 'DAY' }) }))).toBe('SETTINGS_CHANGED');
+    expect(settingsTriggerKind(scope({ excluded_lead_ids: ['a'] }), scope({ status_limits: limits({ enabled: true, value: 1, unit: 'DAY' }) }))).toBe('SETTINGS_CHANGED');
     expect(mergeTriggerKind(null, 'STAGE_ADDED')).toBe('STAGE_ADDED');
     expect(mergeTriggerKind('STAGE_ADDED', 'STAGE_ADDED')).toBe('STAGE_ADDED');
     expect(mergeTriggerKind('STAGE_ADDED', 'LIMIT_SHORTENED')).toBe('SETTINGS_CHANGED');

@@ -8,7 +8,7 @@
    index, this fails.
 
    One journey over HTTP on a real migrated database: two Admins switch Spider on and save their settings, a third
-   company watches only selected leads, and one sweep runs. Two companies hold 20,000 open leads each (41 pages), so a
+   company excludes all but two of its leads (#3434), and one sweep runs. Two companies hold 20,000 open leads each (41 pages), so a
    page that strayed into the other company's leads shows, among a table of 40,000 more leads of a company not on Spider
    (alone in a small table any plan is cheap and the planner's choice says little). A company's summary is then read back
    over HTTP.
@@ -107,18 +107,22 @@ suite('Spider sweep: paging read of open leads (#3058, real database)', () => {
 
   interface Company { org: string; admin: Person; customer: string }
 
-  /** A Scale demo company whose Admin switches Spider on over HTTP, with New watched at 2 hours. */
+  /** A Scale demo company, Spider Not active until its Admin saves the settings (saveSettings). */
   async function company(): Promise<Company> {
     const { org, admin, customer } = await fx.newOrg();
     orgs.push(org);
     await db.organization.update({ where: { id: org }, data: { is_demo: true } });
-    expect((await (await fx.signedInAs(admin)).put(STATUS, { isActive: true })).status).toBe(200);
     return { org, admin, customer };
   }
 
-  /** The Admin's saved settings: New watched at 2 hours, nothing else; all leads, or only the selected ones. */
-  async function saveSettings(c: Company, selected?: string[]) {
-    const res = await (await fx.signedInAs(c.admin)).put(SETTINGS, {
+  /**
+   * The Admin's saved settings, then Activate over HTTP (#3431: set up first): New watched at 2 hours, nothing else; all
+   * leads but the excluded ones. The exclusion list is written straight to the row: the picker's Save (PATCH
+   * /spider/exclusions) takes at most 5,000 ids at a time, and the list here is the subject's input, not its subject.
+   */
+  async function saveSettings(c: Company, excluded?: string[]) {
+    const api = await fx.signedInAs(c.admin);
+    const res = await api.put(SETTINGS, {
       status_limits: {
         NEW: { enabled: true, value: 2, unit: 'HOUR' },
         CONTACTED: { enabled: false, value: 1, unit: 'DAY' },
@@ -126,10 +130,10 @@ suite('Spider sweep: paging read of open leads (#3058, real database)', () => {
       },
       channels: { in_app: true, red_frame: true, email: false, text: false },
       recipients: { roles: ['ADMIN'], user_ids: [], lead_owner: false },
-      watch_all_leads: !selected,
-      selected_lead_ids: selected ?? [],
     });
     expect(res.status).toBe(200);
+    if (excluded) await db.spiderSettings.update({ where: { organization_id: c.org }, data: { excluded_lead_ids: excluded } });
+    expect((await api.put(STATUS, { isActive: true })).status).toBe(200);
   }
 
   /**
@@ -163,7 +167,7 @@ suite('Spider sweep: paging read of open leads (#3058, real database)', () => {
 
   beforeAll(async () => {
     await import('../app.js');
-    // Company A and B: Spider on and saved over HTTP; open leads, three (A) and one (B) of them overdue; and leads that are
+    // Company A and B: Spider saved and activated over HTTP; open leads, three (A) and one (B) of them overdue; and leads that are
     // not open (won, lost, cancelled, and one that is New but cancelled) which a page must never hold.
     a = await company();
     b = await company();
@@ -178,11 +182,11 @@ suite('Spider sweep: paging read of open leads (#3058, real database)', () => {
     await addLeads(b, 1, { hoursAgo: 5 });
     overdueA = (await db.$queryRawUnsafe<{ id: string }[]>(
       `SELECT id FROM leads WHERE organization_id = $1::uuid AND created_at < ${UTC_NOW} - interval '4 hours' ORDER BY id`, a.org)).map((r) => r.id);
-    // Company C watches only two selected leads while holding as many open leads as A.
+    // Company C selects only two of as many open leads as A: the rest are excluded (#3434).
     await addLeads(c, OPEN_LEADS);
-    const selected = (await openIds(c.org)).slice(0, 2);
+    const excludedC = (await openIds(c.org)).slice(2);
     for (const co of [a, b]) await saveSettings(co);
-    await saveSettings(c, selected);
+    await saveSettings(c, excludedC);
     // The company the table is mostly full of: not on Spider, so never swept, but its leads are what a read of A's or B's
     // open leads must pick them out from. (Alone in a small table, any plan is cheap and the planner's pick says little.)
     const bystander = await fx.newOrg();
@@ -258,9 +262,13 @@ suite('Spider sweep: paging read of open leads (#3058, real database)', () => {
     });
   });
 
-  it('a company that watches only selected leads is read by lead id, not paged, whatever its number of open leads', () => {
-    expect(pages.filter((q) => orgOf(q) === c.org)).toEqual([]);
-    expect(pages.filter((q) => ![a.org, b.org].includes(orgOf(q)))).toEqual([]);
+  it('a company with an exclusion list is paged the same way, its exclusions never sent to the database (#3434)', async () => {
+    expect((await db.spiderSettings.findUniqueOrThrow({ where: { organization_id: c.org } })).excluded_lead_ids).toHaveLength(OPEN_LEADS - 2);
+    // 20,000 open leads: forty full pages and the empty read that ends them, the same reads as with nothing excluded.
+    const mine = pages.filter((q) => orgOf(q) === c.org);
+    expect(mine).toHaveLength(41);
+    for (const q of mine) expect(JSON.parse(q.params).length).toBeLessThanOrEqual(10);
+    expect(pages.filter((q) => ![a.org, b.org, c.org].includes(orgOf(q)))).toEqual([]);
   });
 
   it('the paged read of open leads has exactly one source: currentStageVisits in the sweep', () => {

@@ -3,7 +3,7 @@
  * in the browser beyond react-query's cache, which sign-out and an identity change clear.
  */
 import { SPIDER_UNREAD_KEY } from '@/lib/api/shared/queryKeys';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import api from '@/lib/axios';
 import { useSpiderAvailable } from '@/lib/spider/gate';
 import { spiderErrorText } from '@/lib/spider/errorText';
@@ -41,15 +41,7 @@ export interface SpiderSettings {
   status_limits: Record<SpiderStage, SpiderStatusLimit>;
   channels: SpiderChannels;
   recipients: SpiderRecipients;
-  watch_all_leads: boolean;
-  selected_lead_ids: string[];
   updated_at: string | null;
-}
-
-export interface SpiderLeadLabel {
-  id: string;
-  lead_number: string;
-  customer_name: string;
 }
 
 export interface SpiderOption<V extends string = string> {
@@ -57,9 +49,9 @@ export interface SpiderOption<V extends string = string> {
   label: string;
 }
 
+/** The settings carry no lead list (#3436): the picker reads the leads a page at a time. */
 export interface SpiderSettingsResponse {
   settings: SpiderSettings;
-  selected_leads: SpiderLeadLabel[];
   options: {
     statuses: SpiderOption<SpiderStage>[];
     units: SpiderOption[];
@@ -236,9 +228,9 @@ export function useSpiderSettings({ enabled = true }: { enabled?: boolean } = {}
 }
 
 /**
- * Saving Spider's settings. It never changes the switch. While Spider is off the server refuses the
- * save (409, "Spider is off. Turn it on to change its settings."), which the form shows as it is;
- * the status is then read again, so a page left open after another Admin switched Spider off locks.
+ * Saving Spider's settings, Active or Not active (#3432). It never activates or deactivates Spider. When
+ * Spider is activated or deactivated while the save is on its way the server refuses it (409, its own
+ * sentence), which the form shows as it is; the status is then read again.
  */
 export function useSaveSpiderSettings() {
   const qc = useQueryClient();
@@ -286,7 +278,20 @@ export function useSpiderStatus({ enabled = true }: { enabled?: boolean } = {}) 
   });
 }
 
-const SWITCH_FAILED = 'Could not switch Spider on or off.';
+/** A failed Activate or Deactivate with no sentence from the server, named by what was tried (Ran, 10 Nov). */
+const ACTIVATE_FAILED = 'Could not activate Spider. Try again later.';
+const DEACTIVATE_FAILED = 'Could not deactivate Spider. Try again later.';
+
+/**
+ * A failed Activate or Deactivate in words: the server's own sentence when its answer carries one, otherwise Ran's
+ * (`fallback`). A network error, a timeout or a bare 5xx never shows the HTTP library's English ("Network Error").
+ */
+function switchErrorText(err: unknown, fallback: string): string {
+  const data = (err as { response?: { data?: { error?: unknown; details?: unknown } } })?.response?.data;
+  const hasSentence = typeof data?.error === 'string' && data.error.trim() !== '';
+  const hasDetails = Array.isArray(data?.details) && data.details.length > 0;
+  return hasSentence || hasDetails ? spiderErrorText(err, fallback) : fallback;
+}
 
 /**
  * An Admin switching Spider on or off from the AI Agentic Farm, set up or not. Only the one switch
@@ -314,10 +319,10 @@ export function useSetSpiderActive() {
       qc.setQueryData<SpiderOnOff>(SPIDER_STATUS_KEY, { isActive, isSetUp: previous?.isSetUp ?? false });
       return { previous };
     },
-    onError: (err, _isActive, context) => {
+    onError: (err, isActive, context) => {
       // The switch is only shown once the status has been read, so there is always one to restore.
       if (context?.previous) qc.setQueryData<SpiderOnOff>(SPIDER_STATUS_KEY, context.previous);
-      toast.error(spiderErrorText(err, SWITCH_FAILED));
+      toast.error(switchErrorText(err, isActive ? ACTIVATE_FAILED : DEACTIVATE_FAILED));
     },
     // No success toast: the switch, the pop-up's status line (a polite live region) and the card
     // strip already show the new state, and on a phone a toast would cover the pop-up's header.
@@ -332,48 +337,255 @@ export function useSetSpiderActive() {
   });
 }
 
-/** The contractor's list queries for "Select Contacts for Alert" (his lib/api/spider.ts). */
-export const SPIDER_LEADS_QUERY_KEY = ['spider-watcher-leads-real'] as const;
-export const SPIDER_CUSTOMERS_QUERY_KEY = ['spider-watcher-customers-real'] as const;
+/** What Activate does with the leads already past their time limit (#3431): one starting summary, or skip them. */
+export type SpiderStartingSummaryChoice = 'send' | 'skip';
 
-/** The list endpoints' page size cap (backend lib/pagination.ts). */
-const LIST_PAGE_SIZE = 100;
-/** A backstop against a server that never says it is done: 1,000 pages of 100. */
-const LIST_MAX_PAGES = 1000;
+/** The numbers the Activate review shows (GET /spider/activation-preview, #3431): counts only. */
+export interface SpiderActivationPreview {
+  /** Open leads Spider would watch: every open lead that is not excluded. */
+  watchedLeads: number;
+  /** Excluded leads that are still open. */
+  excludedLeads: number;
+  /** Of the watched leads, those already past their time limit. */
+  pastLimitLeads: number;
+  /** The people the starting summary would go to. */
+  summaryRecipients: number;
+}
+
+export const SPIDER_ACTIVATION_PREVIEW_KEY = ['spider', 'activation-preview'] as const;
+
+const isCount = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0;
 
 /**
- * Every row of a paged list endpoint, page by page. His screen read one page of 100; the list must
- * be complete, because its ticks are saved as the leads Spider watches (an unticked lead past the
- * first page would otherwise silently stop being watched).
+ * The Activate review's numbers, read fresh each time the review opens (Admin only). An answer that is
+ * not four counts is an error, so the review never shows a number the server did not send.
  */
-async function fetchAllPages(url: string, key: string, failure: string): Promise<unknown[]> {
-  const rows: unknown[] = [];
-  for (let page = 1; page <= LIST_MAX_PAGES; page++) {
-    const res = await api.get(url, { params: { page, limit: LIST_PAGE_SIZE }, silentErrors: true });
-    const raw = res?.data?.[key];
-    if (raw === null || raw === undefined) {
-      throw new Error(failure);
-    }
-    const batch = Array.isArray(raw) ? raw : [];
-    rows.push(...batch);
-    const totalPages = res?.data?.pagination?.totalPages;
-    if (typeof totalPages === 'number' ? page >= totalPages : batch.length < LIST_PAGE_SIZE) break;
-  }
-  return rows;
+export function useSpiderActivationPreview({ enabled = true }: { enabled?: boolean } = {}) {
+  const available = useSpiderAvailable();
+  return useQuery<SpiderActivationPreview>({
+    queryKey: SPIDER_ACTIVATION_PREVIEW_KEY,
+    queryFn: async () => {
+      const r = await api.get('/api/ai-farm/spider/activation-preview', { silentErrors: true });
+      const d = r.data ?? {};
+      if (![d.watchedLeads, d.excludedLeads, d.pastLimitLeads, d.summaryRecipients].every(isCount)) {
+        throw new Error('Unexpected Spider review');
+      }
+      return {
+        watchedLeads: d.watchedLeads,
+        excludedLeads: d.excludedLeads,
+        pastLimitLeads: d.pastLimitLeads,
+        summaryRecipients: d.summaryRecipients,
+      };
+    },
+    enabled: available && enabled,
+    staleTime: 0,
+    gcTime: 0,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
 }
 
 /**
- * Fetches leads from the API for Spider Watcher (every page)
+ * Activate, from the review on the Spider page (#3432): `PUT /spider/status` with the starting-summary
+ * choice. Unlike the switch it waits for the server: Spider shows as Active only once the server says
+ * so. A refusal (409: no time limit on, or the settings changed meanwhile) is the server's own
+ * sentence in a toast, and the status, settings and review numbers are read again.
  */
-export async function fetchSpiderLeadsApi() {
-  return fetchAllPages('/api/leads', 'leads', 'Failed to load leads from server');
+export function useActivateSpider() {
+  const qc = useQueryClient();
+  return useMutation<SpiderOnOff, unknown, SpiderStartingSummaryChoice>({
+    mutationFn: async (startingSummary) => {
+      // silentErrors: this hook says what went wrong itself, so the global error toast stays out.
+      const r = await api.put('/api/ai-farm/spider/status', { isActive: true, startingSummary }, { silentErrors: true });
+      if (typeof r.data?.isActive !== 'boolean' || typeof r.data?.isSetUp !== 'boolean') {
+        throw new Error('Unexpected Spider status');
+      }
+      return { isActive: r.data.isActive, isSetUp: r.data.isSetUp };
+    },
+    onSuccess: (data) => {
+      qc.setQueryData<SpiderOnOff>(SPIDER_STATUS_KEY, data);
+    },
+    onError: (err) => {
+      toast.error(switchErrorText(err, ACTIVATE_FAILED));
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: SPIDER_STATUS_KEY });
+      qc.invalidateQueries({ queryKey: SPIDER_SETTINGS_KEY });
+      qc.invalidateQueries({ queryKey: SPIDER_ACTIVATION_PREVIEW_KEY });
+      qc.invalidateQueries({ queryKey: SPIDER_SUMMARY_KEY });
+    },
+  });
+}
+
+// ─── The lead picker (#3436, mockup M2) ──────────────────────────────────────
+//
+// "Select Contacts for Alert" never downloads the whole list. Opening the page reads the overview ("Watching N open
+// leads · M excluded") and the first 50 customers with open leads; opening a customer reads its leads; the Excluded tab
+// reads its own page. Every list is searched and paged on the server (GET /spider/customers, /customers/:id/leads,
+// /excluded), and a Save sends the exclusion changes in one PATCH /spider/exclusions.
+
+/** "Watching N open leads · M excluded": open leads watched, and open leads excluded. */
+export interface SpiderPickerOverview {
+  watched: number;
+  excluded: number;
+}
+
+/** A customer with open leads, as the picker lists it. */
+export interface SpiderPickerCustomer {
+  id: string;
+  name: string;
+  company_name: string | null;
+  email: string | null;
+  open_leads: number;
+  excluded_leads: number;
+}
+
+/** One of a customer's open leads. `stage_entered_at` is null when the lead is in none of Spider's stages. */
+export interface SpiderPickerLead {
+  id: string;
+  lead_number: string;
+  status: string;
+  stage: SpiderStage | null;
+  stage_entered_at: string | null;
+  owner_name: string | null;
+  address: string | null;
+  excluded: boolean;
+}
+
+/** One excluded open lead, with its customer's id and name (the Excluded tab). */
+export interface SpiderExcludedLead {
+  id: string;
+  lead_number: string;
+  status: string;
+  stage: SpiderStage | null;
+  stage_entered_at: string | null;
+  /** Its customer: an "Include again" moves that customer's chips at once. Absent from a server older than this field. */
+  customer_id?: string | null;
+  customer_name: string;
+}
+
+interface PickerPage<T> {
+  rows: T[];
+  next_cursor: string | null;
+  /** A search's count of every match (customers only); null without a search. */
+  total: number | null;
+}
+
+export const SPIDER_PICKER_KEY = ['spider', 'picker'] as const;
+export const SPIDER_OVERVIEW_KEY = [...SPIDER_PICKER_KEY, 'overview'] as const;
+
+const PICKER = '/api/ai-farm/spider';
+
+const isOverview = (d: unknown): d is SpiderPickerOverview =>
+  !!d && isCount((d as SpiderPickerOverview).watched) && isCount((d as SpiderPickerOverview).excluded);
+
+/** The picker's header numbers. An answer that is not two counts is an error: the header never shows a guess. */
+export function useSpiderPickerOverview({ enabled = true }: { enabled?: boolean } = {}) {
+  return useQuery<SpiderPickerOverview>({
+    queryKey: SPIDER_OVERVIEW_KEY,
+    queryFn: async () => {
+      const r = await api.get(`${PICKER}/overview`, { silentErrors: true });
+      if (!isOverview(r.data)) throw new Error('Unexpected Spider overview');
+      return { watched: r.data.watched, excluded: r.data.excluded };
+    },
+    enabled,
+    staleTime: 0,
+    refetchOnWindowFocus: false,
+  });
+}
+
+async function readPage<T>(url: string, key: string, q: string, cursor: string | null): Promise<PickerPage<T>> {
+  const params: Record<string, string> = {};
+  if (q) params.q = q;
+  if (cursor) params.cursor = cursor;
+  const r = await api.get(url, { params, silentErrors: true });
+  const rows = r.data?.[key];
+  if (!Array.isArray(rows)) throw new Error('Unexpected Spider list');
+  return {
+    rows: rows as T[],
+    next_cursor: typeof r.data?.next_cursor === 'string' ? r.data.next_cursor : null,
+    total: isCount(r.data?.total) ? r.data.total : null,
+  };
+}
+
+function usePickerList<T>(key: readonly unknown[], url: string, rowsKey: string, q: string, enabled: boolean) {
+  return useInfiniteQuery<PickerPage<T>, Error, InfiniteData<PickerPage<T>>, readonly unknown[], string | null>({
+    queryKey: key,
+    queryFn: ({ pageParam }) => readPage<T>(url, rowsKey, q, pageParam),
+    initialPageParam: null,
+    getNextPageParam: (last) => last.next_cursor,
+    enabled,
+    staleTime: 0,
+    refetchOnWindowFocus: false,
+  });
+}
+
+/** The customers with open leads matching `q` (name, company, lead # or phone), 50 at a time. */
+export function useSpiderPickerCustomers(q: string, { enabled = true }: { enabled?: boolean } = {}) {
+  return usePickerList<SpiderPickerCustomer>([...SPIDER_PICKER_KEY, 'customers', q], `${PICKER}/customers`, 'customers', q, enabled);
+}
+
+/** One customer's open leads, read when its row is opened. */
+export function useSpiderCustomerLeads(customerId: string, { enabled = true }: { enabled?: boolean } = {}) {
+  return usePickerList<SpiderPickerLead>(
+    spiderCustomerLeadsKey(customerId),
+    `${PICKER}/customers/${encodeURIComponent(customerId)}/leads`,
+    'leads',
+    '',
+    enabled,
+  );
+}
+
+export const spiderCustomerLeadsKey = (customerId: string) => [...SPIDER_PICKER_KEY, 'customer-leads', customerId] as const;
+
+/** The excluded open leads matching `q`, 50 at a time (the Excluded tab). */
+export function useSpiderExcludedLeads(q: string, { enabled = true }: { enabled?: boolean } = {}) {
+  return usePickerList<SpiderExcludedLead>([...SPIDER_PICKER_KEY, 'excluded', q], `${PICKER}/excluded`, 'leads', q, enabled);
 }
 
 /**
- * Fetches customers from the API for Spider Watcher (every page)
+ * Every open lead of ONE customer, for a tick on its row: ticking a customer ticks all its leads. One request for most
+ * customers (50 leads a page); never the company's whole list.
  */
-export async function fetchSpiderCustomersApi() {
-  return fetchAllPages('/api/customers', 'customers', 'Failed to load customers from server');
+export async function fetchAllSpiderCustomerLeads(customerId: string): Promise<SpiderPickerLead[]> {
+  const url = `${PICKER}/customers/${encodeURIComponent(customerId)}/leads`;
+  const leads: SpiderPickerLead[] = [];
+  let cursor: string | null = null;
+  do {
+    const page: PickerPage<SpiderPickerLead> = await readPage<SpiderPickerLead>(url, 'leads', '', cursor);
+    leads.push(...page.rows);
+    cursor = page.next_cursor;
+  } while (cursor);
+  return leads;
+}
+
+/** One Save of the picker's changes: the leads to exclude and the leads to include again. */
+export interface SpiderExclusionChanges {
+  exclude: string[];
+  include: string[];
+}
+
+/**
+ * Sends the picker's changes (PATCH /spider/exclusions). The server answers the header's new numbers; the lists are
+ * read again when next shown, so every row and chip shows what was stored.
+ */
+export function useSaveSpiderExclusions() {
+  const qc = useQueryClient();
+  return useMutation<SpiderPickerOverview, unknown, SpiderExclusionChanges>({
+    // silentErrors: the page says what went wrong itself ("Failed to Save Settings").
+    mutationFn: async (body) => {
+      const r = await api.patch(`${PICKER}/exclusions`, body, { silentErrors: true });
+      if (!isOverview(r.data)) throw new Error('Unexpected Spider overview');
+      return { watched: r.data.watched, excluded: r.data.excluded };
+    },
+    onSuccess: (overview) => {
+      qc.setQueryData(SPIDER_OVERVIEW_KEY, overview);
+      qc.invalidateQueries({
+        queryKey: SPIDER_PICKER_KEY,
+        predicate: (q) => q.queryKey[2] !== 'overview',
+      });
+    },
+  });
 }
 
 const UNIT_MS: Record<string, number> = { MINUTE: 60_000, HOUR: 3_600_000, DAY: 86_400_000 };
@@ -651,8 +863,6 @@ export function useEnableSpiderInApp() {
         status_limits: s.status_limits,
         channels: { ...s.channels, in_app: true },
         recipients: s.recipients,
-        watch_all_leads: s.watch_all_leads,
-        selected_lead_ids: s.selected_lead_ids,
       };
       return api.put('/api/ai-farm/spider/settings', body, { silentErrors: true }).then((r) => r.data);
     },

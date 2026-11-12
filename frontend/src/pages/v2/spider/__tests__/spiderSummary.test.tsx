@@ -89,15 +89,14 @@ beforeEach(() => {
             status_limits: { NEW: { enabled: true, value: 1, unit: 'HOUR' }, CONTACTED: { enabled: false, value: 1, unit: 'MINUTE' }, WALKTHROUGH_COMPLETED: { enabled: false, value: 1, unit: 'MINUTE' } },
             channels: { in_app: true, red_frame: true, email: true, text: true },
             recipients: { roles: ['ADMIN'], user_ids: [], lead_owner: true },
-            watch_all_leads: true, selected_lead_ids: [], updated_at: null,
+            updated_at: null,
           },
-          selected_leads: [],
           options: { statuses: [], units: [], roles: [] },
         },
       };
     }
-    if (url === '/api/leads') return { data: { leads: [] } };
-    if (url === '/api/customers') return { data: { customers: [] } };
+    if (url === '/api/ai-farm/spider/overview') return { data: { watched: 0, excluded: 0 } };
+    if (url === '/api/ai-farm/spider/customers') return { data: { customers: [], next_cursor: null } };
     return { data: {} };
   });
   mockApi.post.mockResolvedValue({ data: { items: [], page: 1, page_size: 25, total: 0, total_pages: 1 } });
@@ -111,7 +110,7 @@ function Where() {
 // ─── The Spider page's card (placement A) ────────────────────────────────────
 
 describe('the Starting summary card on the Spider page', () => {
-  it('sits directly under the header card with the switch, above Configuration | History, with its date, sentence and two actions', async () => {
+  it('sits directly under the header card with the status, above Configuration | History, with its date, sentence and two actions', async () => {
     renderWithProviders(<SpiderPage />);
     const card = (await screen.findByText('Starting summary')).closest('[data-spider-starting-summary]') as HTMLElement;
     expect(card).not.toBeNull();
@@ -120,9 +119,9 @@ describe('the Starting summary card on the Spider page', () => {
     expect(within(card).getByRole('button', { name: 'View' })).toBeInTheDocument();
     expect(within(card).getByRole('button', { name: 'Download CSV' })).toBeInTheDocument();
 
-    const theSwitch = screen.getByRole('switch', { name: 'Switch Spider on or off' });
-    const tabs = screen.getByRole('tablist');
-    expect(theSwitch.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const theStatus = screen.getByText('Active', { selector: '[data-agent-chip]' });
+    const tabs = screen.getAllByRole('tablist')[0]!;
+    expect(theStatus.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(card.compareDocumentPosition(tabs) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(callsTo(COMPANY)).toBe(1);
   });
@@ -130,23 +129,24 @@ describe('the Starting summary card on the Spider page', () => {
   it('is not there with no summary, nor against a server from before the summary', async () => {
     companyAnswer = async () => ({ data: { summary: null } });
     const { unmount } = renderWithProviders(<SpiderPage />);
-    await screen.findByRole('tablist');
+    await screen.findAllByRole('tablist');
     await waitFor(() => expect(callsTo(COMPANY)).toBe(1));
     expect(screen.queryByText('Starting summary')).toBeNull();
     unmount();
 
     companyAnswer = notFound;
     renderWithProviders(<SpiderPage />);
-    await screen.findByRole('tablist');
+    await screen.findAllByRole('tablist');
     await waitFor(() => expect(callsTo(COMPANY)).toBe(2));
     expect(screen.queryByText('Starting summary')).toBeNull();
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
-  it('is not there while Spider is off: the page is locked and the summary is not even asked for', async () => {
+  it('is not there while Spider is Not active: the summary is not even asked for', async () => {
     spiderOn = false;
     renderWithProviders(<SpiderPage />);
-    expect(await screen.findByText('Spider is off')).toBeInTheDocument();
+    expect(await screen.findByText('Not active', { selector: '[data-agent-chip]' })).toBeInTheDocument();
+    await screen.findAllByRole('tablist');
     expect(screen.queryByText('Starting summary')).toBeNull();
     expect(callsTo(COMPANY)).toBe(0);
   });

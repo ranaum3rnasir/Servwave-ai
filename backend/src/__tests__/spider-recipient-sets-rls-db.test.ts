@@ -97,7 +97,6 @@ suite('Recipient sets as the live API\'s database role, under the tenant guard (
     await db.user.update({ where: { id: o.admin.id }, data: { created_at: monthAgo } });
     await db.customer.update({ where: { id: o.customer }, data: { created_at: monthAgo } });
     const api = await fx.signedInAs(o.admin);
-    expect((await api.put(STATUS, { isActive: true })).status).toBe(200);
     expect(
       (await api.put(SETTINGS, {
         status_limits: {
@@ -107,10 +106,9 @@ suite('Recipient sets as the live API\'s database role, under the tenant guard (
         },
         channels: { in_app: true, red_frame: true, email: false, text: false },
         recipients: { roles: ['ADMIN'], user_ids: [], lead_owner: false },
-        watch_all_leads: true,
-        selected_lead_ids: [],
       })).status,
     ).toBe(200);
+    expect((await api.put(STATUS, { isActive: true })).status).toBe(200);
     const lead = (await fx.addLead(o.org, o.customer)).id;
     await db.lead.update({ where: { id: lead }, data: { created_at: new Date(Date.now() - 5 * HOUR_MS) } });
     return { ...o, lead };

@@ -1,227 +1,92 @@
 import { useId, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowRight, Lock } from 'lucide-react';
+import { ArrowRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { DialogClose } from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Switch } from '@/ui-kit/components/ui/switch';
+import { HelpIcon } from '@/components/permissions/HelpIcon';
 import { cn } from '@/lib/utils';
 import type { AIAgent } from '@/lib/ai-center/agents';
-import { NOT_AVAILABLE_COPY, type AgentStatus, type AgentSwitchControl } from '@/lib/ai-center/agentStatus';
+import { NOT_AVAILABLE_COPY, type AgentStatus, type AgentDeactivateControl } from '@/lib/ai-center/agentStatus';
 import { useAiCenterStore } from '@/stores/aiCenterStore';
 import { AgentStatusChip } from './AgentStatusChip';
 
 /*
- * The detail pop-up's controls for an agent this company can use (the 14 Oct controls design,
- * option A): a control row under the header that says where the agent stands and, for someone
- * who may manage it, switches it; and the footer, whose main button follows the switch. Nothing
- * here names an agent: the words come from the agent's registry entry and its catalog name.
- *
- * The switch says whether the agent is applied, and an Admin can always use it, set up or not.
- * The footer's button is the way in ("Open", or "Set up" before it is set up), and only while the
- * switch is on: while off it is locked, with "Turn it on" under it (Ran, 14 Oct).
+ * The detail pop-up's controls for an agent on this company's account (mockup M1, "AI Agentic Farm
+ * card and pop-up", Ran 10 Nov): a status row under the header with the Not active / Active badge,
+ * and the footer: Close and "Set up {name}" while Not active; Close, Deactivate and "Open {name}"
+ * while Active. There is no switch: an agent is activated only on its own page, after its review.
+ * Someone who may not manage the agent sees the status without the buttons. Nothing here names an
+ * agent: the words come from the agent's registry entry and its catalog name.
  */
 
 interface ControlsProps {
   agent: AIAgent;
   status: AgentStatus;
-  control: AgentSwitchControl;
+  control: AgentDeactivateControl;
 }
 
-interface RowProps extends ControlsProps {
-  /** The control row's own spacing, which a page may replace (the pop-up keeps a gap under it). */
-  className?: string;
-  /**
-   * Set by a page whose form holds changes that are not saved yet, which turning the agent off
-   * throws away (its page locks): the sentence that says so. While it is set, turning off always
-   * asks first, set up or not, and the question leads with it.
-   */
-  unsavedWarning?: string;
-}
-
-/** The row's two lines, for the agent's state and the person looking. */
-function rowLines({ status, isSetUp, canManage, copy }: AgentStatus, name: string): [string, string] | null {
-  if (status === 'not_available') return [NOT_AVAILABLE_COPY.title(name), NOT_AVAILABLE_COPY.detail];
-  if (!copy) return null;
-  switch (status) {
-    case 'on':
-      return [
-        `${name} is on`,
-        isSetUp ? copy.onDetail : canManage ? copy.onNotSetUpDetail : copy.notSetUpMemberDetail,
-      ];
-    case 'off':
-      return [
-        `${name} is off`,
-        isSetUp ? copy.offDetail : canManage ? copy.offNotSetUpDetail : copy.notSetUpMemberDetail,
-      ];
-    default:
-      return null;
-  }
-}
+const ROW = 'mb-4 flex items-center gap-2 rounded-[14px] border border-border bg-surface-light py-1.5 pl-3.5 pr-3';
 
 /**
- * Turning the agent on saves at once. Turning it off asks first when it was set up, because it
- * stops the agent's work; the question says what is kept. An agent that was never set up does no
- * work yet, so it switches straight off. Shared by the row's switch and the footer's "Turn it on".
+ * The pop-up's status row. Active or Not active as a badge (a polite live region, so a screen reader
+ * hears the change after Deactivate), with the ? that says what Not active means for someone who
+ * may activate it. A released agent the company does not have says so in two lines, as before.
  */
-function useSwitchFlow(control: AgentSwitchControl, isSetUp: boolean) {
-  const [confirmOff, setConfirmOff] = useState(false);
-  return {
-    confirmOff,
-    setConfirmOff,
-    request(next: boolean) {
-      if (!control.setActive) return;
-      if (next) control.setActive(true);
-      else if (isSetUp) setConfirmOff(true);
-      else control.setActive(false);
-    },
-    turnOff() {
-      setConfirmOff(false);
-      control.setActive?.(false);
-    },
-  };
-}
-
-/**
- * The one on/off control for an agent, shared by the AI Agentic Farm pop-up and the agent's own
- * page: where it stands in words (a polite live region) and, for someone who may manage it, the
- * switch, which asks before turning off an agent that was set up.
- */
-export function AgentControlRow({ agent, status, control, className, unsavedWarning }: RowProps) {
+export function AgentStatusRow({ agent, status }: Omit<ControlsProps, 'control'>) {
   const detailId = useId();
-  const flow = useSwitchFlow(control, status.isSetUp || !!unsavedWarning);
-
   if (status.status === 'loading') {
-    // The row's own shape and height, so nothing below it moves when the switch is read.
+    // The row's own shape and height, so nothing below it moves when the status is read.
     return (
-      <div
-        data-agent-control-row="loading"
-        aria-hidden
-        className={cn('mb-4 flex min-h-[58px] items-center gap-3 rounded-[14px] border border-border py-1.5 pl-3.5 pr-1.5', className)}
-      >
-        <div className="flex flex-1 flex-col gap-2">
-          <Skeleton className="h-3.5 w-32" />
-          <Skeleton className="h-3 w-48 max-w-full" />
-        </div>
-        <Skeleton className="mr-2 h-[30px] w-[52px]" />
+      <div data-agent-control-row="loading" aria-hidden className={cn(ROW, 'min-h-[48px]')}>
+        <Skeleton className="h-3.5 w-16" />
+        <Skeleton className="ml-auto h-[26px] w-24 rounded-full" />
       </div>
     );
   }
 
-  const lines = rowLines(status, agent.name);
-  // The switch could not be read: claim nothing.
-  if (!lines) return null;
-
-  const isOn = status.status === 'on';
-  const notAvailable = status.status === 'not_available';
-  const canSwitch = !notAvailable && status.canManage && !!control.setActive;
-  return (
-    <>
+  if (status.status === 'not_available') {
+    // Exactly as before #3433 (the ticket keeps "Book a call to add it" agents as they were): its own padding and
+    // transition, and the title as a polite live region.
+    return (
       <div
-        data-agent-control-row={status.status}
-        data-agent-set-up={status.isSetUp}
-        className={cn(
-          'mb-4 flex min-h-[58px] items-center gap-3 rounded-[14px] border py-1.5 pl-3.5 pr-1.5 transition-colors duration-200 motion-reduce:transition-none',
-          !isOn
-            ? 'border-border bg-surface-light'
-            : status.isSetUp
-              ? 'border-success-border bg-gradient-to-r from-success-surface via-surface-light/60 to-surface-light'
-              : // On but not set up yet: applied, not working yet. The amber of the card's strip.
-                'border-warning-border bg-gradient-to-r from-warning-surface via-surface-light/60 to-surface-light',
-          className,
-        )}
+        data-agent-control-row="not_available"
+        className="mb-4 flex min-h-[58px] items-center gap-3 rounded-[14px] border border-border bg-surface-light py-1.5 pl-3.5 pr-1.5 transition-colors duration-200 motion-reduce:transition-none"
       >
         <div className="min-w-0 flex-1 py-1">
-          {/* A polite live region: a screen reader hears "Spider is off" when the switch settles,
-              including after the turn-off question, with no toast needed. */}
           <p role="status" className="text-[14.5px] font-bold leading-snug text-text-primary">
-            {lines[0]}
+            {NOT_AVAILABLE_COPY.title(agent.name)}
           </p>
           <p id={detailId} className="text-pretty text-[12.5px] leading-snug text-text-secondary">
-            {lines[1]}
+            {NOT_AVAILABLE_COPY.detail}
           </p>
         </div>
-        {canSwitch ? (
-          // Always usable by someone who may manage the agent, set up or not.
-          <Switch
-            size="lg"
-            tone="success"
-            stateLabel
-            checked={isOn}
-            busy={control.saving}
-            aria-label={`Switch ${agent.name} on or off`}
-            aria-describedby={detailId}
-            onCheckedChange={flow.request}
-          />
-        ) : notAvailable ? null : (
-          <span className="mr-2">
-            <AgentStatusChip state={isOn ? 'on' : 'off'} />
-          </span>
-        )}
       </div>
-      {canSwitch && status.copy && (
-        <TurnOffConfirm
-          name={agent.name}
-          // "...are all kept" speaks of what was saved, so it stays only for an agent that was set up.
-          warning={
-            unsavedWarning
-              ? [unsavedWarning, ...(status.isSetUp ? status.copy.turnOffWarning : [])]
-              : status.copy.turnOffWarning
-          }
-          open={flow.confirmOff}
-          onOpenChange={flow.setConfirmOff}
-          onConfirm={flow.turnOff}
-        />
-      )}
-    </>
+    );
+  }
+
+  // Not read ("unknown"): claim nothing.
+  if (status.status !== 'active' && status.status !== 'not_active') return null;
+
+  const active = status.status === 'active';
+  return (
+    <div data-agent-control-row={active ? 'active' : 'not_active'} className={cn(ROW, 'min-h-[48px]')}>
+      <span className="flex-1 text-sm font-bold text-text-primary">Status</span>
+      <span role="status">
+        <AgentStatusChip state={active ? 'active' : 'not_active'} />
+      </span>
+      {!active && status.canManage && status.copy && <HelpIcon label="Not active" text={status.copy.notActiveHelp} />}
+    </div>
   );
 }
 
 /**
- * The same on/off switch as the row above, on its own: for the agent's page header, where the
- * contractor's design has no room for the row's two lines (Spider, Ran 15 Oct, D1). Same switch,
- * same rule (an Admin can always use it), same turn-off question. Someone who may not manage the
- * agent sees the On / Off chip instead.
+ * "Deactivate {name}?", asked before Deactivate on the agent's page (#3432) and in the AI Agentic
+ * Farm pop-up (#3433), Ran 10 Nov Q3 A: one question for both. The agent's own words for what
+ * Deactivate does and keeps, "Keep it active" and "Deactivate".
  */
-export function AgentSwitch({ agent, status, control, unsavedWarning }: ControlsProps & { unsavedWarning?: string }) {
-  const flow = useSwitchFlow(control, status.isSetUp || !!unsavedWarning);
-  if (status.status === 'loading') {
-    return <Skeleton data-agent-switch="loading" aria-hidden className="h-[30px] w-[52px]" />;
-  }
-  if (status.status !== 'on' && status.status !== 'off') return null;
-  const isOn = status.status === 'on';
-  const canSwitch = status.canManage && !!control.setActive;
-  if (!canSwitch) return <AgentStatusChip state={isOn ? 'on' : 'off'} />;
-  return (
-    <>
-      <Switch
-        size="lg"
-        tone="success"
-        stateLabel
-        checked={isOn}
-        busy={control.saving}
-        aria-label={`Switch ${agent.name} on or off`}
-        onCheckedChange={flow.request}
-      />
-      {status.copy && (
-        <TurnOffConfirm
-          name={agent.name}
-          warning={
-            unsavedWarning
-              ? [unsavedWarning, ...(status.isSetUp ? status.copy.turnOffWarning : [])]
-              : status.copy.turnOffWarning
-          }
-          open={flow.confirmOff}
-          onOpenChange={flow.setConfirmOff}
-          onConfirm={flow.turnOff}
-        />
-      )}
-    </>
-  );
-}
-
-function TurnOffConfirm({
+export function DeactivateConfirm({
   name,
   warning,
   open,
@@ -240,35 +105,37 @@ function TurnOffConfirm({
       open={open}
       onOpenChange={onOpenChange}
       tone="danger"
-      title={`Turn off ${name}?`}
+      title={`Deactivate ${name}?`}
       description={warning.map((p, i) => (
         <span key={i} className={cn('block', i > 0 && 'mt-2')}>
           {p}
         </span>
       ))}
-      cancelLabel="Keep it on"
-      confirmLabel="Turn off"
+      cancelLabel="Keep it active"
+      confirmLabel="Deactivate"
       onConfirm={onConfirm}
     />
   );
 }
 
 /**
- * The footer for an agent this company can use. Someone who may manage it gets the way to its
- * page: "Open" once it is set up, "Set up" before. Either follows the switch: usable while on,
- * locked while off (with a way to turn it on right there). Everyone else gets one line on how they
- * hear from it.
+ * The footer for an agent on this company's account, for someone who may manage it: Close and
+ * "Set up {name}" while Not active; Close, Deactivate (asked first, with the same question as the
+ * agent's page) and "Open {name}" while Active. Both "Set up" and "Open" go to the agent's page,
+ * where Activate lives. Everyone else gets no footer: the tag and the status, without the buttons.
  */
 export function AgentFooter({ agent, status, control, onClose }: ControlsProps & { onClose: () => void }) {
   const navigate = useNavigate();
   const closeCatalog = useAiCenterStore((s) => s.setOpen);
-  const hintId = useId();
+  const [confirmOff, setConfirmOff] = useState(false);
+
+  if (!status.canManage || !status.managePath) return null;
+  const managePath = status.managePath;
 
   const openPage = () => {
-    if (!status.managePath) return;
     onClose();
     closeCatalog(false);
-    navigate(status.managePath);
+    navigate(managePath);
   };
 
   const close = (
@@ -279,24 +146,6 @@ export function AgentFooter({ agent, status, control, onClose }: ControlsProps &
     </DialogClose>
   );
 
-  if (!status.canManage || !status.managePath) {
-    const note =
-      status.status === 'on'
-        ? status.isSetUp
-          ? status.copy?.memberOnNote
-          : status.copy?.memberOnNotSetUpNote
-        : status.status === 'off'
-          ? status.copy?.memberOffNote
-          : undefined;
-    return note ? (
-      <p data-agent-footer-note className="py-1.5 text-center text-sm text-text-secondary">
-        {note}
-      </p>
-    ) : (
-      <div className="flex">{close}</div>
-    );
-  }
-
   if (status.status === 'loading') {
     return (
       <div className="flex gap-2.5">
@@ -306,55 +155,36 @@ export function AgentFooter({ agent, status, control, onClose }: ControlsProps &
     );
   }
 
-  // The way in is its page: "Set up" until it is set up, "Open" after. When the switch could not
-  // be read ("unknown") it is "Open": the page shows the real state itself.
-  const setUpFirst = (status.status === 'on' || status.status === 'off') && !status.isSetUp;
-  const pageLabel = setUpFirst ? `Set up ${agent.name}` : `Open ${agent.name}`;
-
-  if (status.status === 'off') {
-    return (
-      <div className="grid grid-cols-[minmax(0,1fr)] gap-1.5">
-        <div className="flex min-w-0 gap-2.5">
-          {close}
-          {/* Locked while the agent is off: it stays in the tab order so the reason under it is
-              found, and does nothing. */}
-          <Button
-            variant="solid"
-            tone="neutral"
-            aria-disabled="true"
-            aria-describedby={hintId}
-            data-agent-locked
-            className="min-w-0 flex-1 cursor-not-allowed"
-            onClick={(e) => e.preventDefault()}
-          >
-            <span className="inline-flex min-w-0 max-w-full items-center gap-2 overflow-hidden opacity-60">
-              <Lock aria-hidden />
-              <span className="truncate">{pageLabel}</span>
-            </span>
-          </Button>
-        </div>
-        <p id={hintId} className="text-balance text-center text-sm text-text-secondary">
-          {agent.name} is off.{' '}
-          {/* Inline in the sentence: no control height of its own (touch included), so the note
-              stays one line of text. The hit area grows past the words through a transparent
-              ::after instead, which changes no line height. */}
-          <Button
-            variant="link"
-            className="relative h-auto px-0.5 py-0 align-baseline after:absolute after:-inset-x-2 after:-inset-y-3 after:content-['']"
-            disabled={control.saving}
-            onClick={() => control.setActive?.(true)}
-          >
-            <span className="text-ai-text underline decoration-ai-text/40 underline-offset-[3px]">Turn it on</span>
-          </Button>{' '}
-          {setUpFirst ? 'to set it up' : 'to open it'}.
-        </p>
-      </div>
-    );
-  }
+  const active = status.status === 'active';
+  const deactivate = control.setActive;
+  // Not active: "Set up". Active, or a status that could not be read: "Open" (the page shows the real state).
+  const pageLabel = status.status === 'not_active' ? `Set up ${agent.name}` : `Open ${agent.name}`;
 
   return (
     <div className="flex gap-2.5">
       {close}
+      {active && deactivate && (
+        <>
+          <Button
+            variant="outline"
+            tone="danger"
+            disabled={control.saving}
+            onClick={() => setConfirmOff(true)}
+          >
+            Deactivate
+          </Button>
+          <DeactivateConfirm
+            name={agent.name}
+            warning={status.copy?.deactivateWarning ?? []}
+            open={confirmOff}
+            onOpenChange={setConfirmOff}
+            onConfirm={() => {
+              setConfirmOff(false);
+              deactivate(false);
+            }}
+          />
+        </>
+      )}
       <Button variant="solid" tone="ai" className="min-w-0 flex-1" onClick={openPage}>
         <span className="truncate">{pageLabel}</span>
         <ArrowRight aria-hidden />

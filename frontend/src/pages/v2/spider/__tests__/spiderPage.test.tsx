@@ -1,11 +1,12 @@
 /**
  * Spider (#2619) - the Spider page as the contractor built it (Ran, 15 Oct: S1 of "bring Umer's
  * sandbox build over exactly"): his header, Configuration | History tabs, the Configuration & Alert
- * Rules card and his save review, with OUR on/off switch in the header (D1). Also its route guard
+ * Rules card and his save review, with the Not active / Active status and Activate / Deactivate in
+ * the header (#3432; the activation itself is in spiderActivation.test.tsx). Also its route guard
  * and the AI Center's Spider pop-up. The API is faked at axios.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { Route, Routes, useNavigate } from 'react-router-dom';
 import api from '@/lib/axios';
 import { toast } from '@/ui-kit/components/ui/sonner';
@@ -28,8 +29,6 @@ const mockApi = vi.mocked(api);
 const SETTINGS = '/api/ai-farm/spider/settings';
 const HISTORY = '/api/ai-farm/spider/history';
 const STATUS = '/api/ai-farm/spider/status';
-const LEADS = '/api/leads';
-const CUSTOMERS = '/api/customers';
 
 function signIn(user: Record<string, unknown>) {
   vi.mocked(useAuthStore).mockImplementation(((selector: (s: Record<string, unknown>) => unknown) =>
@@ -54,11 +53,8 @@ const SETTINGS_BODY = {
     },
     channels: { in_app: true, red_frame: true, email: false, text: false },
     recipients: { roles: ['ADMIN', 'SALES'], user_ids: [], lead_owner: true },
-    watch_all_leads: true,
-    selected_lead_ids: ['lead-new'],
     updated_at: null,
   },
-  selected_leads: [{ id: 'lead-new', lead_number: 'L00042', customer_name: 'Pat Payer' }],
   options: {
     statuses: [
       { value: 'NEW', label: 'New' },
@@ -87,10 +83,7 @@ const DEFAULT_SETTINGS_BODY = {
     status_limits: { NEW: LIMIT_OFF, CONTACTED: LIMIT_OFF, WALKTHROUGH_COMPLETED: LIMIT_OFF },
     channels: { in_app: true, red_frame: true, email: true, text: true },
     recipients: { roles: ['ADMIN', 'SALES', 'DISPATCHER', 'TECHNICIAN'], user_ids: [], lead_owner: true },
-    watch_all_leads: true,
-    selected_lead_ids: [],
   },
-  selected_leads: [],
 };
 
 /** Nothing chosen anywhere: every one of his three required checks fails. */
@@ -103,32 +96,11 @@ const EMPTY_SETTINGS_BODY = {
   },
 };
 
-const PAT = { id: 'cust-pat', first_name: 'Pat', last_name: 'Payer', company_name: 'Payer Homes', email: 'pat@example.test' };
-const LEAD_BASE = {
-  customer_id: PAT.id,
-  customer: PAT,
-  service_request: 'Fix the door',
-  contacted_at: null,
-  walkthrough_first_booked_at: null,
-  last_visit_completed_at: null,
-  first_estimate_sent_at: null,
-  won_at: null,
-  lost_at: null,
-  cancelled_at: null,
-  commission_owner: null,
-};
-const LEADS_BODY = [
-  // New, created 3 days ago, selected: past its 2-hour limit.
-  { ...LEAD_BASE, id: 'lead-new', lead_number: 'L00042', status: 'NEW', created_at: ago(3 * DAY),
-    service_location: { address_line1: '1 Test Way', address_line2: null, city: 'Testville', state: 'MA', zip: '02108' },
-    commission_owner: { id: 'u2', first_name: 'Rita', last_name: 'Rep' } },
-  // Contacted 5 hours ago.
-  { ...LEAD_BASE, id: 'lead-contacted', lead_number: 'L00043', status: 'CONTACTED', created_at: ago(2 * DAY), contacted_at: ago(5 * HOUR) },
-  // Not in any of his three stages: never listed.
-  { ...LEAD_BASE, id: 'lead-won', lead_number: 'L00044', status: 'WON', created_at: ago(9 * DAY), won_at: ago(DAY) },
-  { ...LEAD_BASE, id: 'lead-estimate', lead_number: 'L00045', status: 'ESTIMATED', created_at: ago(9 * DAY), contacted_at: ago(8 * DAY), first_estimate_sent_at: ago(DAY) },
-  { ...LEAD_BASE, id: 'lead-booked', lead_number: 'L00046', status: 'WALKTHROUGH_SCHEDULED', created_at: ago(9 * DAY), contacted_at: ago(8 * DAY), walkthrough_first_booked_at: ago(7 * DAY) },
-];
+/** The picker's server (#3436): two open leads watched, none excluded, one customer with both. */
+const OVERVIEW = '/api/ai-farm/spider/overview';
+const PICKER_CUSTOMERS = '/api/ai-farm/spider/customers';
+let overviewBody = { watched: 2, excluded: 0 };
+const PAT_ROW = { id: 'cust-pat', name: 'Pat Payer', company_name: 'Payer Homes', email: 'pat@example.test', open_leads: 2, excluded_leads: 0 };
 const USERS = [
   { id: 'u1', first_name: 'Ada', last_name: 'Admin', email: 'ada@example.test', role: 'ADMIN', is_admin: true },
   { id: 'u2', first_name: 'Rita', last_name: 'Rep', email: 'rita@example.test', role: 'SALES' },
@@ -209,12 +181,15 @@ let spiderSwitch: { isActive: boolean; isSetUp: boolean } = { isActive: true, is
 let settingsBody: typeof SETTINGS_BODY = SETTINGS_BODY;
 const SWITCH = { name: 'Switch Spider on or off' };
 const HEADING = 'Configuration & Alert Rules';
-const LOCKED_LINE = 'Turn it on to change its settings or see its history.';
+/** The header's status badge, once it reads `words`. */
+const statusBadge = (words: 'Active' | 'Not active') =>
+  screen.findByText(words, { selector: '[data-spider-status-actions] [data-agent-chip]' });
 
 beforeEach(() => {
   spiderSwitch = { isActive: true, isSetUp: true };
   settingsBody = SETTINGS_BODY;
   summaryBody = { total: 26, new_since: 4 };
+  overviewBody = { watched: 2, excluded: 0 };
   filterCustomers = [{ value: 'cust-pat', label: 'Pat Payer' }];
   localStorage.clear();
   vi.clearAllMocks();
@@ -238,8 +213,8 @@ beforeEach(() => {
       return { data: { recipients: [{ value: 'u1', label: 'Ada Admin' }, { value: 'u2', label: 'Rita Rep' }], customers: filterCustomers } };
     }
     if (url === STATUS) return { data: spiderSwitch };
-    if (url === LEADS) return { data: { leads: LEADS_BODY } };
-    if (url === CUSTOMERS) return { data: { customers: [{ ...PAT, service_locations: [] }] } };
+    if (url === OVERVIEW) return { data: overviewBody };
+    if (url === PICKER_CUSTOMERS) return { data: { customers: [PAT_ROW], next_cursor: null } };
     if (url === '/api/users') return { data: { users: USERS } };
     return { data: {} };
   });
@@ -281,7 +256,7 @@ async function openConfig() {
 async function saveAndConfirm() {
   fireEvent.click(screen.getByRole('button', { name: 'Save' }));
   const dialog = await screen.findByRole('dialog', { name: 'Confirm Spider Agent Configuration' });
-  fireEvent.click(within(dialog).getByRole('button', { name: 'Active' }));
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
   return dialog;
 }
 
@@ -318,7 +293,7 @@ describe('Spider Configuration', () => {
     }
   });
 
-  it("shows his defaults for a company that never saved: every channel, all four roles and the owner, auto-select on, every stage off", async () => {
+  it("shows his defaults for a company that never saved: every channel, all four roles and the owner, every stage off", async () => {
     settingsBody = DEFAULT_SETTINGS_BODY;
     renderWithProviders(<SpiderPage />);
     await openConfig();
@@ -326,7 +301,6 @@ describe('Spider Configuration', () => {
     expect(screen.getByText('4/4 selected')).toBeInTheDocument();
     expect(screen.getByRole('checkbox', { name: 'Select all System roles' })).toBeChecked();
     expect(screen.getByRole('checkbox', { name: 'Notify Lead Owner' })).toBeChecked();
-    expect(screen.getByRole('checkbox', { name: 'Auto-select new leads created during active Spider session' })).toBeChecked();
     for (const label of [NEW_ROW, CONTACTED_ROW, COMPLETED_ROW]) {
       expect(stageSwitch(label)).not.toBeChecked();
       expect(stageInput(label)).toHaveValue('');
@@ -346,14 +320,17 @@ describe('Spider Configuration', () => {
   });
 
   // D1: one switch. Saving never sends the switch, and the review's "Active" saves the settings only.
-  it('has no on/off switch of its own; Save opens his review, and confirming saves the settings only, then says Saved', async () => {
+  it('has no on/off switch; while Active, Save opens his review, and confirming saves the settings only, then says Saved', async () => {
     renderWithProviders(<SpiderPage />);
     await openConfig();
-    expect(screen.getAllByRole('switch', SWITCH)).toHaveLength(1);
+    expect(screen.queryByRole('switch', SWITCH)).toBeNull();
     fireEvent.click(channelBox('Email'));
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     const dialog = await screen.findByRole('dialog', { name: 'Confirm Spider Agent Configuration' });
-    expect(within(dialog).getByText('Before You Activate')).toBeInTheDocument();
+    // Ran, 10 Nov: the mockup's title and subtitle, no old activation note, and the button says Save.
+    expect(within(dialog).getByText('Review your campaign channels, recipients, stage thresholds, and monitored leads before saving.')).toBeInTheDocument();
+    expect(within(dialog).queryByText(/Before You Activate/i)).toBeNull();
+    expect(within(dialog).queryByRole('button', { name: 'Active' })).toBeNull();
     for (const t of ['Monitored Pipeline Targets', 'Active Notification Channels', 'Assigned Alert Recipients', 'Pipeline Stage Thresholds']) {
       expect(within(dialog).getByText(t)).toBeInTheDocument();
     }
@@ -363,7 +340,7 @@ describe('Spider Configuration', () => {
     expect(within(dialog).getAllByText('Disabled').length).toBeGreaterThanOrEqual(2);
     // Nothing is sent until the review is confirmed.
     expect(settingsPuts()).toHaveLength(0);
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Active' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
 
     expect(await screen.findByRole('button', { name: 'Saved' })).toBeInTheDocument();
     const [url, sent] = settingsPuts()[0]!;
@@ -377,28 +354,23 @@ describe('Spider Configuration', () => {
       },
       channels: { in_app: true, red_frame: true, email: true, text: false },
       recipients: { roles: ['ADMIN', 'SALES'], user_ids: [], lead_owner: true },
-      watch_all_leads: true,
-      selected_lead_ids: ['lead-new'],
     });
+    // No tick changed: no exclusions request.
+    expect(mockApi.patch).not.toHaveBeenCalled();
     expect(mockApi.put.mock.calls.filter(([u]) => u === STATUS)).toHaveLength(0);
     expect(toast).toHaveBeenCalledWith('Spider Agent Settings Saved', expect.objectContaining({
       description: 'Notification preferences, assignments, stage thresholds, and lead watchers have been successfully applied.',
     }));
   });
 
-  it("counts in the review only the selected leads it can name", async () => {
-    settingsBody = {
-      ...SETTINGS_BODY,
-      settings: { ...SETTINGS_BODY.settings, watch_all_leads: false, selected_lead_ids: ['lead-new', 'lead-gone'] },
-      selected_leads: [{ id: 'lead-new', lead_number: 'L00042', customer_name: 'Pat Payer' }],
-    };
+  it('the review counts the open leads Spider will watch, as the picker header does (#3436)', async () => {
+    overviewBody = { watched: 2287, excluded: 13 };
     renderWithProviders(<SpiderPage />);
     await openConfig();
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     const dialog = await screen.findByRole('dialog', { name: 'Confirm Spider Agent Configuration' });
-    expect(within(dialog).getByText('Monitoring 1 lead across 1 customer account.')).toBeInTheDocument();
-    fireEvent.click(within(dialog).getByText('1 Leads Selected'));
-    expect(within(dialog).getAllByText('L00042')).toHaveLength(1);
+    expect(within(dialog).getByText('2,287 leads')).toBeInTheDocument();
+    expect(within(dialog).queryByText(/Leads Selected/)).toBeNull();
   });
 
   it('enables a stage at 1, counts with the stepper, keeps minutes as minutes, and switches it off at 0', async () => {
@@ -427,13 +399,16 @@ describe('Spider Configuration', () => {
   });
 
   // D3: his three required checks, his callout, his toast. Nothing is sent.
-  it('refuses to save with nothing chosen: his callout with his three rules and the "Cannot Activate Spider Agent" toast', async () => {
+  // While Active, Save's review is no activation (final review M2): Save's own words, never "Activate".
+  it('refuses to save with nothing chosen: his callout with his three rules and the "Cannot Save Spider Settings" toast', async () => {
     settingsBody = EMPTY_SETTINGS_BODY;
     renderWithProviders(<SpiderPage />);
     await openConfig();
     const dialog = await saveAndConfirm();
-    expect(within(dialog).getByText('Required Items Missing Before Activation (3)')).toBeInTheDocument();
-    expect(within(dialog).getByText('At least one item must be selected from every required section before activating:')).toBeInTheDocument();
+    expect(within(dialog).getByText('Required Items Missing Before Saving (3)')).toBeInTheDocument();
+    expect(within(dialog).queryByText(/Required Items Missing Before Activation/)).toBeNull();
+    expect(within(dialog).getByText('At least one item must be selected from every required section before saving:')).toBeInTheDocument();
+    expect(within(dialog).queryByText(/before activating/)).toBeNull();
     for (const rule of [
       'Please select at least one Notification Channel (Email, SMS, In-App, or Red Frame).',
       'Please assign at least one recipient (Admin Roles, Lead Owner, or Specific Users).',
@@ -441,7 +416,8 @@ describe('Spider Configuration', () => {
     ]) {
       expect(within(dialog).getByText(rule)).toBeInTheDocument();
     }
-    expect(toast.error).toHaveBeenCalledWith('Cannot Activate Spider Agent', expect.anything());
+    expect(toast.error).toHaveBeenCalledWith('Cannot Save Spider Settings', expect.anything());
+    expect(toast.error).not.toHaveBeenCalledWith('Cannot Activate Spider Agent', expect.anything());
     expect(settingsPuts()).toHaveLength(0);
     expect(screen.getByRole('dialog', { name: 'Confirm Spider Agent Configuration' })).toBeInTheDocument();
   });
@@ -453,7 +429,7 @@ describe('Spider Configuration', () => {
     fireEvent.click(channelBox('Email'));
     fireEvent.click(stageSwitch(NEW_ROW));
     const dialog = await saveAndConfirm();
-    expect(within(dialog).getByText('Required Items Missing Before Activation (1)')).toBeInTheDocument();
+    expect(within(dialog).getByText('Required Items Missing Before Saving (1)')).toBeInTheDocument();
     expect(within(dialog).getByText('Please assign at least one recipient (Admin Roles, Lead Owner, or Specific Users).')).toBeInTheDocument();
     expect(settingsPuts()).toHaveLength(0);
   });
@@ -482,21 +458,25 @@ describe('Spider Configuration', () => {
     expect(toast).not.toHaveBeenCalledWith('Spider Agent Settings Saved', expect.anything());
   });
 
-  it('locks the page when Spider was switched off meanwhile', async () => {
+  it('says so, and follows to Not active, when Spider was deactivated while saving (409), keeping the edits', async () => {
     renderWithProviders(<SpiderPage />);
     await openConfig();
+    fireEvent.click(channelBox('Email'));
     spiderSwitch = { ...spiderSwitch, isActive: false };
     mockApi.put.mockRejectedValue(
-      Object.assign(new Error('x'), { response: { status: 409, data: { error: 'Spider is off. Turn it on to change its settings.' } } }),
+      Object.assign(new Error('x'), {
+        response: { status: 409, data: { error: 'Spider was activated or deactivated while you were saving. Save again.' } },
+      }),
     );
     await saveAndConfirm();
     await waitFor(() =>
       expect(toast.error).toHaveBeenCalledWith('Failed to Save Settings', expect.objectContaining({
-        description: 'Spider is off. Turn it on to change its settings.',
+        description: 'Spider was activated or deactivated while you were saving. Save again.',
       })),
     );
-    expect(await screen.findByText(LOCKED_LINE)).toBeInTheDocument();
-    expect(screen.queryByText(HEADING)).toBeNull();
+    expect(await statusBadge('Not active')).toBeInTheDocument();
+    expect(screen.getByText(HEADING)).toBeInTheDocument();
+    expect(channelBox('Email')).toBeChecked();
   });
 
   it('shows his load-error banner with Retry when the settings cannot be read', async () => {
@@ -513,170 +493,6 @@ describe('Spider Configuration', () => {
 });
 
 // ─── Select Contacts for Alert ───────────────────────────────────────────────
-
-describe('Select Contacts for Alert', () => {
-  async function expandPat() {
-    await openConfig();
-    fireEvent.click(await screen.findByRole('button', { name: 'Toggle leads for Pat Payer' }));
-  }
-
-  it('reads leads and customers as he did, and lists only leads in his three stages, by customer', async () => {
-    renderWithProviders(<SpiderPage />);
-    await expandPat();
-    expect(mockApi.get).toHaveBeenCalledWith(LEADS, expect.objectContaining({ params: { page: 1, limit: 100 } }));
-    expect(mockApi.get).toHaveBeenCalledWith(CUSTOMERS, expect.objectContaining({ params: { page: 1, limit: 100 } }));
-    expect(screen.getByText('2 leads')).toBeInTheDocument();
-    expect(screen.getByText('Leads for Pat Payer')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Open Lead Overview for L00042' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Open Lead Overview for L00043' })).toBeInTheDocument();
-    // Won, an estimate sent, and a booked walkthrough: in none of his three stages.
-    for (const n of ['L00044', 'L00045', 'L00046']) expect(screen.queryByText(n)).toBeNull();
-  });
-
-  it('shows time in stage, Last Comm, the stage, the overdue flag, the address and the owner, with his maths', async () => {
-    renderWithProviders(<SpiderPage />);
-    await expandPat();
-    const newRow = screen.getByRole('button', { name: 'Open Lead Overview for L00042' }).closest('.rounded-md') as HTMLElement;
-    expect(within(newRow).getByText('3 Days in stage')).toBeInTheDocument();
-    expect(within(newRow).getByText('New')).toBeInTheDocument();
-    // Selected, and 3 days in New against a 2-hour limit.
-    expect(within(newRow).getByText('Alert: Overdue')).toBeInTheDocument();
-    expect(within(newRow).getByText('1 Test Way, Testville, MA 02108')).toBeInTheDocument();
-    expect(within(newRow).getByText('Rita Rep')).toBeInTheDocument();
-    expect(within(newRow).queryByText(/Last Comm/)).toBeNull();
-    expect(screen.getByText(/1 alert$/)).toBeInTheDocument();
-
-    const contactedRow = screen.getByRole('button', { name: 'Open Lead Overview for L00043' }).closest('.rounded-md') as HTMLElement;
-    expect(within(contactedRow).getByText('5 Hours in stage')).toBeInTheDocument();
-    expect(within(contactedRow).getByText('· Last Comm: 5 hours ago')).toBeInTheDocument();
-    expect(within(contactedRow).getByText('Contacted')).toBeInTheDocument();
-    // Not selected: no alert, even though Contacted has no limit anyway.
-    expect(within(contactedRow).queryByText('Alert: Overdue')).toBeNull();
-  });
-
-  const leadBox = (n: string) => screen.getByRole('checkbox', { name: `Select lead ${n} for notifications` });
-  const autoBox = () => screen.getByRole('checkbox', { name: 'Auto-select new leads created during active Spider session' });
-  const patBox = () => screen.getByRole('checkbox', { name: 'Select customer Pat Payer for watcher' });
-  async function savedBody() {
-    await saveAndConfirm();
-    await waitFor(() => expect(settingsPuts()).toHaveLength(1));
-    return settingsPuts()[0]![1] as { watch_all_leads: boolean; selected_lead_ids: string[] };
-  }
-
-  // "Auto-select new leads" is the server's watch-all flag: the ticks show what the server watches.
-  it('ticks every listed lead and customer, with "Deselect all", while Auto-select new leads is on', async () => {
-    renderWithProviders(<SpiderPage />);
-    await expandPat();
-    expect(autoBox()).toBeChecked();
-    expect(leadBox('L00042')).toBeChecked();
-    expect(leadBox('L00043')).toBeChecked();
-    expect(patBox()).toBeChecked();
-    expect(screen.getByText('Deselect all')).toBeInTheDocument();
-    expect(screen.queryByText('Select all')).toBeNull();
-  });
-
-  it('ticks only the saved leads, with "Select all", while it is off', async () => {
-    settingsBody = { ...SETTINGS_BODY, settings: { ...SETTINGS_BODY.settings, watch_all_leads: false } };
-    renderWithProviders(<SpiderPage />);
-    await expandPat();
-    expect(autoBox()).not.toBeChecked();
-    expect(leadBox('L00042')).toBeChecked();
-    expect(leadBox('L00043')).not.toBeChecked();
-    expect(screen.getByText('Select all')).toBeInTheDocument();
-  });
-
-  it('unticking a lead while auto-select is on turns it off and keeps every other listed lead selected', async () => {
-    renderWithProviders(<SpiderPage />);
-    await expandPat();
-    fireEvent.click(leadBox('L00043'));
-    expect(autoBox()).not.toBeChecked();
-    expect(leadBox('L00042')).toBeChecked();
-    expect(leadBox('L00043')).not.toBeChecked();
-    expect(screen.getByText('Select all')).toBeInTheDocument();
-    expect(await savedBody()).toMatchObject({ watch_all_leads: false, selected_lead_ids: ['lead-new'] });
-  });
-
-  it('"Deselect all" while auto-select is on turns it off and selects none', async () => {
-    renderWithProviders(<SpiderPage />);
-    await expandPat();
-    fireEvent.click(screen.getByText('Deselect all'));
-    expect(autoBox()).not.toBeChecked();
-    expect(leadBox('L00042')).not.toBeChecked();
-    expect(leadBox('L00043')).not.toBeChecked();
-    expect(patBox()).not.toBeChecked();
-    expect(await savedBody()).toMatchObject({ watch_all_leads: false, selected_lead_ids: [] });
-  });
-
-  it('ticking Auto-select again ticks everything, and saves the watch-all flag', async () => {
-    renderWithProviders(<SpiderPage />);
-    await expandPat();
-    fireEvent.click(screen.getByText('Deselect all'));
-    expect(leadBox('L00042')).not.toBeChecked();
-    fireEvent.click(autoBox());
-    expect(autoBox()).toBeChecked();
-    expect(leadBox('L00042')).toBeChecked();
-    expect(leadBox('L00043')).toBeChecked();
-    expect(screen.getByText('Deselect all')).toBeInTheDocument();
-    expect((await savedBody()).watch_all_leads).toBe(true);
-  });
-
-  // The ticks are saved as the leads Spider watches, so the list holds every lead, not one page.
-  it('reads every page of leads, so unticking one with auto-select on keeps all 130 others watched', async () => {
-    const many = Array.from({ length: 131 }, (_, i) => ({
-      ...LEAD_BASE, id: `lead-${i}`, lead_number: `M${String(i).padStart(4, '0')}`, status: 'NEW', created_at: ago(DAY),
-    }));
-    const base = mockApi.get.getMockImplementation()!;
-    mockApi.get.mockImplementation(async (url: string, config?: { params?: unknown }) => {
-      if (url === LEADS) {
-        const page = (config?.params as { page?: number } | undefined)?.page ?? 1;
-        return { data: { leads: many.slice((page - 1) * 100, page * 100), pagination: { page, limit: 100, total: 131, totalPages: 2 } } };
-      }
-      if (url === CUSTOMERS) {
-        return { data: { customers: [{ ...PAT, service_locations: [] }], pagination: { page: 1, limit: 100, total: 1, totalPages: 1 } } };
-      }
-      return base(url, config as never);
-    });
-    renderWithProviders(<SpiderPage />);
-    await openConfig();
-    expect(await screen.findByText('131 leads')).toBeInTheDocument();
-    expect(mockApi.get).toHaveBeenCalledWith(LEADS, expect.objectContaining({ params: { page: 2, limit: 100 } }));
-    // Label queries, not role queries: a role query over 131 rows is slow on a loaded machine.
-    fireEvent.click(screen.getByLabelText('Toggle leads for Pat Payer'));
-    // A lead from the second page.
-    fireEvent.click(screen.getByLabelText('Select lead M0120 for notifications'));
-    expect(screen.getByLabelText('Auto-select new leads created during active Spider session')).not.toBeChecked();
-    fireEvent.click(screen.getByText('Save').closest('button')!);
-    fireEvent.click((await screen.findByText('Active', { selector: 'button' })));
-    await waitFor(() => expect(settingsPuts()).toHaveLength(1));
-    const sent = settingsPuts()[0]![1] as { watch_all_leads: boolean; selected_lead_ids: string[] };
-    expect(sent.watch_all_leads).toBe(false);
-    expect(sent.selected_lead_ids).toHaveLength(130);
-    expect(sent.selected_lead_ids).not.toContain('lead-120');
-    expect(sent.selected_lead_ids).toEqual(expect.arrayContaining(['lead-0', 'lead-99', 'lead-100', 'lead-130']));
-  }, 60_000);
-
-  it('reads the lists again after a save, and never on its own', async () => {
-    renderWithProviders(<SpiderPage />);
-    await openConfig();
-    await waitFor(() => expect(readsOf(LEADS)).toBe(1));
-    await saveAndConfirm();
-    await waitFor(() => expect(readsOf(LEADS)).toBe(2));
-    expect(readsOf(CUSTOMERS)).toBe(2);
-  });
-
-  it('shows his loading, empty and error states', async () => {
-    mockApi.get.mockImplementation(async (url: string) => {
-      if (url === SETTINGS) return { data: settingsBody };
-      if (url === STATUS) return { data: spiderSwitch };
-      if (url === LEADS) throw new Error('down');
-      if (url === CUSTOMERS) return { data: { customers: [] } };
-      return { data: { users: [] } };
-    });
-    renderWithProviders(<SpiderPage />);
-    expect(await screen.findByText('Failed to load contacts and leads')).toBeInTheDocument();
-    expect(screen.getByText('Failed to load leads from database.')).toBeInTheDocument();
-  });
-});
 
 // ─── History (S3: the contractor's History tab) ──────────────────────────────
 
@@ -757,7 +573,7 @@ describe('Spider history', () => {
     expect(screen.getByText('Try adjusting your search criteria or stage filter.')).toBeInTheDocument();
   });
 
-  it("with no alerts at all shows his healthy state, naming the leads the save review counts", async () => {
+  it("with no alerts at all shows his healthy state, naming the open leads Spider watches", async () => {
     const base = mockApi.get.getMockImplementation()!;
     mockApi.get.mockImplementation(async (url: string, config?: unknown) =>
       url === HISTORY ? { data: { items: [], page: 1, page_size: 25, total: 0, total_pages: 1 } } : base(url, config as never),
@@ -765,12 +581,12 @@ describe('Spider history', () => {
     renderWithProviders(<SpiderPage />);
     fireEvent.click(await screen.findByRole('tab', HISTORY_TAB));
     expect(await screen.findByText('All Monitored Stage Leads are Healthy')).toBeInTheDocument();
-    // Auto-select is on, so every listed lead in one of his three stages: L00042 and L00043.
+    // The picker header's N (#3436).
     expect(screen.getByText(/Spider is actively monitoring 2 lead targets in the background\./)).toBeInTheDocument();
   });
 
-  it('with a saved selection, counts only the selected leads, as the save review does', async () => {
-    settingsBody = { ...SETTINGS_BODY, settings: { ...SETTINGS_BODY.settings, watch_all_leads: false, selected_lead_ids: ['lead-new'] } };
+  it('with leads excluded, counts only the watched ones, as the picker header does', async () => {
+    overviewBody = { watched: 1, excluded: 1 };
     const base = mockApi.get.getMockImplementation()!;
     mockApi.get.mockImplementation(async (url: string, config?: unknown) =>
       url === HISTORY ? { data: { items: [], page: 1, page_size: 25, total: 0, total_pages: 1 } } : base(url, config as never),
@@ -779,6 +595,21 @@ describe('Spider history', () => {
     await openConfig();
     fireEvent.click(screen.getByRole('tab', HISTORY_TAB));
     expect(await screen.findByText(/Spider is actively monitoring 1 lead targets in the background\./)).toBeInTheDocument();
+  });
+
+  // Final review L1: a count that could not be read is never shown as "0"; the number's sentence is left out.
+  it('with no alerts and no count read, claims no number of watched leads', async () => {
+    const base = mockApi.get.getMockImplementation()!;
+    mockApi.get.mockImplementation(async (url: string, config?: unknown) => {
+      if (url === OVERVIEW) throw Object.assign(new Error('x'), { response: { status: 500, data: { error: 'Could not load Spider leads' } } });
+      if (url === HISTORY) return { data: { items: [], page: 1, page_size: 25, total: 0, total_pages: 1 } };
+      return base(url, config as never);
+    });
+    renderWithProviders(<SpiderPage />);
+    fireEvent.click(await screen.findByRole('tab', HISTORY_TAB));
+    expect(await screen.findByText('All Monitored Stage Leads are Healthy')).toBeInTheDocument();
+    expect(screen.getByText('When overdue alerts trigger, notification logs and message previews will appear here.')).toBeInTheDocument();
+    expect(screen.queryByText(/actively monitoring/)).toBeNull();
   });
 
   it('the Customers filter lists every customer and searches inside the list (tested with 1,000)', async () => {
@@ -1117,7 +948,7 @@ describe('Spider history', () => {
 // ─── The page frame ──────────────────────────────────────────────────────────
 
 describe('the Spider page frame', () => {
-  it('has his back button, header card and tabs, with our switch on the right (D1)', async () => {
+  it('has his back button, header card and tabs, with the status and Deactivate on the right', async () => {
     renderWithProviders(<SpiderPage />);
     await openConfig();
     expect(screen.getByRole('heading', { name: 'Spider' })).toBeInTheDocument();
@@ -1127,10 +958,12 @@ describe('the Spider page frame', () => {
     expect(screen.getByRole('tab', CONFIG_TAB)).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByRole('tab', HISTORY_TAB)).toBeInTheDocument();
     expect(screen.getByText('Make sure to save changes before leaving the page.')).toBeInTheDocument();
-    // His Active / Deactivated control is replaced by our switch.
+    // His Active / Deactivated control is replaced by the status badge and Deactivate (#3432).
     expect(screen.queryByRole('button', { name: 'Spider Status' })).toBeNull();
     expect(screen.queryByText('Deactivated')).toBeNull();
-    expect(screen.getByRole('switch', SWITCH)).toBeChecked();
+    expect(screen.queryByRole('switch', SWITCH)).toBeNull();
+    expect(await statusBadge('Active')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Deactivate' })).toBeInTheDocument();
   });
 
   it('"AI Agentic Farm" reopens the AI Center over the page, without leaving it', async () => {
@@ -1189,9 +1022,9 @@ describe('the AI Center', () => {
     useAiCenterStore.setState({ open: true, focusAgentId: null });
   });
 
-  // The catalog's Spider card shows the switch too, so the one Spider request is its status:
+  // The catalog's Spider card shows the status too, so the one Spider request is its status:
   // never the Admin-only settings or history, whichever agent is open.
-  it('opening a non-Spider agent asks only for the Spider switch, for the Spider card', async () => {
+  it('opening a non-Spider agent asks only for the Spider status, for the Spider card', async () => {
     useAiCenterStore.setState({ focusAgentId: 'mike' });
     renderWithProviders(<AiCenterModal />);
     expect(await screen.findByText('Book a call about Border Collie')).toBeInTheDocument();
@@ -1200,34 +1033,36 @@ describe('the AI Center', () => {
   });
 
   /** The Spider pop-up, once its status has been read. */
-  async function spiderDialog(line: string) {
+  async function spiderDialog(badge: 'Active' | 'Not active') {
     const dialog = await screen.findByRole('dialog', { name: 'Spider' });
-    await within(dialog).findByText(line);
+    await within(dialog).findByText(badge, { selector: '[data-agent-chip]' });
     return dialog;
   }
 
-  it('shows an Admin the switch and "Open Spider" locked while Spider is off, asking only for the status', async () => {
+  // #3433: no switch in the pop-up; Activate lives only on the Spider page, after its review.
+  it('shows an Admin Not active, no switch and a working "Set up Spider" while Spider is Not active, asking only for the status', async () => {
     spiderSwitch = { isActive: false, isSetUp: true };
     useAiCenterStore.setState({ focusAgentId: 'spider' });
     renderWithProviders(<AiCenterModal />);
-    const dialog = await spiderDialog('Spider is off');
-    expect(within(dialog).getByRole('switch', { name: 'Switch Spider on or off' })).not.toBeChecked();
-    expect(within(dialog).getByRole('button', { name: 'Open Spider' })).toHaveAttribute('aria-disabled', 'true');
+    const dialog = await spiderDialog('Not active');
+    expect(within(dialog).queryByRole('switch')).toBeNull();
+    // #3432: the page opens while Spider is not active, so its way in is never locked.
+    expect(within(dialog).getByRole('button', { name: 'Set up Spider' })).not.toHaveAttribute('aria-disabled');
     expect(within(dialog).queryByRole('link')).toBeNull();
     expect(screen.queryByText('Book a call about Spider')).toBeNull();
     // The only Spider request is the status: never the Admin-only settings or history.
     expect(mockApi.get.mock.calls.filter(([url]) => String(url).includes('/spider/')).map(([url]) => url)).toEqual([STATUS]);
   });
 
-  it('shows the switch on, the words On / Off and never "Active", when Spider is switched on', async () => {
+  it('shows Active, no switch and never the words On / Off, when Spider is Active', async () => {
     mockApi.get.mockImplementation(async (url: string) =>
       url === STATUS ? { data: { isActive: true, isSetUp: true } } : { data: {} },
     );
     useAiCenterStore.setState({ focusAgentId: 'spider' });
     renderWithProviders(<AiCenterModal />);
-    const dialog = await spiderDialog('Spider is on');
-    expect(within(dialog).getByRole('switch', { name: 'Switch Spider on or off' })).toBeChecked();
-    expect(screen.queryAllByText(/\bActive\b/)).toHaveLength(0);
+    const dialog = await spiderDialog('Active');
+    expect(within(dialog).queryByRole('switch')).toBeNull();
+    expect(screen.queryAllByText(/^(On|Off)$|Spider is (on|off)/)).toHaveLength(0);
   });
 
   it('"Open Spider" closes the catalog and opens the Spider page while Spider is on', async () => {
@@ -1241,15 +1076,15 @@ describe('the AI Center', () => {
         <Route path="/spider" element={<div>Spider page</div>} />
       </Routes>,
     );
-    const dialog = await spiderDialog('Spider is on');
+    const dialog = await spiderDialog('Active');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Open Spider' }));
     expect(await screen.findByText('Spider page')).toBeInTheDocument();
     expect(useAiCenterStore.getState().open).toBe(false);
   });
 
-  // One switch, two surfaces: the page and the pop-up show the same control and the same state.
-  it('switching Spider on from the Spider page flips the pop-up at once', async () => {
-    spiderSwitch = { isActive: false, isSetUp: true };
+  // One status, two surfaces: Deactivate in the pop-up moves the page's badge in place.
+  it('the Spider page follows the pop-up\'s Deactivate in place, settings shown throughout', async () => {
+    spiderSwitch = { isActive: true, isSetUp: true };
     useAiCenterStore.setState({ focusAgentId: 'spider' });
     renderWithProviders(
       <>
@@ -1257,33 +1092,14 @@ describe('the AI Center', () => {
         <AiCenterModal />
       </>,
     );
-    const dialog = await spiderDialog('Spider is off');
-    // The open dialog hides the page behind it from the accessibility tree, so ask for hidden roles.
-    const switches = await screen.findAllByRole('switch', { ...SWITCH, hidden: true });
-    expect(switches).toHaveLength(2);
-    const pageSwitch = switches.find((sw) => !dialog.contains(sw))!;
-    fireEvent.click(pageSwitch);
-    await waitFor(() => expect(mockApi.put).toHaveBeenCalledWith(STATUS, { isActive: true }, expect.anything()));
-    expect(await spiderDialog('Spider is on')).toBeInTheDocument();
-    expect(within(dialog).getByRole('switch', SWITCH)).toBeChecked();
-  });
-
-  it('unlocks the Spider page in place when Spider is switched on from the pop-up', async () => {
-    spiderSwitch = { isActive: false, isSetUp: true };
-    useAiCenterStore.setState({ focusAgentId: 'spider' });
-    renderWithProviders(
-      <>
-        <SpiderPage />
-        <AiCenterModal />
-      </>,
-    );
-    const dialog = await spiderDialog('Spider is off');
-    expect(document.querySelector('[data-spider-locked]')).not.toBeNull();
-    expect(readsOf(SETTINGS)).toBe(0);
-    fireEvent.click(within(dialog).getByRole('switch', SWITCH));
-    await waitFor(() => expect(document.querySelector('[data-spider-locked]')).toBeNull());
-    expect(await screen.findByText(HEADING)).toBeInTheDocument();
-    await waitFor(() => expect(mockApi.put).toHaveBeenCalledWith(STATUS, { isActive: true }, expect.anything()));
+    const dialog = await spiderDialog('Active');
+    expect(await statusBadge('Active')).toBeInTheDocument();
+    expect(screen.getByText(HEADING)).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Deactivate' }));
+    fireEvent.click(within(await screen.findByRole('alertdialog', { name: 'Deactivate Spider?' })).getByRole('button', { name: 'Deactivate' }));
+    await waitFor(() => expect(mockApi.put).toHaveBeenCalledWith(STATUS, { isActive: false }, expect.anything()));
+    expect(await statusBadge('Not active')).toBeInTheDocument();
+    expect(screen.getByText(HEADING)).toBeInTheDocument();
   });
 
   it('claims nothing when the status cannot be read', async () => {
@@ -1296,19 +1112,18 @@ describe('the AI Center', () => {
     await waitFor(() => expect(mockApi.get).toHaveBeenCalledWith(STATUS, expect.anything()));
     const dialog = screen.getByRole('dialog', { name: 'Spider' });
     await waitFor(() => expect(dialog.querySelector('[data-agent-control-row]')).toBeNull());
-    for (const words of ['Spider is on', 'Spider is off', 'Coming soon']) expect(within(dialog).queryByText(words)).toBeNull();
+    for (const words of ['Active', 'Not active', 'Coming soon']) expect(within(dialog).queryByText(words)).toBeNull();
     expect(within(dialog).queryByRole('switch')).toBeNull();
   });
 
-  it('tells a non-Admin how they hear from Spider, with no switch and no button to its page', async () => {
-    spiderSwitch = { isActive: false, isSetUp: true };
+  it('shows a non-Admin the status without the buttons: no switch, no Deactivate, no button to its page', async () => {
+    spiderSwitch = { isActive: true, isSetUp: true };
     signIn({ ...ADMIN, role: 'SALES', is_admin: false });
     useAiCenterStore.setState({ focusAgentId: 'spider' });
     renderWithProviders(<AiCenterModal />);
-    const dialog = await spiderDialog('Spider is off');
-    expect(within(dialog).getByText('An Admin turns Spider on or off. You will get its alerts once it is on.')).toBeInTheDocument();
+    const dialog = await spiderDialog('Active');
     expect(within(dialog).queryByRole('switch')).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Open Spider' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Open Spider|Set up Spider|Deactivate/ })).toBeNull();
   });
 
   it('keeps Spider as "Coming soon" and "Book a call" for a company without Spider, and asks nothing', async () => {
@@ -1325,155 +1140,31 @@ describe('the AI Center', () => {
   });
 });
 
-// Ran, 14 Oct, layer 3 (kept by D1): Spider's settings open only while Spider is on. While off the
-// page still opens for an Admin, with the same switch as the pop-up, so they can turn it back on.
-describe('the Spider page while Spider is off', () => {
-  const locked = () => document.querySelector<HTMLElement>('[data-spider-locked]');
-
-  it('shows his header, the working switch and a locked panel, and asks for neither settings nor history', async () => {
-    spiderSwitch = { isActive: false, isSetUp: true };
-    renderWithProviders(<SpiderPage />);
-    const sw = await screen.findByRole('switch', SWITCH);
-    expect(screen.getByRole('heading', { name: 'Spider' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'AI Agentic Farm' })).toBeInTheDocument();
-    expect(sw).not.toBeChecked();
-    expect(sw).not.toHaveAttribute('aria-disabled');
-    expect(sw).toHaveAttribute('data-size', 'lg');
-    expect(sw).toHaveTextContent('Off');
-
-    const panel = locked()!;
-    expect(panel).not.toBeNull();
-    expect(within(panel).getByText('Spider is off')).toBeInTheDocument();
-    expect(within(panel).getByText(LOCKED_LINE)).toBeInTheDocument();
-    expect(panel.querySelector('svg.lucide-lock')).not.toBeNull();
-
-    expect(screen.queryByRole('tab', CONFIG_TAB)).toBeNull();
-    expect(screen.queryByRole('tab', HISTORY_TAB)).toBeNull();
-    expect(screen.queryByText(HEADING)).toBeNull();
-    await new Promise((r) => setTimeout(r, 30));
-    expect(readsOf(SETTINGS)).toBe(0);
-    expect(readsOf(HISTORY)).toBe(0);
-    expect(readsOf(LEADS)).toBe(0);
-  });
-
-  it('shows a placeholder, never the lock or the settings, until the switch is read', async () => {
+// #3432 (Ran, 10 Nov): the page opens whether Spider is Not active or Active; the status and its
+// buttons are covered in spiderActivation.test.tsx. Here: what shows before the status is read.
+describe('the Spider page before its status is read', () => {
+  it('shows a placeholder, never a status or the settings, until the status is read', async () => {
     mockApi.get.mockImplementation((url: string) => (url === STATUS ? new Promise(() => {}) : Promise.resolve({ data: SETTINGS_BODY })));
     renderWithProviders(<SpiderPage />);
     await waitFor(() => expect(readsOf(STATUS)).toBe(1));
     expect(document.querySelector('[data-spider-page-placeholder]')).not.toBeNull();
-    expect(document.querySelector('[data-agent-switch="loading"]')).not.toBeNull();
-    expect(locked()).toBeNull();
+    expect(document.querySelector('[data-spider-status="loading"]')).not.toBeNull();
+    expect(document.querySelector('[data-agent-chip]')).toBeNull();
     expect(screen.queryByText(HEADING)).toBeNull();
-    expect(screen.queryByRole('switch', SWITCH)).toBeNull();
+    expect(screen.queryByRole('button', { name: /Activate|Deactivate/ })).toBeNull();
     expect(readsOf(SETTINGS)).toBe(0);
   });
 
-  it('unlocks in place when turned on: no question, no navigation, and only then the settings are read', async () => {
+  it('shows the settings and History while Not active', async () => {
     spiderSwitch = { isActive: false, isSetUp: true };
-    renderWithProviders(
-      <Routes>
-        <Route path="/spider" element={<SpiderPage />} />
-        <Route path="*" element={<div>Somewhere else</div>} />
-      </Routes>,
-      { initialEntries: ['/spider'] },
-    );
-    fireEvent.click(await screen.findByRole('switch', SWITCH));
-    expect(screen.queryByRole('alertdialog')).toBeNull();
-    await waitFor(() => expect(mockApi.put).toHaveBeenCalledWith(STATUS, { isActive: true }, expect.anything()));
-    expect(await screen.findByText(HEADING)).toBeInTheDocument();
-    expect(locked()).toBeNull();
-    expect(screen.getByRole('tab', CONFIG_TAB)).toBeInTheDocument();
-    expect(readsOf(SETTINGS)).toBeGreaterThan(0);
-    expect(screen.queryByText('Somewhere else')).toBeNull();
-    // Turning on never saved the settings.
-    expect(settingsPuts()).toHaveLength(0);
-  });
-
-  it('locks in place when turned off, after asking first when it was set up', async () => {
     renderWithProviders(<SpiderPage />);
     await openConfig();
-    fireEvent.click(screen.getByRole('switch', SWITCH));
-    const confirm = await screen.findByRole('alertdialog', { name: 'Turn off Spider?' });
-    // Nothing is switched until the question is answered.
-    expect(mockApi.put).not.toHaveBeenCalled();
-    expect(screen.getByText(HEADING)).toBeInTheDocument();
-    fireEvent.click(within(confirm).getByRole('button', { name: 'Turn off' }));
-    await waitFor(() => expect(mockApi.put).toHaveBeenCalledWith(STATUS, { isActive: false }, expect.anything()));
-    expect(await screen.findByText(LOCKED_LINE)).toBeInTheDocument();
-    expect(screen.queryByText(HEADING)).toBeNull();
-    expect(screen.getByRole('heading', { name: 'Spider' })).toBeInTheDocument();
-  });
-
-  it('locks straight away, with no question, when turned off before it was ever set up', async () => {
-    spiderSwitch = { isActive: true, isSetUp: false };
-    renderWithProviders(<SpiderPage />);
-    await openConfig();
-    fireEvent.click(screen.getByRole('switch', SWITCH));
-    expect(screen.queryByRole('alertdialog')).toBeNull();
-    await waitFor(() => expect(mockApi.put).toHaveBeenCalledWith(STATUS, { isActive: false }, expect.anything()));
-    expect(await screen.findByText(LOCKED_LINE)).toBeInTheDocument();
-  });
-
-  // Turning off locks the page and drops the draft, so changes not saved yet would go without a
-  // word. While there are any, the switch always asks first and says so.
-  it('asks first, saying unsaved changes will be lost, when turned off with the form edited, and keeps them on "Keep it on"', async () => {
-    renderWithProviders(<SpiderPage />);
-    await openConfig();
-    fireEvent.click(stageSwitch(NEW_ROW));
-    fireEvent.click(screen.getByRole('switch', SWITCH));
-    const confirm = await screen.findByRole('alertdialog', { name: 'Turn off Spider?' });
-    expect(within(confirm).getByText('The settings changes you have not saved will be lost.')).toBeInTheDocument();
-    // Set up, so what is kept is still said.
-    expect(within(confirm).getByText(/are all kept/)).toBeInTheDocument();
-    fireEvent.click(within(confirm).getByRole('button', { name: 'Keep it on' }));
-    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
-    expect(mockApi.put).not.toHaveBeenCalled();
-    expect(stageSwitch(NEW_ROW)).not.toBeChecked();
-  });
-
-  it('asks first when turned off before it was ever set up, too, while the form holds unsaved changes', async () => {
-    spiderSwitch = { isActive: true, isSetUp: false };
-    renderWithProviders(<SpiderPage />);
-    await openConfig();
-    fireEvent.click(stageSwitch(CONTACTED_ROW));
-    fireEvent.click(screen.getByRole('switch', SWITCH));
-    const confirm = await screen.findByRole('alertdialog', { name: 'Turn off Spider?' });
-    expect(within(confirm).getByText('The settings changes you have not saved will be lost.')).toBeInTheDocument();
-    // Nothing was saved, so nothing is claimed as kept.
-    expect(within(confirm).queryByText(/are all kept/)).toBeNull();
-    expect(mockApi.put).not.toHaveBeenCalled();
-    fireEvent.click(within(confirm).getByRole('button', { name: 'Turn off' }));
-    await waitFor(() => expect(mockApi.put).toHaveBeenCalledWith(STATUS, { isActive: false }, expect.anything()));
-    expect(await screen.findByText(LOCKED_LINE)).toBeInTheDocument();
-  });
-
-  it('asks nothing extra once the edits are undone', async () => {
-    spiderSwitch = { isActive: true, isSetUp: false };
-    renderWithProviders(<SpiderPage />);
-    await openConfig();
-    fireEvent.click(channelBox('Email'));
-    fireEvent.click(channelBox('Email'));
-    fireEvent.click(screen.getByRole('switch', SWITCH));
-    expect(screen.queryByRole('alertdialog')).toBeNull();
-    await waitFor(() => expect(mockApi.put).toHaveBeenCalledWith(STATUS, { isActive: false }, expect.anything()));
-  });
-
-  it('opens neither History nor Configuration after it locks, even from the History tab', async () => {
-    renderWithProviders(<SpiderPage />);
-    fireEvent.click(await screen.findByRole('tab', HISTORY_TAB));
+    expect(await statusBadge('Not active')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', HISTORY_TAB));
     expect(await screen.findByText('L00042')).toBeInTheDocument();
-    const historyReads = readsOf(HISTORY);
-    const settingsReads = readsOf(SETTINGS);
-    fireEvent.click(screen.getByRole('switch', SWITCH));
-    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Turn off' }));
-    expect(await screen.findByText(LOCKED_LINE)).toBeInTheDocument();
-    expect(screen.queryByText('L00042')).toBeNull();
-    await new Promise((r) => setTimeout(r, 30));
-    expect(readsOf(HISTORY)).toBe(historyReads);
-    expect(readsOf(SETTINGS)).toBe(settingsReads);
   });
 
-  it('claims nothing and opens nothing when the switch cannot be read', async () => {
+  it('claims nothing and opens nothing when the status cannot be read', async () => {
     mockApi.get.mockImplementation(async (url: string) => {
       if (url === STATUS) throw Object.assign(new Error('x'), { response: { status: 500, data: {} } });
       return { data: SETTINGS_BODY };
@@ -1481,9 +1172,9 @@ describe('the Spider page while Spider is off', () => {
     renderWithProviders(<SpiderPage />);
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not load whether Spider is on.');
     expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument();
-    expect(locked()).toBeNull();
+    expect(document.querySelector('[data-agent-chip]')).toBeNull();
     expect(screen.queryByText(HEADING)).toBeNull();
-    expect(screen.queryByRole('switch', SWITCH)).toBeNull();
+    expect(screen.queryByRole('button', { name: /Activate|Deactivate/ })).toBeNull();
     expect(readsOf(SETTINGS)).toBe(0);
   });
 });
@@ -1588,21 +1279,537 @@ describe('unsaved Spider settings across the tabs', () => {
     expect(mockApi.put).not.toHaveBeenCalled();
     setItem.mockRestore();
   });
+});
 
-  it('asks the unsaved question when Spider is turned off from History with edits pending', async () => {
-    renderWithProviders(<SpiderPage />);
-    await openConfig();
-    fireEvent.click(stageSwitch(NEW_ROW));
-    fireEvent.click(screen.getByRole('tab', HISTORY_TAB));
-    await screen.findByText('L00042');
-    fireEvent.click(screen.getByRole('switch', SWITCH));
-    const confirm = await screen.findByRole('alertdialog', { name: 'Turn off Spider?' });
-    expect(within(confirm).getByText('The settings changes you have not saved will be lost.')).toBeInTheDocument();
-    expect(mockApi.put).not.toHaveBeenCalled();
-    fireEvent.click(within(confirm).getByRole('button', { name: 'Turn off' }));
-    await waitFor(() => expect(mockApi.put).toHaveBeenCalledWith(STATUS, { isActive: false }, expect.anything()));
-    // Locked: no form, and no draft left behind.
-    expect(await screen.findByText(LOCKED_LINE)).toBeInTheDocument();
-    expect(screen.queryByText(HEADING)).toBeNull();
+// ─── #3432: Not active / Active, Activate and Deactivate ─────────────────────
+// Mockup M1, "Spider page" and "Activating and deactivating" (Ran, 10 Nov): the page opens while Spider is
+// Not active, Save there starts nothing, Activate opens the review with the "When you activate" box and sends
+// the chosen starting summary, Deactivate asks first, and someone without Spider's Admin access sees the
+// status alone. Its own server: this block's beforeEach replaces the file's fakes.
+describe('#3432 activating and deactivating Spider', () => {
+  const PREVIEW = '/api/ai-farm/spider/activation-preview';
+  const SET_UP = {
+    settings: {
+      is_active: false,
+      activated_at: null,
+      status_limits: { NEW: { enabled: true, value: 2, unit: 'HOUR' }, CONTACTED: LIMIT_OFF, WALKTHROUGH_COMPLETED: LIMIT_OFF },
+      channels: { in_app: true, red_frame: true, email: false, text: false },
+      recipients: { roles: ['ADMIN', 'SALES'], user_ids: [], lead_owner: true },
+      updated_at: null,
+    },
+    options: { statuses: [], units: [], roles: [] },
+  };
+  /** Never saved: every status off, so Spider cannot be activated yet. */
+  const NO_LIMIT = {
+    ...SET_UP,
+    settings: { ...SET_UP.settings, status_limits: { NEW: LIMIT_OFF, CONTACTED: LIMIT_OFF, WALKTHROUGH_COMPLETED: LIMIT_OFF } },
+  };
+  /** The pilot company's numbers from 9 Nov, as the mockup draws them. */
+  const PREVIEW_BODY = { watchedLeads: 2287, excludedLeads: 13, pastLimitLeads: 1331, summaryRecipients: 17 };
+
+  let actSwitch = { isActive: false, isSetUp: true };
+  let actSettings: typeof SET_UP = SET_UP;
+  let previewBody: unknown = PREVIEW_BODY;
+  /** Every request, in order, as "METHOD url". */
+  let calls: string[] = [];
+
+  beforeEach(() => {
+    actSwitch = { isActive: false, isSetUp: true };
+    actSettings = SET_UP;
+    previewBody = PREVIEW_BODY;
+    calls = [];
+    localStorage.clear();
+    vi.clearAllMocks();
+    signIn(ADMIN);
+    mockApi.get.mockImplementation(async (url: string) => {
+      calls.push(`GET ${url}`);
+      if (url === SETTINGS) return { data: actSettings };
+      if (url === STATUS) return { data: actSwitch };
+      if (url === PREVIEW) {
+        if (previewBody instanceof Error) throw previewBody;
+        return { data: previewBody };
+      }
+      if (url === OVERVIEW) return { data: { watched: 0, excluded: 0 } };
+      if (url === PICKER_CUSTOMERS) return { data: { customers: [], next_cursor: null } };
+      if (url === '/api/users') return { data: { users: [] } };
+      return { data: {} };
+    });
+    mockApi.post.mockImplementation(async () => ({ data: {} }));
+    mockApi.put.mockImplementation(async (url: string, body?: unknown) => {
+      calls.push(`PUT ${url}`);
+      if (url === STATUS) {
+        actSwitch = { ...actSwitch, isActive: (body as { isActive: boolean }).isActive };
+        return { data: actSwitch };
+      }
+      const sent = body as typeof SET_UP.settings;
+      actSettings = { ...actSettings, settings: { ...actSettings.settings, ...sent } };
+      return { data: actSettings };
+    });
+  });
+
+  const statusPuts = () => mockApi.put.mock.calls.filter(([url]) => url === STATUS);
+  const header = () => document.querySelector<HTMLElement>('[data-spider-status-actions]')!;
+
+  /** The header's status badge, once it reads `words`. */
+  async function badge(words: 'Not active' | 'Active') {
+    const chip = await screen.findByText(words, { selector: '[data-spider-status-actions] [data-agent-chip]' });
+    return chip;
+  }
+  async function openActivateReview() {
+    fireEvent.click(within(header()).getByRole('button', { name: 'Activate' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Confirm Spider Agent Configuration' });
+    await within(dialog).findByText(/Spider watches/);
+    return dialog;
+  }
+
+  describe('the Spider page while Not active', () => {
+    it('opens with the settings, the "Not active" badge, its ? and Activate, and no switch', async () => {
+      renderWithProviders(<SpiderPage />);
+      await openConfig();
+      expect(await badge('Not active')).toBeInTheDocument();
+      expect(within(header()).getByRole('button', { name: 'About Not active' })).toBeInTheDocument();
+      expect(within(header()).getByRole('button', { name: 'Activate' })).toBeEnabled();
+      expect(within(header()).queryByRole('button', { name: 'Deactivate' })).toBeNull();
+      expect(screen.queryByRole('switch', { name: 'Switch Spider on or off' })).toBeNull();
+      // No second line under the status, and no lock.
+      expect(document.querySelector('[data-spider-locked]')).toBeNull();
+      expect(screen.getByRole('tab', { name: 'Configuration Tab' })).toBeInTheDocument();
+      expect(screen.getByRole('tab', { name: 'History Tab' })).toBeInTheDocument();
+    });
+
+    it('the ? reads the mockup\'s words', async () => {
+      renderWithProviders(<SpiderPage />);
+      await openConfig();
+      await badge('Not active');
+      const help = within(header()).getByRole('button', { name: 'About Not active' });
+      fireEvent.click(help);
+      expect(
+        await screen.findByText('Spider watches nothing and sends nothing. Check the settings, then press Activate.'),
+      ).toBeInTheDocument();
+    });
+
+    it('Save keeps the settings and starts nothing: one PUT /spider/settings, no review, no activation', async () => {
+      renderWithProviders(<SpiderPage />);
+      await openConfig();
+      fireEvent.click(stageSwitch(CONTACTED_ROW));
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      expect(await screen.findByRole('button', { name: 'Saved' })).toBeInTheDocument();
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(settingsPuts()).toHaveLength(1);
+      expect(settingsPuts()[0]![1]).not.toHaveProperty('is_active');
+      expect(statusPuts()).toHaveLength(0);
+      expect(calls).not.toContain(`GET ${PREVIEW}`);
+      expect(toast).toHaveBeenCalledWith('Spider Agent Settings Saved', expect.anything());
+      expect(within(header()).getByText('Not active')).toBeInTheDocument();
+    });
+
+    it('Activate is greyed out with no time limit on, and enabled once one is', async () => {
+      actSettings = NO_LIMIT;
+      actSwitch = { isActive: false, isSetUp: false };
+      renderWithProviders(<SpiderPage />);
+      await openConfig();
+      await badge('Not active');
+      const activate = within(header()).getByRole('button', { name: 'Activate' });
+      expect(activate).toBeDisabled();
+      fireEvent.click(stageSwitch(NEW_ROW));
+      expect(activate).toBeEnabled();
+      fireEvent.click(stageSwitch(NEW_ROW));
+      expect(activate).toBeDisabled();
+      fireEvent.click(activate);
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(statusPuts()).toHaveLength(0);
+    });
+  });
+
+  describe('Activate', () => {
+    it('opens the review with the "When you activate" box from the preview, Send preselected, and the button Activate', async () => {
+      renderWithProviders(<SpiderPage />);
+      await openConfig();
+      await badge('Not active');
+      const dialog = await openActivateReview();
+      const box = dialog.querySelector<HTMLElement>('[data-spider-activation-box]')!;
+      expect(within(box).getByText('When you activate')).toBeInTheDocument();
+      expect(box).toHaveTextContent('Spider watches 2,287 open leads and every new lead. 13 are excluded.');
+      expect(box).toHaveTextContent('1,331 of them are already past their time limit.');
+      const send = within(box).getByRole('radio', { name: /Send one starting summary of them/ });
+      const skip = within(box).getByRole('radio', { name: /Skip them/ });
+      expect(send).toBeChecked();
+      expect(skip).not.toBeChecked();
+      expect(within(box).getByText('To 17 people, a few minutes after you activate.')).toBeInTheDocument();
+      expect(within(box).getByText('Alert only on leads that pass their time limit from now on.')).toBeInTheDocument();
+      // The mockup's title and subtitle, today's four parts, the box on top, and the button says Activate.
+      expect(within(dialog).getByText('Review your campaign channels, recipients, stage thresholds, and monitored leads before saving.')).toBeInTheDocument();
+      for (const t of ['Monitored Pipeline Targets', 'Active Notification Channels', 'Assigned Alert Recipients', 'Pipeline Stage Thresholds']) {
+        expect(within(dialog).getByText(t)).toBeInTheDocument();
+      }
+      expect(within(dialog).queryByText(/Before You Activate/i)).toBeNull();
+      expect(within(dialog).queryByRole('button', { name: 'Active' })).toBeNull();
+      expect(within(dialog).queryByRole('button', { name: 'Save' })).toBeNull();
+      // Nothing is sent until it is confirmed.
+      expect(statusPuts()).toHaveLength(0);
+      expect(within(dialog).getByRole('button', { name: 'Activate' })).toBeEnabled();
+    });
+
+    it('sends startingSummary "send" by default, then shows Active with Deactivate', async () => {
+      renderWithProviders(<SpiderPage />);
+      await openConfig();
+      await badge('Not active');
+      const dialog = await openActivateReview();
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Activate' }));
+      await waitFor(() => expect(statusPuts()).toHaveLength(1));
+      expect(statusPuts()[0]![1]).toEqual({ isActive: true, startingSummary: 'send' });
+      expect(await badge('Active')).toBeInTheDocument();
+      expect(within(header()).getByRole('button', { name: 'Deactivate' })).toBeInTheDocument();
+      expect(within(header()).queryByRole('button', { name: 'Activate' })).toBeNull();
+      // Nothing unsaved, so the settings were not saved again.
+      expect(settingsPuts()).toHaveLength(0);
+    });
+
+    it('sends startingSummary "skip" when Skip them is chosen', async () => {
+      renderWithProviders(<SpiderPage />);
+      await openConfig();
+      await badge('Not active');
+      const dialog = await openActivateReview();
+      fireEvent.click(within(dialog).getByRole('radio', { name: /Skip them/ }));
+      expect(within(dialog).getByRole('radio', { name: /Skip them/ })).toBeChecked();
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Activate' }));
+      await waitFor(() => expect(statusPuts()).toHaveLength(1));
+      expect(statusPuts()[0]![1]).toEqual({ isActive: true, startingSummary: 'skip' });
+    });
+
+    it('with unsaved edits saves them first, then reads the review numbers, then activates on confirm', async () => {
+      actSettings = NO_LIMIT;
+      actSwitch = { isActive: false, isSetUp: false };
+      renderWithProviders(<SpiderPage />);
+      await openConfig();
+      await badge('Not active');
+      fireEvent.click(stageSwitch(NEW_ROW));
+      const dialog = await openActivateReview();
+      const order = calls.filter((c) => c === `PUT ${SETTINGS}` || c === `GET ${PREVIEW}`);
+      expect(order).toEqual([`PUT ${SETTINGS}`, `GET ${PREVIEW}`]);
+      expect((settingsPuts()[0]![1] as { status_limits: Record<string, unknown> }).status_limits.NEW).toEqual({ enabled: true, value: 1, unit: 'MINUTE' });
+      expect(statusPuts()).toHaveLength(0);
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Activate' }));
+      await waitFor(() => expect(statusPuts()).toHaveLength(1));
+      expect(calls.indexOf(`PUT ${STATUS}`)).toBeGreaterThan(calls.indexOf(`PUT ${SETTINGS}`));
+    });
+
+    it('a refused activation (409) shows the server\'s sentence and stays Not active', async () => {
+      mockApi.put.mockImplementation(async (url: string) => {
+        if (url === STATUS) {
+          throw Object.assign(new Error('x'), {
+            response: { status: 409, data: { error: "Spider's settings changed while you were activating. Check them and activate again." } },
+          });
+        }
+        return { data: actSettings };
+      });
+      renderWithProviders(<SpiderPage />);
+      await openConfig();
+      await badge('Not active');
+      const dialog = await openActivateReview();
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Activate' }));
+      await waitFor(() =>
+        expect(toast.error).toHaveBeenCalledWith("Spider's settings changed while you were activating. Check them and activate again."),
+      );
+      expect(within(header()).getByText('Not active')).toBeInTheDocument();
+      expect(within(header()).getByRole('button', { name: 'Activate' })).toBeInTheDocument();
+    });
+
+    // Final review M1: each opening waits for its own numbers; the last opening's never stand in for them.
+    it('opened again, shows none of the last opening\'s numbers and Activate waits until the fresh ones arrive', async () => {
+      renderWithProviders(<SpiderPage />);
+      await openConfig();
+      await badge('Not active');
+      let dialog = await openActivateReview();
+      expect(dialog.querySelector('[data-spider-activation-box]')).toHaveTextContent('2,287 open leads');
+      fireEvent.keyDown(dialog, { key: 'Escape' });
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+
+      let answer!: (body: unknown) => void;
+      const base = mockApi.get.getMockImplementation()!;
+      mockApi.get.mockImplementation(async (url: string, config?: unknown) =>
+        url === PREVIEW ? new Promise((resolve) => { answer = (body) => resolve({ data: body }); }) : base(url, config as never),
+      );
+      fireEvent.click(within(header()).getByRole('button', { name: 'Activate' }));
+      dialog = await screen.findByRole('dialog', { name: 'Confirm Spider Agent Configuration' });
+      await waitFor(() => expect(answer).toBeTypeOf('function'));
+      expect(within(dialog).queryByText(/2,287/)).toBeNull();
+      expect(dialog.querySelector('[data-spider-activation-loading]')).not.toBeNull();
+      expect(within(dialog).getByRole('button', { name: 'Activate' })).toBeDisabled();
+      await act(async () => answer({ ...PREVIEW_BODY, summaryRecipients: 3 }));
+      expect(await within(dialog).findByText('To 3 people, a few minutes after you activate.')).toBeInTheDocument();
+      expect(within(dialog).getByRole('button', { name: 'Activate' })).toBeEnabled();
+    });
+
+    it('opened again when the numbers cannot be read: the error and Try again, and Activate stays greyed out', async () => {
+      renderWithProviders(<SpiderPage />);
+      await openConfig();
+      await badge('Not active');
+      let dialog = await openActivateReview();
+      fireEvent.keyDown(dialog, { key: 'Escape' });
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      previewBody = Object.assign(new Error('x'), { response: { status: 500, data: { error: 'Could not load the Spider review' } } });
+      fireEvent.click(within(header()).getByRole('button', { name: 'Activate' }));
+      dialog = await screen.findByRole('dialog', { name: 'Confirm Spider Agent Configuration' });
+      expect(await within(dialog).findByRole('alert')).toHaveTextContent('Could not load the Spider review');
+      expect(within(dialog).getByRole('button', { name: 'Try again' })).toBeInTheDocument();
+      expect(within(dialog).queryByText(/Spider watches/)).toBeNull();
+      expect(within(dialog).getByRole('button', { name: 'Activate' })).toBeDisabled();
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Activate' }));
+      expect(statusPuts()).toHaveLength(0);
+    });
+
+    // Ran, 10 Nov (final review): a failed Activate with no sentence from the server says what was tried.
+    it('a failed Activate with no sentence from the server says "Could not activate Spider. Try again later."', async () => {
+      const basePut = mockApi.put.getMockImplementation()!;
+      mockApi.put.mockImplementation(async (url: string, body?: unknown) => {
+        if (url === STATUS) throw { response: { status: 502, data: {} } };
+        return basePut(url, body);
+      });
+      renderWithProviders(<SpiderPage />);
+      await openConfig();
+      await badge('Not active');
+      const dialog = await openActivateReview();
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Activate' }));
+      await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Could not activate Spider. Try again later.'));
+      expect(within(header()).getByText('Not active')).toBeInTheDocument();
+    });
+
+    // Ran's sentence whenever the failure carries no sentence from the server: never the HTTP library's English.
+    it.each([
+      ['a network error', () => Object.assign(new Error('Network Error'), { code: 'ERR_NETWORK' })],
+      ['a bare 502', () => Object.assign(new Error('Request failed with status code 502'), { response: { status: 502, data: '<html>Bad Gateway</html>' } })],
+    ])('a failed Activate on %s says "Could not activate Spider. Try again later."', async (_what, failure) => {
+      const basePut = mockApi.put.getMockImplementation()!;
+      mockApi.put.mockImplementation(async (url: string, body?: unknown) => {
+        if (url === STATUS) throw failure();
+        return basePut(url, body);
+      });
+      renderWithProviders(<SpiderPage />);
+      await openConfig();
+      await badge('Not active');
+      const dialog = await openActivateReview();
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Activate' }));
+      await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Could not activate Spider. Try again later.'));
+      expect(toast.error).not.toHaveBeenCalledWith(expect.stringMatching(/Network Error|Request failed/));
+    });
+
+    // Final review M3: the settings Activate was reviewed on stay put until it answers.
+    it('Save is greyed out while Activate is on its way, and back once it answers', async () => {
+      let answer!: () => void;
+      const basePut = mockApi.put.getMockImplementation()!;
+      mockApi.put.mockImplementation(async (url: string, body?: unknown) => {
+        if (url === STATUS) await new Promise<void>((resolve) => { answer = resolve; });
+        return basePut(url, body);
+      });
+      renderWithProviders(<SpiderPage />);
+      await openConfig();
+      await badge('Not active');
+      const dialog = await openActivateReview();
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Activate' }));
+      await waitFor(() => expect(statusPuts()).toHaveLength(1));
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      const saveButton = screen.getByRole('button', { name: 'Save' });
+      expect(saveButton).toBeDisabled();
+      fireEvent.click(saveButton);
+      expect(settingsPuts()).toHaveLength(0);
+      await act(async () => answer());
+      expect(await badge('Active')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
+    });
+
+    it('Activate\'s review keeps its own words when something required is missing', async () => {
+      actSettings = { ...SET_UP, settings: { ...SET_UP.settings, channels: { in_app: false, red_frame: false, email: false, text: false } } };
+      renderWithProviders(<SpiderPage />);
+      await openConfig();
+      await badge('Not active');
+      const dialog = await openActivateReview();
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Activate' }));
+      expect(within(dialog).getByText('Required Items Missing Before Activation (1)')).toBeInTheDocument();
+      expect(within(dialog).getByText('At least one item must be selected from every required section before activating:')).toBeInTheDocument();
+      expect(toast.error).toHaveBeenCalledWith('Cannot Activate Spider Agent', expect.anything());
+      expect(statusPuts()).toHaveLength(0);
+    });
+
+    it('claims no numbers when the review cannot be read: the error, Try again, and Activate waits', async () => {
+      previewBody = Object.assign(new Error('x'), { response: { status: 500, data: { error: 'Could not load the Spider review' } } });
+      renderWithProviders(<SpiderPage />);
+      await openConfig();
+      await badge('Not active');
+      fireEvent.click(within(header()).getByRole('button', { name: 'Activate' }));
+      const dialog = await screen.findByRole('dialog', { name: 'Confirm Spider Agent Configuration' });
+      expect(await within(dialog).findByRole('alert')).toHaveTextContent('Could not load the Spider review');
+      expect(within(dialog).queryByText(/Spider watches/)).toBeNull();
+      expect(within(dialog).getByRole('button', { name: 'Activate' })).toBeDisabled();
+      previewBody = PREVIEW_BODY;
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Try again' }));
+      expect(await within(dialog).findByText(/Spider watches/)).toBeInTheDocument();
+      expect(within(dialog).getByRole('button', { name: 'Activate' })).toBeEnabled();
+    });
+  });
+
+  describe('the Spider page while Active', () => {
+    beforeEach(() => {
+      actSwitch = { isActive: true, isSetUp: true };
+      actSettings = { ...SET_UP, settings: { ...SET_UP.settings, is_active: true } };
+    });
+
+    it('Save opens the review titled as the mockup draws it, without the starting box, with a Save button, and saves the settings only', async () => {
+      renderWithProviders(<SpiderPage />);
+      await openConfig();
+      await badge('Active');
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      const dialog = await screen.findByRole('dialog', { name: 'Confirm Spider Agent Configuration' });
+      expect(dialog.querySelector('[data-spider-activation-box]')).toBeNull();
+      expect(within(dialog).queryByText('When you activate')).toBeNull();
+      expect(within(dialog).getByText('Review your campaign channels, recipients, stage thresholds, and monitored leads before saving.')).toBeInTheDocument();
+      for (const t of ['Monitored Pipeline Targets', 'Active Notification Channels', 'Assigned Alert Recipients', 'Pipeline Stage Thresholds']) {
+        expect(within(dialog).getByText(t)).toBeInTheDocument();
+      }
+      expect(within(dialog).queryByText(/Before You Activate/i)).toBeNull();
+      expect(within(dialog).queryByRole('button', { name: 'Active' })).toBeNull();
+      expect(within(dialog).queryByRole('button', { name: 'Activate' })).toBeNull();
+      expect(settingsPuts()).toHaveLength(0);
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+      await waitFor(() => expect(settingsPuts()).toHaveLength(1));
+      expect(statusPuts()).toHaveLength(0);
+      expect(calls).not.toContain(`GET ${PREVIEW}`);
+    });
+
+    it('Deactivate asks first with the mockup\'s words; Keep it active sends nothing', async () => {
+      renderWithProviders(<SpiderPage />);
+      await openConfig();
+      await badge('Active');
+      expect(within(header()).queryByRole('button', { name: 'About Not active' })).toBeNull();
+      fireEvent.click(within(header()).getByRole('button', { name: 'Deactivate' }));
+      const confirm = await screen.findByRole('alertdialog', { name: 'Deactivate Spider?' });
+      expect(confirm).toHaveTextContent(
+        'Spider stops watching your leads and sends no new alerts. Any open Spider alerts are cleared for everyone, and Spider History keeps a record of them.',
+      );
+      expect(confirm).toHaveTextContent(
+        'Your statuses, time limits and who gets alerted are all kept. When you activate it again, the review asks whether to send one summary of the leads still past their time limit.',
+      );
+      fireEvent.click(within(confirm).getByRole('button', { name: 'Keep it active' }));
+      await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+      expect(statusPuts()).toHaveLength(0);
+      expect(within(header()).getByText('Active')).toBeInTheDocument();
+    });
+
+    it('a failed Deactivate with no sentence from the server says "Could not deactivate Spider. Try again later."', async () => {
+      const basePut = mockApi.put.getMockImplementation()!;
+      mockApi.put.mockImplementation(async (url: string, body?: unknown) => {
+        if (url === STATUS) throw { response: { status: 502, data: {} } };
+        return basePut(url, body);
+      });
+      renderWithProviders(<SpiderPage />);
+      await openConfig();
+      await badge('Active');
+      fireEvent.click(within(header()).getByRole('button', { name: 'Deactivate' }));
+      const confirm = await screen.findByRole('alertdialog', { name: 'Deactivate Spider?' });
+      fireEvent.click(within(confirm).getByRole('button', { name: 'Deactivate' }));
+      await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Could not deactivate Spider. Try again later.'));
+      expect(await badge('Active')).toBeInTheDocument();
+    });
+
+    it.each([
+      ['a network error', () => Object.assign(new Error('Network Error'), { code: 'ERR_NETWORK' })],
+      ['a bare 502', () => Object.assign(new Error('Request failed with status code 502'), { response: { status: 502, data: '<html>Bad Gateway</html>' } })],
+    ])('a failed Deactivate on %s says "Could not deactivate Spider. Try again later."', async (_what, failure) => {
+      const basePut = mockApi.put.getMockImplementation()!;
+      mockApi.put.mockImplementation(async (url: string, body?: unknown) => {
+        if (url === STATUS) throw failure();
+        return basePut(url, body);
+      });
+      renderWithProviders(<SpiderPage />);
+      await openConfig();
+      await badge('Active');
+      fireEvent.click(within(header()).getByRole('button', { name: 'Deactivate' }));
+      const confirm = await screen.findByRole('alertdialog', { name: 'Deactivate Spider?' });
+      fireEvent.click(within(confirm).getByRole('button', { name: 'Deactivate' }));
+      await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Could not deactivate Spider. Try again later.'));
+      expect(toast.error).not.toHaveBeenCalledWith(expect.stringMatching(/Network Error|Request failed/));
+    });
+
+    it('Deactivate works at once and keeps the page, the settings and unsaved edits', async () => {
+      renderWithProviders(<SpiderPage />);
+      await openConfig();
+      await badge('Active');
+      fireEvent.click(stageSwitch(CONTACTED_ROW));
+      fireEvent.click(within(header()).getByRole('button', { name: 'Deactivate' }));
+      const confirm = await screen.findByRole('alertdialog', { name: 'Deactivate Spider?' });
+      fireEvent.click(within(confirm).getByRole('button', { name: 'Deactivate' }));
+      expect(await badge('Not active')).toBeInTheDocument();
+      expect(statusPuts()[0]![1]).toEqual({ isActive: false });
+      expect(screen.getByText('Configuration & Alert Rules')).toBeInTheDocument();
+      expect(stageSwitch(CONTACTED_ROW)).toBeChecked();
+      expect(within(header()).getByRole('button', { name: 'Activate' })).toBeInTheDocument();
+      expect(settingsPuts()).toHaveLength(0);
+    });
+  });
+
+  describe('someone without Spider\'s Admin access', () => {
+    it.each([
+      ['Not active', { isActive: false, isSetUp: true }],
+      ['Active', { isActive: true, isSetUp: true }],
+    ] as const)('sees "%s" without Activate, Deactivate or the ?', async (words, sw) => {
+      actSwitch = sw;
+      signIn({ ...ADMIN, role: 'SALES', is_admin: false });
+      renderWithProviders(<SpiderPage />);
+      expect(await badge(words)).toBeInTheDocument();
+      for (const name of ['Activate', 'Deactivate', 'About Not active']) {
+        expect(within(header()).queryByRole('button', { name })).toBeNull();
+      }
+    });
+  });
+
+  describe('ways in while Not active', () => {
+    it('the Spider route opens the page for an Admin of a company with Spider', async () => {
+      renderWithProviders(
+        <Routes>
+          <Route element={<RequireSpider />}>
+            <Route path="/spider" element={<SpiderPage />} />
+          </Route>
+          <Route path="/" element={<div>Dashboard</div>} />
+        </Routes>,
+        { initialEntries: ['/spider'] },
+      );
+      await openConfig();
+      expect(await badge('Not active')).toBeInTheDocument();
+      expect(screen.queryByText('Dashboard')).toBeNull();
+    });
+
+    it('the AI Agentic Farm pop-up\'s page button is not locked and opens the page', async () => {
+      useAiCenterStore.setState({ open: true, focusAgentId: 'spider' });
+      renderWithProviders(
+        <Routes>
+          <Route path="/" element={<AiCenterModal />} />
+          <Route path="/spider" element={<div>Spider page</div>} />
+        </Routes>,
+      );
+      const dialog = await screen.findByRole('dialog', { name: 'Spider' });
+      const open = await within(dialog).findByRole('button', { name: 'Set up Spider' });
+      expect(open).not.toHaveAttribute('aria-disabled');
+      expect(dialog.querySelector('[data-agent-locked]')).toBeNull();
+      fireEvent.click(open);
+      expect(await screen.findByText('Spider page')).toBeInTheDocument();
+    });
+  });
+
+  describe('no vendor names', () => {
+    const VENDORS = /CTM|CallTrackingMetrics|Supabase|Render\b|Twilio|Resend|Stripe|Vercel|OpenAI|Anthropic/;
+
+    it('in the page, the Activate review or the Deactivate question', async () => {
+      renderWithProviders(<SpiderPage />);
+      await openConfig();
+      await badge('Not active');
+      expect(document.body.textContent).not.toMatch(VENDORS);
+      const dialog = await openActivateReview();
+      expect(dialog.textContent).not.toMatch(VENDORS);
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Activate' }));
+      await badge('Active');
+      fireEvent.click(within(header()).getByRole('button', { name: 'Deactivate' }));
+      const confirm = await screen.findByRole('alertdialog', { name: 'Deactivate Spider?' });
+      expect(confirm.textContent).not.toMatch(VENDORS);
+    });
   });
 });

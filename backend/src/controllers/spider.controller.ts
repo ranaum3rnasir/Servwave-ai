@@ -19,18 +19,27 @@ import {
   readChannels,
   settingsOptions,
   settingsView,
-  SPIDER_OFF_SETTINGS_MESSAGE,
+  SPIDER_ACTIVATE_NEEDS_LIMIT_MESSAGE,
+  SPIDER_SAVE_RACED_MESSAGE,
+  SPIDER_STALE_PAGE_MESSAGE,
+  SPIDER_ACTIVATE_RACED_MESSAGE,
+  SPIDER_ACTIVATE_FAILED_MESSAGE,
+  SPIDER_DEACTIVATE_FAILED_MESSAGE,
   SPIDER_REQUIRED_MESSAGES,
   type SetSpiderActiveBody,
   type SpiderStatus,
   type UpdateSpiderSettingsBody,
 } from '../services/spider/config';
 import {
+  skippedStayKey,
+  watchedVisits,
   SPIDER_ALERT_VERB,
   alertedVisitOf,
   currentVisitsByLead,
   endOpenSpiderRecords,
-  hasLeftAlertedVisit,
+  alertStillOpen,
+  excludedAmong,
+  openAlertRulesOf,
 } from '../services/spider/sweep';
 import {
   HISTORY_EXPORT_MAX,
@@ -45,6 +54,7 @@ import {
   type HistoryRow,
 } from '../services/spider/history';
 import { SPIDER_STAGE_NAME } from '../services/spider/messages';
+import { spiderActivationPreview } from '../services/spider/activationPreview';
 import { mergeTriggerKind, readSpiderSummary, settingsTriggerKind } from '../services/spider/summary';
 import type { SpiderTriggerKind } from '../services/spider/summaryMessages';
 import { scopeWhereForReq } from '../lib/permissions/enforce';
@@ -74,67 +84,106 @@ export async function getSpiderStatus(req: Request, res: Response) {
 }
 
 /**
- * Switches Spider on or off from the AI Agentic Farm (Admin only), set up or not (Ran, 14 Oct: the
- * switch says whether Spider is applied; it watches nothing until a stage is switched on). Of the
- * settings, only `is_active`, `activated_at` and the starting trigger change: the stages, limits,
- * channels, recipients and leads are kept as they are, so switching back on picks up exactly where the
- * company left off. Switching off also ends every open Spider alert of the company, for everyone who
- * got it (Ran, 20 Oct, D4); Spider History keeps the record. Switching off when already off ends
- * anything still open and changes nothing else.
+ * Activate or Deactivate Spider (Admin only; #3431). Spider works like an integration (Ran, 10 Nov): being on the
+ * company's account (the Spider gate) and running are two facts, and running starts only here. Of the settings, only
+ * `is_active`, `activated_at` and the starting trigger change: the stages, limits, channels, recipients and leads are
+ * kept as they are, so activating again picks up exactly where the company left off.
  *
- * Switching on from off moves `activated_at` to now, which starts a new switched-on period, and
- * records a starting trigger (#2794): the leads already past their limit, including those that went
- * overdue while Spider was off and those alerted in an earlier period (D5), arrive as one starting
- * summary per person instead of one alert each. Switching on a company with no row creates one with
- * the default settings. Saving the state it already has changes nothing, and switching off a company
- * with no row creates none.
+ * Activate is refused with 409, changing nothing, while no status has a time limit switched on (no settings row counts
+ * as none). Activating from Not active moves `activated_at` to now, which starts a new active period, and records the
+ * SWITCHED_ON starting trigger (#2794) for `startingSummary: 'send'` or when it is left out: the leads already past
+ * their limit, including those that went overdue while Spider was not active and those alerted in an earlier period
+ * (D5), arrive as one starting summary per person instead of one alert each. `startingSummary: 'skip'` records no trigger
+ * and remembers the stays already past their limit at that moment (`backlog_skipped_stays`, Ran 10 Nov): those are never
+ * reported, and everything else alerts as normal, including a stay that goes past its limit later for any reason (time, a
+ * shortened limit, a status switched on, a lead included again). Activating while Active changes nothing.
+ *
+ * Deactivate works at once: it also ends every open Spider alert of the company, for everyone who got it (Ran, 20 Oct,
+ * D4); Spider History keeps the record. Deactivating when already Not active ends anything still open and changes
+ * nothing else, and deactivating a company with no row creates none.
  */
 export async function setSpiderActive(req: Request, res: Response) {
   const where = tenantWhere(req);
   const orgId = req.user!.organization_id;
-  const { isActive } = req.body as SetSpiderActiveBody;
+  const { isActive, startingSummary = 'send' } = req.body as SetSpiderActiveBody;
   try {
-    const row = await prisma.spiderSettings.findFirst({
-      where,
-      select: { is_active: true, status_limits: true },
+    // Activate is checked and written against the same stored settings: the write is conditional on them, so a save
+    // landing in between (a limit changed, leads excluded) is answered 409 at once. It is never read again and activated
+    // on settings the review did not show (Ran, 10 Nov: activation only after the review).
+    const row = await prisma.spiderSettings.findFirst({ where });
+    if (isActive && !isSpiderSetUp(row)) {
+      res.status(409).json({ error: SPIDER_ACTIVATE_NEEDS_LIMIT_MESSAGE });
+      return;
+    }
+    if (!row || row.is_active === isActive) {
+      // Already in the asked state (or Deactivate with no row): nothing to write. Deactivate still ends anything open.
+      if (row && !isActive) await endOpenAlertsOnSwitchOff(orgId);
+      res.json({ isActive, isSetUp: isSpiderSetUp(row) });
+      return;
+    }
+    if (!isActive) {
+      await prisma.spiderSettings.updateMany({ where: { ...where, is_active: true }, data: { is_active: false } });
+      // Never in one transaction with the write above: a sweep alerting at this moment re-checks the
+      // switch after writing its alert rows (sweep.ts stillOn), so the flag must be committed before
+      // this clear starts, or an alert written in between could stay open.
+      await endOpenAlertsOnSwitchOff(orgId);
+      res.json({ isActive, isSetUp: isSpiderSetUp(row) });
+      return;
+    }
+    const now = new Date();
+    // Send starts a fresh wait for the summary (a trigger left from before Spider was deactivated is folded into it)
+    // and forgets any earlier skip. Skip records no trigger, drops any left over, and remembers exactly the stays past
+    // their limit now, by the sweep's own rule (sweep.ts watchedVisits), so only those are never reported.
+    const activate =
+      startingSummary === 'skip'
+        ? {
+            summary_trigger_at: null, summary_trigger_kind: null, summary_trigger_since: null, backlog_skipped_at: now,
+            backlog_skipped_stays: (await watchedVisits(orgId, { ...row, backlog_skipped_stays: [] }, now, now)).overdue.map(skippedStayKey),
+          }
+        : { summary_trigger_at: now, summary_trigger_kind: 'SWITCHED_ON', summary_trigger_since: now, backlog_skipped_at: null, backlog_skipped_stays: [] };
+    const { count } = await prisma.spiderSettings.updateMany({
+      where: {
+        ...where,
+        is_active: false,
+        status_limits: { equals: row.status_limits as Prisma.InputJsonValue },
+        excluded_lead_ids: { equals: row.excluded_lead_ids },
+      },
+      data: { is_active: true, activated_at: now, ...activate },
     });
-    if (!row) {
-      if (!isActive) {
-        res.json({ isActive: false, isSetUp: false });
-        return;
-      }
-      // The settings take their column defaults, which read as the default settings (every status
-      // off). skipDuplicates: when another Admin's switch created the row a moment earlier this
-      // inserts nothing, and the conditional write below switches that row instead.
-      const now = new Date();
-      await prisma.spiderSettings.createMany({
-        data: [{
-          organization_id: orgId, is_active: true, activated_at: now,
-          summary_trigger_at: now, summary_trigger_kind: 'SWITCHED_ON', summary_trigger_since: now,
-        }],
-        skipDuplicates: true,
-      });
+    if (count === 1) {
+      res.json({ isActive, isSetUp: true });
+      return;
     }
-    if (!row || row.is_active !== isActive) {
-      const now = new Date();
-      // Conditional on the stored flag, so two Admins switching on at once move activated_at once.
-      // Switching on starts a fresh wait for the summary (a trigger left from before Spider went off
-      // is folded into it).
-      await prisma.spiderSettings.updateMany({
-        where: { ...where, is_active: !isActive },
-        data: isActive
-          ? { is_active: true, activated_at: now, summary_trigger_at: now, summary_trigger_kind: 'SWITCHED_ON', summary_trigger_since: now }
-          : { is_active: false },
-      });
+    // Nothing written. Another Admin's Activate landing first is no change to the settings: Spider is Active, as asked.
+    const after = await prisma.spiderSettings.findFirst({ where, select: { is_active: true, status_limits: true } });
+    if (after?.is_active === true) {
+      res.json({ isActive: true, isSetUp: isSpiderSetUp(after) });
+      return;
     }
-    // Never in one transaction with the write above: a sweep alerting at this moment re-checks the
-    // switch after writing its alert rows (sweep.ts stillOn), so the flag must be committed before
-    // this clear starts, or an alert written in between could stay open.
-    if (row && !isActive) await endOpenAlertsOnSwitchOff(orgId);
-    res.json({ isActive, isSetUp: isSpiderSetUp(row) });
+    // A change that left no time limit on keeps its own, plainer reason (still 409, still nothing written).
+    if (!isSpiderSetUp(after)) {
+      res.status(409).json({ error: SPIDER_ACTIVATE_NEEDS_LIMIT_MESSAGE });
+      return;
+    }
+    res.status(409).json({ error: SPIDER_ACTIVATE_RACED_MESSAGE });
   } catch (err) {
     logger.error(`[spider] switch save failed for org ${req.user!.organization_id}`, err);
-    res.status(500).json({ error: 'Could not switch Spider on or off' });
+    // Ran, 10 Nov: named by what was tried, the request's own target state.
+    res.status(500).json({ error: isActive ? SPIDER_ACTIVATE_FAILED_MESSAGE : SPIDER_DEACTIVATE_FAILED_MESSAGE });
+  }
+}
+
+/**
+ * The numbers the Activate review shows (#3431, Admin only): open leads Spider would watch, leads excluded, how many are
+ * already past their limit and how many people the starting summary would reach. Counts only, for the caller's company.
+ */
+export async function getSpiderActivationPreview(req: Request, res: Response) {
+  const orgId = req.user!.organization_id;
+  try {
+    res.json(await spiderActivationPreview(orgId));
+  } catch (err) {
+    logger.error(`[spider] activation preview failed for org ${orgId}`, err);
+    res.status(500).json({ error: 'Could not load the Spider review' });
   }
 }
 
@@ -152,27 +201,12 @@ async function endOpenAlertsOnSwitchOff(orgId: string): Promise<void> {
 
 // ─── Settings ────────────────────────────────────────────────────────────────
 
-/** Number and customer for each selected lead, so the screen can name them without another call. */
-async function selectedLeadLabels(orgId: string, ids: string[]) {
-  if (ids.length === 0) return [];
-  const leads = await prisma.lead.findMany({
-    where: { organization_id: orgId, id: { in: ids } },
-    select: { id: true, lead_number: true, customer: { select: { first_name: true, last_name: true, company_name: true } } },
-    orderBy: { lead_number: 'asc' },
-  });
-  return leads.map((l) => ({
-    id: l.id,
-    lead_number: l.lead_number,
-    customer_name: customerName(l.customer),
-  }));
-}
-
 export async function getSpiderSettings(req: Request, res: Response) {
   const orgId = req.user!.organization_id;
   try {
+    // The leads Spider watches are not part of the settings (#3436): the picker reads them a page at a time.
     const row = await prisma.spiderSettings.findUnique({ where: { organization_id: orgId } });
-    const settings = settingsView(row);
-    res.json({ settings, selected_leads: await selectedLeadLabels(orgId, settings.selected_lead_ids), options: settingsOptions() });
+    res.json({ settings: settingsView(row), options: settingsOptions() });
   } catch (err) {
     logger.error(`[spider] settings read failed for org ${req.user!.organization_id}`, err);
     res.status(500).json({ error: 'Could not load Spider settings' });
@@ -183,7 +217,7 @@ export async function getSpiderSettings(req: Request, res: Response) {
  * A save's starting trigger. One still waiting is folded into it (still one summary), and keeps the
  * moment it first started waiting, which bounds the wait however many saves follow.
  */
-function triggerData(
+export function triggerData(
   existing: { summary_trigger_at: Date | null; summary_trigger_kind: string | null; summary_trigger_since: Date | null },
   kind: SpiderTriggerKind,
   now: Date,
@@ -197,48 +231,47 @@ function triggerData(
 }
 
 /**
- * Saves Spider's settings (Admin only), only while Spider is on: its settings open only while it is
- * on (Ran, 14 Oct), so a save while it is off - or with no settings row, which is off - is refused
- * with 409 and stores nothing. The save never changes the switch: `is_active` in the body is
- * ignored, PUT /spider/status is the only way to turn Spider on or off.
+ * Saves Spider's settings (Admin only), Active or Not active (#3431: like an integration, Spider is set up before it
+ * runs). The save never changes Active / Not active: `is_active` in the body is ignored, PUT /spider/status is the only
+ * way to activate or deactivate. A company with no settings row gets one, Not active.
  *
- * A save that starts watching something new - a stage switched on, a limit shortened, more leads
- * under watch - records a starting trigger (#2794), so the leads already past their limit arrive as
- * one starting summary per person rather than one alert each. A save that only narrows what is
- * watched, or changes recipients or channels, records none. It never moves `activated_at`.
+ * While Not active a save stores the settings and starts nothing: it records no starting trigger, and the sweep sends
+ * nothing for the company. Activate records the trigger.
+ *
+ * While Active, a save that starts watching something new - a stage switched on, a limit shortened - records a starting
+ * trigger (#2794), so the leads already past their limit arrive as one starting summary per
+ * person rather than one alert each. A save that only narrows what is watched, or changes recipients or channels,
+ * records none. It never moves `activated_at`.
+ *
+ * The write is conditional on the Active / Not active state the save read: if Spider was activated or deactivated in
+ * between, the save stores nothing and answers 409, since that state decides whether it records a trigger.
+ *
+ * A save from a screen older than #3436 (it still sends `watch_all_leads` / `selected_lead_ids`) stores nothing and
+ * answers 409 with SPIDER_STALE_PAGE_MESSAGE: the lead choices it carries no longer apply, so it must not say "Saved".
  */
 export async function updateSpiderSettings(req: Request, res: Response) {
   const orgId = req.user!.organization_id;
   const body = req.body as UpdateSpiderSettingsBody;
-  const refuseWhileOff = () => res.status(409).json({ error: SPIDER_OFF_SETTINGS_MESSAGE });
+  // A screen from before #3436 still sends its lead selection: refused before anything is read or stored, so it never
+  // says "Saved" for lead choices that no longer apply.
+  if (body.watch_all_leads !== undefined || body.selected_lead_ids !== undefined) {
+    res.status(409).json({ error: SPIDER_STALE_PAGE_MESSAGE });
+    return;
+  }
   try {
-    const existing = await prisma.spiderSettings.findUnique({
-      where: { organization_id: orgId },
-      select: {
-        is_active: true,
-        status_limits: true,
-        watch_all_leads: true,
-        selected_lead_ids: true,
-        summary_trigger_at: true,
-        summary_trigger_kind: true,
-        summary_trigger_since: true,
-      },
-    });
-    if (!existing?.is_active) {
-      refuseWhileOff();
-      return;
-    }
+    const select = {
+      is_active: true,
+      status_limits: true,
+      excluded_lead_ids: true,
+      summary_trigger_at: true,
+      summary_trigger_kind: true,
+      summary_trigger_since: true,
+    } as const;
     // Only this company's people and leads can be stored: anything else in the body is dropped.
-    const [users, leads] = await Promise.all([
-      body.recipients.user_ids.length
-        ? prisma.user.findMany({ where: { organization_id: orgId, id: { in: body.recipients.user_ids } }, select: { id: true } })
-        : Promise.resolve([]),
-      body.selected_lead_ids.length
-        ? prisma.lead.findMany({ where: { organization_id: orgId, id: { in: body.selected_lead_ids } }, select: { id: true } })
-        : Promise.resolve([]),
-    ]);
+    const users = body.recipients.user_ids.length
+      ? await prisma.user.findMany({ where: { organization_id: orgId, id: { in: body.recipients.user_ids } }, select: { id: true } })
+      : [];
     const knownUsers = new Set(users.map((u) => u.id));
-    const knownLeads = new Set(leads.map((l) => l.id));
     const recipients = {
       roles: [...new Set(body.recipients.roles)],
       user_ids: body.recipients.user_ids.filter((id) => knownUsers.has(id)),
@@ -250,31 +283,38 @@ export async function updateSpiderSettings(req: Request, res: Response) {
       return;
     }
 
-    const selectedLeadIds = body.selected_lead_ids.filter((id) => knownLeads.has(id));
-    const trigger = settingsTriggerKind(existing, {
-      status_limits: body.status_limits as Prisma.JsonValue,
-      watch_all_leads: body.watch_all_leads,
-      selected_lead_ids: selectedLeadIds,
-    });
-    // Conditional on Spider still being on, so a save racing a switch-off stores nothing.
+    // The first save of a company that never set Spider up makes its row, Not active (skipDuplicates: when another
+    // Admin's save created it a moment earlier this inserts nothing).
+    let existing = await prisma.spiderSettings.findUnique({ where: { organization_id: orgId }, select });
+    if (!existing) {
+      await prisma.spiderSettings.createMany({ data: [{ organization_id: orgId }], skipDuplicates: true });
+      existing = await prisma.spiderSettings.findUniqueOrThrow({ where: { organization_id: orgId }, select });
+    }
+
+    // The exclusion list is never written here (#3436): only PATCH /spider/exclusions changes it, so a save never undoes
+    // an exclusion saved meanwhile (an older screen that sends its lead selection was refused above).
+    // Not active: no trigger, whatever the save widens. Activate records one.
+    const trigger = existing.is_active
+      ? settingsTriggerKind(existing, {
+          status_limits: body.status_limits as Prisma.JsonValue,
+          excluded_lead_ids: existing.excluded_lead_ids,
+        })
+      : null;
     const { count } = await prisma.spiderSettings.updateMany({
-      where: { organization_id: orgId, is_active: true },
+      where: { organization_id: orgId, is_active: existing.is_active },
       data: {
         status_limits: body.status_limits,
         channels: body.channels,
         recipients,
-        watch_all_leads: body.watch_all_leads,
-        selected_lead_ids: selectedLeadIds,
         ...(trigger ? triggerData(existing, trigger, new Date()) : {}),
       },
     });
     if (count === 0) {
-      refuseWhileOff();
+      res.status(409).json({ error: SPIDER_SAVE_RACED_MESSAGE });
       return;
     }
     const row = await prisma.spiderSettings.findUnique({ where: { organization_id: orgId } });
-    const settings = settingsView(row);
-    res.json({ settings, selected_leads: await selectedLeadLabels(orgId, settings.selected_lead_ids), options: settingsOptions() });
+    res.json({ settings: settingsView(row), options: settingsOptions() });
   } catch (err) {
     logger.error(`[spider] settings save failed for org ${orgId}`, err);
     res.status(500).json({ error: 'Could not save Spider settings' });
@@ -474,8 +514,10 @@ const str = (v: unknown): string | null => (typeof v === 'string' && v.length > 
  * frame - plus whether the company's in-app and red-frame channels are on. `id` is the
  * notification-recipient id, which the existing PATCH /api/notifications/:id/read marks read.
  *
- * An alert whose lead has already left the alerted stage visit is left out at once, so the popup
- * and the frame follow a stage change on their next read. While Spider is switched off the list is
+ * An alert that is no longer open is left out at once (alertStillOpen, the sweep's own rule): its lead has left the
+ * alerted stage visit, or the settings saved now no longer alert it - the lead excluded, its stage's limit off, or a
+ * longer limit it is not past (#3450). So the popup and the frame follow a stage change or a settings save on their next
+ * read. The settings are read once, and only the listed leads' exclusions, never the whole list. While Spider is switched off the list is
  * empty and the frame off. This request writes nothing: the sweep marks those alerts read
  * (sweep.ts endFinishedAlerts and, for a company that is off, endOpenSpiderRecords).
  */
@@ -504,7 +546,10 @@ export async function getMyUnreadSpiderAlerts(req: Request, res: Response) {
         take: UNREAD_ALERTS_LIMIT,
         select: { notification: { select: { object_id: true, data: true } } },
       }),
-      prisma.spiderSettings.findUnique({ where: { organization_id: orgId }, select: { channels: true, is_active: true } }),
+      prisma.spiderSettings.findUnique({
+        where: { organization_id: orgId },
+        select: { channels: true, is_active: true, status_limits: true },
+      }),
     ]);
     const channels = settings ? readChannels(settings.channels) : null;
     const redFrame = !!channels && channels.red_frame;
@@ -514,13 +559,20 @@ export async function getMyUnreadSpiderAlerts(req: Request, res: Response) {
       res.json({ alerts: [], in_app: channels ? channels.in_app : true, red_frame: redFrame, frame: false });
       return;
     }
-    const visits = await currentVisitsByLead(orgId, [...rows, ...frameRows].map((r) => r.notification.object_id));
+    const leadIds = [...rows, ...frameRows].map((r) => r.notification.object_id);
+    const [visits, excluded] = await Promise.all([
+      currentVisitsByLead(orgId, leadIds),
+      settings ? excludedAmong(orgId, leadIds) : Promise.resolve(new Set<string>()),
+    ]);
+    // The listed leads' exclusions stand in for the whole list: the rule only asks about these leads.
+    const rules = openAlertRulesOf(settings && { status_limits: settings.status_limits, excluded_lead_ids: [...excluded] });
+    const now = new Date();
     const stillOpen = (n: { object_id: string; data: unknown }) =>
-      !hasLeftAlertedVisit(alertedVisitOf(n.object_id, n.data), visits.get(n.object_id));
+      alertStillOpen(alertedVisitOf(n.object_id, n.data), visits.get(n.object_id), rules, now);
     const alerts = rows.flatMap((r) => {
       const leadId = r.notification.object_id;
       const visit = visits.get(leadId);
-      if (hasLeftAlertedVisit(alertedVisitOf(leadId, r.notification.data), visit)) return [];
+      if (!stillOpen(r.notification)) return [];
       const data = (r.notification.data ?? {}) as Record<string, unknown>;
       const card: Record<string, unknown> = {};
       for (const k of CARD_FIELDS) card[k] = data[k] ?? null;

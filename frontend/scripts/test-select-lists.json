@@ -151,6 +151,7 @@
     "frontend/src/design-system/scheduleEventPalette.test.ts",
     "frontend/src/features/estimate-workspace/components/HistoryPanel.actionLabels.test.ts",
     "frontend/src/lib/__tests__/missingCrew.test.ts",
+    "frontend/src/lib/ai-center/agentStatus.test.ts",
     "frontend/src/lib/ai-center/media.test.ts",
     "frontend/src/lib/communication/__tests__/phone-vendor-footprint.test.ts",
     "frontend/src/lib/communication/__tests__/vendorConsoleFilter.test.ts",

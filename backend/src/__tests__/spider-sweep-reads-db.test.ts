@@ -446,10 +446,17 @@ suite('Spider sweep reads (#2992, real database)', () => {
     });
 
     it('ending finished alerts: 1,201 unread records for 2 people each, read in pages; exactly the moved-on ones end', { timeout: 120_000 }, async () => {
-      // Nothing is overdue (a 30-day limit), so the run only ends records.
-      const c = await company(N, { sameInstant: true, limitHours: 30 * 24 });
+      // Every lead is past its 2-hour limit, as every alerted lead is (an alert for a lead not past its limit is not open,
+      // #3450), and already alerted in this period (a claim each), so the run alerts nothing and only ends records.
+      const c = await company(N, { sameInstant: true });
       const people = c.people.slice(0, 2);
       const enteredAt = at(-DAY).toISOString();
+      await db.spiderAlert.createMany({
+        data: c.leads.map((leadId) => ({
+          organization_id: c.org, lead_id: leadId, status: 'NEW', entered_status_at: at(-DAY), counted_from: at(-DAY),
+          limit_value: 2, limit_unit: 'HOUR', alerted_at: at(-DAY + 2 * HOUR), recipient_ids: people.map((p) => p.id), delivery: {},
+        })),
+      });
       const notifications = c.leads.map((leadId) => ({
         id: randomUUID(), organization_id: c.org, verb: 'spider.alert', category: 'LEAD' as const, priority: 'FEED' as const,
         needs_action: false, object_type: 'LEAD', object_id: leadId, object_label: 'L', title: 't', body: 'b',

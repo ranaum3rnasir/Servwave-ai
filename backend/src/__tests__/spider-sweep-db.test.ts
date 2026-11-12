@@ -198,8 +198,8 @@ suite('Spider sweep (real database)', () => {
     limits?: Record<string, Limit>;
     channels?: Partial<{ in_app: boolean; red_frame: boolean; email: boolean; text: boolean }>;
     recipients?: { roles?: Role[]; user_ids?: string[]; lead_owner?: boolean };
-    watchAll?: boolean;
-    selected?: string[];
+    /** The leads Spider does not watch (#3434). */
+    excluded?: string[];
     /** A starting trigger waiting (#2794), and its kind. */
     trigger?: Date | null;
     triggerKind?: string;
@@ -215,8 +215,7 @@ suite('Spider sweep (real database)', () => {
       status_limits: { ...ALL_OFF, ...(opts.limits ?? { NEW: { enabled: true, value: 2, unit: 'HOUR' } }) },
       channels: { in_app: true, red_frame: true, email: false, text: false, ...(opts.channels ?? {}) },
       recipients: { roles: [], user_ids: [], lead_owner: false, ...(opts.recipients ?? {}) },
-      watch_all_leads: opts.watchAll ?? true,
-      selected_lead_ids: opts.selected ?? [],
+      excluded_lead_ids: opts.excluded ?? [],
     };
     await db.spiderSettings.upsert({ where: { organization_id: c.org }, create: { organization_id: c.org, ...data }, update: data });
   }
@@ -444,11 +443,11 @@ suite('Spider sweep (real database)', () => {
       expect(textedTo()).toContain('+16175550177');
     });
 
-    it('with "watch all open leads" off, only the selected leads alert', async () => {
+    it('an excluded lead never alerts; every other open lead does (#3434)', async () => {
       const c = await company();
       const watched = await lead(c);
       const unwatched = await lead(c);
-      await configure(c, { watchAll: false, selected: [watched] });
+      await configure(c, { excluded: [unwatched] });
       await runSpiderSweep(T0);
       expect(await alertsFor(watched)).toHaveLength(1);
       expect(await alertsFor(unwatched)).toEqual([]);
@@ -986,6 +985,144 @@ suite('Spider sweep (real database)', () => {
       await runSpiderSweep(at(2 * MIN));
       expect((await spiderNotices(aLead))[0].read_at).toBeNull();
       expect((await spiderNotices(bLead))[0].read_at).not.toBeNull();
+    });
+
+    // #3450 (Ran, 11 Nov): an open alert follows the settings saved now. The end step marks read the records of a lead
+    // that is excluded, whose stage's limit is off, or that a longer limit no longer finds past it; a shorter limit or
+    // more recipients ends nothing. In-app alerts and red-frame-only records alike.
+    describe('when the settings change (#3450)', () => {
+      const NEW_1D = { NEW: { enabled: true, value: 1, unit: 'DAY' as const } };
+      const lanes = [
+        { name: 'in-app alerts', verb: 'spider.alert', channels: { in_app: true, red_frame: true } },
+        { name: 'red-frame-only records', verb: 'spider.frame', channels: { in_app: false, red_frame: true } },
+      ];
+      const unreadOf = async (leadId: string, verb: string) => {
+        const rows = await db.notificationRecipient.findMany({ where: { notification: { verb, object_id: leadId } }, select: { read_at: true } });
+        expect(rows.length, `records for ${leadId}`).toBeGreaterThan(0);
+        return rows.every((r) => r.read_at === null);
+      };
+
+      for (const lane of lanes) {
+        describe(lane.name, () => {
+          it('excluding a lead ends its records at the next run, and only its', async () => {
+            const c = await company();
+            await configure(c, { channels: lane.channels });
+            const x = await lead(c, { createdAt: at(-3 * HOUR) });
+            const y = await lead(c, { createdAt: at(-3 * HOUR) });
+            await runSpiderSweep(T0);
+            expect(await unreadOf(x, lane.verb)).toBe(true);
+
+            await configure(c, { channels: lane.channels, excluded: [x] });
+            await runSpiderSweep(at(2 * MIN));
+            expect(await unreadOf(x, lane.verb)).toBe(false);
+            expect(await unreadOf(y, lane.verb)).toBe(true);
+          });
+
+          it("switching a stage's limit off ends every open record of that stage, and no other stage's", async () => {
+            const c = await company();
+            const limits = { NEW: { enabled: true, value: 2, unit: 'HOUR' as const }, CONTACTED: { enabled: true, value: 2, unit: 'HOUR' as const } };
+            await configure(c, { channels: lane.channels, limits });
+            const x = await lead(c, { createdAt: at(-3 * HOUR) });
+            const y = await lead(c, { createdAt: at(-3 * HOUR) });
+            const contacted = await lead(c, { status: 'CONTACTED', createdAt: at(-10 * DAY), contacted_at: at(-3 * HOUR) });
+            await runSpiderSweep(T0);
+
+            await configure(c, { channels: lane.channels, limits: { ...limits, NEW: { enabled: false, value: 2, unit: 'HOUR' } } });
+            await runSpiderSweep(at(2 * MIN));
+            expect(await unreadOf(x, lane.verb)).toBe(false);
+            expect(await unreadOf(y, lane.verb)).toBe(false);
+            expect(await unreadOf(contacted, lane.verb)).toBe(true);
+          });
+
+          it('a longer limit ends the records of a lead no longer past it, and keeps one still past it', async () => {
+            const c = await company();
+            await configure(c, { channels: lane.channels });
+            const notPast = await lead(c, { createdAt: at(-3 * HOUR) });
+            const stillPast = await lead(c, { createdAt: at(-30 * HOUR) });
+            await runSpiderSweep(T0);
+
+            await configure(c, { channels: lane.channels, limits: NEW_1D });
+            await runSpiderSweep(at(2 * MIN));
+            expect(await unreadOf(notPast, lane.verb)).toBe(false);
+            expect(await unreadOf(stillPast, lane.verb)).toBe(true);
+          });
+
+          // Ran, 11 Nov: "No, once is enough." A cleared alert is not alerted again in the same stage visit and switched-on
+          // period, however the lead becomes alertable again: the claim key (lead, stage, entered instant, counted-from) is
+          // still taken. One alert-log row, one record, and it stays read.
+          describe('once is enough: a cleared alert is not raised again in the same stay and period', () => {
+            const onceOnly = async (x: string) => {
+              expect(await alertsFor(x)).toHaveLength(1);
+              expect(await db.notification.count({ where: { object_id: x, verb: { in: ['spider.alert', 'spider.frame'] } } })).toBe(1);
+              expect(await unreadOf(x, lane.verb)).toBe(false);
+            };
+
+            it('excluded, then included again (the Save widens the scope)', async () => {
+              const c = await company();
+              await configure(c, { channels: lane.channels });
+              const x = await lead(c, { createdAt: at(-3 * HOUR) });
+              await runSpiderSweep(T0);
+              expect(await alertsFor(x)).toHaveLength(1);
+
+              await configure(c, { channels: lane.channels, excluded: [x] });
+              await runSpiderSweep(at(2 * MIN));
+              expect(await unreadOf(x, lane.verb)).toBe(false);
+
+              // Included again, with the starting trigger a real Save records, then past its quiet period.
+              await configure(c, { channels: lane.channels, trigger: at(3 * MIN), triggerKind: 'SCOPE_WIDENED' });
+              await runSpiderSweep(at(20 * MIN));
+              await runSpiderSweep(at(25 * MIN));
+              await onceOnly(x);
+            });
+
+            it("the stage's limit switched off, then on again (the Save adds a stage)", async () => {
+              const c = await company();
+              await configure(c, { channels: lane.channels });
+              const x = await lead(c, { createdAt: at(-3 * HOUR) });
+              await runSpiderSweep(T0);
+
+              await configure(c, { channels: lane.channels, limits: { NEW: { enabled: false, value: 2, unit: 'HOUR' } } });
+              await runSpiderSweep(at(2 * MIN));
+              expect(await unreadOf(x, lane.verb)).toBe(false);
+
+              await configure(c, { channels: lane.channels, trigger: at(3 * MIN), triggerKind: 'STAGE_ADDED' });
+              await runSpiderSweep(at(20 * MIN));
+              await runSpiderSweep(at(25 * MIN));
+              await onceOnly(x);
+            });
+
+            it('the limit lengthened past the lead, then the lead crosses the longer limit', async () => {
+              const c = await company();
+              await configure(c, { channels: lane.channels });
+              const x = await lead(c, { createdAt: at(-3 * HOUR) });
+              await runSpiderSweep(T0);
+
+              // 3 h 2 min in, a 4-hour limit: no longer past it.
+              await configure(c, { channels: lane.channels, limits: { NEW: { enabled: true, value: 4, unit: 'HOUR' } } });
+              await runSpiderSweep(at(2 * MIN));
+              expect(await unreadOf(x, lane.verb)).toBe(false);
+
+              // 4 h 10 min in: past the longer limit, in the same stay and period.
+              await runSpiderSweep(at(70 * MIN));
+              await runSpiderSweep(at(75 * MIN));
+              await onceOnly(x);
+            });
+          });
+
+          it('a shorter limit or more recipients ends nothing', async () => {
+            const c = await company();
+            await person(c.org, 'DISPATCHER');
+            await configure(c, { channels: lane.channels });
+            const x = await lead(c, { createdAt: at(-3 * HOUR) });
+            await runSpiderSweep(T0);
+
+            await configure(c, { channels: lane.channels, limits: { NEW: { enabled: true, value: 1, unit: 'HOUR' } }, recipients: { roles: ['ADMIN', 'DISPATCHER'] } });
+            await runSpiderSweep(at(2 * MIN));
+            expect(await unreadOf(x, lane.verb)).toBe(true);
+            expect(await alertsFor(x)).toHaveLength(1);
+          });
+        });
+      }
     });
   });
 

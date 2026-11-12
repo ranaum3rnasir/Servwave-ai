@@ -78,6 +78,7 @@ const NOT_RECORD_ROUTERS: Record<string, string> = {
   // money), so the item's existence is not a secret there; whether these follow invoice reach instead is raised with ticket 33.
   'payments-page.routes.ts': 'payment items show restricted by design (Payments build); open question, ticket 33',
   'payment-attention.routes.ts': 'payment items show restricted by design (Payments build); open question, ticket 33',
+  'aiFarm.routes.ts': "Spider: Admin-only (requireSpiderAdmin), no reach scope. Its one record route (GET /spider/customers/:id/leads) answers another company's customer and an id that is no uuid exactly like a missing one: spider-picker-endpoints-db",
 };
 
 /** Single routes on a covered router that answer by something other than reach, and why. */

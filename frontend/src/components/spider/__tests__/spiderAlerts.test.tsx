@@ -419,9 +419,9 @@ describe('his states', () => {
         status_limits: { NEW: { enabled: true, value: 2, unit: 'HOUR' }, CONTACTED: { enabled: false, value: 1, unit: 'MINUTE' }, WALKTHROUGH_COMPLETED: { enabled: false, value: 1, unit: 'MINUTE' } },
         channels: { in_app: false, red_frame: true, email: true, text: false },
         recipients: { roles: ['ADMIN'], user_ids: [], lead_owner: true },
-        watch_all_leads: true, selected_lead_ids: [], updated_at: ago(DAY),
+        updated_at: ago(DAY),
       },
-      selected_leads: [], options: { statuses: [], units: [], roles: [] },
+      options: { statuses: [], units: [], roles: [] },
     };
     mockApi.get.mockImplementation(async (url: string) => {
       if (url === UNREAD) return { data: unread };
@@ -442,8 +442,6 @@ describe('his states', () => {
           status_limits: settings.settings.status_limits,
           channels: { in_app: true, red_frame: true, email: true, text: false },
           recipients: settings.settings.recipients,
-          watch_all_leads: true,
-          selected_lead_ids: [],
         },
         { silentErrors: true },
       ),

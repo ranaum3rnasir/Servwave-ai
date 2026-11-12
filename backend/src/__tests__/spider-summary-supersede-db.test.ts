@@ -101,8 +101,6 @@ suite('the starting summary through switching Spider on, and off and on again (#
     },
     channels: { in_app: true, red_frame: true, email: false, text: false },
     recipients,
-    watch_all_leads: true,
-    selected_lead_ids: [],
   });
 
   it('journey: an Admin switches Spider on, the sweep builds the summary, a recipient sees it in the bell and the Admin in History', async () => {
@@ -116,8 +114,8 @@ suite('the starting summary through switching Spider on, and off and on again (#
     await db.user.update({ where: { id: dispatcher.id }, data: { created_at: monthAgo } });
 
     const admin = await fx.signedInAs(o.admin);
-    expect((await admin.put(STATUS, { isActive: true })).status).toBe(200);
     expect((await admin.put(SETTINGS, settingsBody({ roles: ['DISPATCHER'], user_ids: [], lead_owner: false }))).status).toBe(200);
+    expect((await admin.put(STATUS, { isActive: true })).status).toBe(200);
     // Three leads that entered New five hours ago, against a two-hour limit.
     for (let i = 0; i < 3; i++) {
       const lead = await fx.addLead(o.org, o.customer);

@@ -111,7 +111,6 @@ suite('Spider emails and their delivery events (real app, real database, real we
     const people: Person[] = [o.admin];
     for (let i = 1; i < admins; i += 1) people.push(await fx.addUser(o.org, `admin${i}`, 'ADMIN'));
     const api = await fx.signedInAs(o.admin);
-    expect((await api.put(STATUS, { isActive: true })).status).toBe(200);
     const saved = await api.put(SETTINGS, {
       status_limits: {
         NEW: { enabled: true, value: 2, unit: 'HOUR' },
@@ -120,10 +119,9 @@ suite('Spider emails and their delivery events (real app, real database, real we
       },
       channels: { in_app: false, red_frame: false, email: true, text: false },
       recipients: { roles: ['ADMIN'], user_ids: [], lead_owner: false },
-      watch_all_leads: true,
-      selected_lead_ids: [],
     });
     expect(saved.status).toBe(200);
+    expect((await api.put(STATUS, { isActive: true })).status).toBe(200);
     return { ...o, people };
   }
   type Company = Awaited<ReturnType<typeof spiderCompany>>;

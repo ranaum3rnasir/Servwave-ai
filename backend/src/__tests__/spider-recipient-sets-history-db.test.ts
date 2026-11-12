@@ -79,8 +79,6 @@ suite('History shows who was alerted, from the alert row or from a stored list (
     },
     channels: { in_app: true, red_frame: true, email: false, text: false },
     recipients,
-    watch_all_leads: true,
-    selected_lead_ids: [],
   });
 
   const DAY_MS = 24 * HOUR_MS;
@@ -101,8 +99,8 @@ suite('History shows who was alerted, from the alert row or from a stored list (
     await db.user.update({ where: { id: o.admin.id }, data: { created_at: monthAgo } });
     await db.customer.update({ where: { id: o.customer }, data: { created_at: monthAgo } });
     const api = await fx.signedInAs(o.admin);
-    expect((await api.put(STATUS, { isActive: true })).status).toBe(200);
     expect((await api.put(SETTINGS, settingsBody({ roles: ['ADMIN'], user_ids: [], lead_owner: false }))).status).toBe(200);
+    expect((await api.put(STATUS, { isActive: true })).status).toBe(200);
     return o;
   }
 

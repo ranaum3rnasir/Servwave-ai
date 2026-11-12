@@ -35,11 +35,12 @@ const PICKS_NONE: Readonly<Record<string, string>> = {
   'controllers/job.controller.ts': 'the duplicate warning when a job creates its customer (lib/customer-duplicate.ts)',
   'lib/customer-duplicate.ts': 'the duplicate warning when a customer is created: it warns that the number is taken, it files nothing',
   'services/payments-documents.ts': 'the payments page search lists every customer whose words or number match',
+  'services/spider/picker.ts': 'the Spider lead picker search lists every customer whose words or number match',
   'lib/ctm/smsThread.ts': 'the conversation keying: takes the identity match from its caller; its own number lookup is of staff, not customers',
 };
 
 /** The places that pick none and filter customers by a phone value themselves: searches, which list every match. */
-const SEARCHES = new Set(['lib/phone-search.ts', 'services/payments-documents.ts']);
+const SEARCHES = new Set(['lib/phone-search.ts', 'services/payments-documents.ts', 'services/spider/picker.ts']);
 
 /** The shapes that filter customers by a phone value directly; only the identity match may use them to pick one. */
 const DIRECT_FILTERS = [

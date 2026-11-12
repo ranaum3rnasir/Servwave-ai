@@ -144,15 +144,15 @@ const leadUrl = (leadId: string) => `${env.FRONTEND_URL.replace(/\/+$/, '')}/lea
 /** What a settings save compares, before and after. */
 export interface WatchedScope {
   status_limits: Prisma.JsonValue;
-  watch_all_leads: boolean;
-  selected_lead_ids: readonly string[];
+  /** The leads Spider does not watch (#3434): every other open lead is watched. */
+  excluded_lead_ids: readonly string[];
 }
 
 /**
  * Whether a settings save starts watching something new, and how: a stage switched on, a limit
- * shortened, or more leads under watch ("Auto-select new leads" turned on, or leads added to the
- * selection). A save that only narrows what is watched, or changes recipients or channels, is not a
- * trigger. Several at once read as SETTINGS_CHANGED.
+ * shortened, or more leads under watch (a lead included again: taken off the exclusion list, #3434).
+ * A save that only narrows what is watched (excluding leads), or changes recipients or channels, is
+ * not a trigger. Several at once read as SETTINGS_CHANGED.
  */
 export function settingsTriggerKind(before: WatchedScope, after: WatchedScope): SpiderTriggerKind | null {
   const was = readStatusLimits(before.status_limits);
@@ -165,10 +165,8 @@ export function settingsTriggerKind(before: WatchedScope, after: WatchedScope): 
     if (!a.enabled) kinds.add('STAGE_ADDED');
     else if (limitMs(b.value, b.unit) < limitMs(a.value, a.unit)) kinds.add('LIMIT_SHORTENED');
   }
-  const widened = after.watch_all_leads
-    ? !before.watch_all_leads
-    : !before.watch_all_leads && after.selected_lead_ids.some((id) => !before.selected_lead_ids.includes(id));
-  if (widened) kinds.add('SCOPE_WIDENED');
+  const stillExcluded = new Set(after.excluded_lead_ids);
+  if (before.excluded_lead_ids.some((id) => !stillExcluded.has(id))) kinds.add('SCOPE_WIDENED');
   if (kinds.size === 0) return null;
   return kinds.size === 1 ? [...kinds][0]! : 'SETTINGS_CHANGED';
 }

@@ -160,7 +160,6 @@ suite('JOBS_PAUSED on the Spider sweep (real database)', () => {
     const companies = [await spiderOrg(), await spiderOrg()];
     for (const { org, admin, customer } of companies) {
       const api = await fx.signedInAs(admin);
-      expect((await api.put(STATUS, { isActive: true })).status).toBe(200);
       const save = await api.put(SETTINGS, {
         status_limits: {
           NEW: { enabled: true, value: 2, unit: 'HOUR' },
@@ -169,10 +168,9 @@ suite('JOBS_PAUSED on the Spider sweep (real database)', () => {
         },
         channels: { in_app: true, red_frame: true, email: false, text: false },
         recipients: { roles: ['ADMIN'], user_ids: [], lead_owner: false },
-        watch_all_leads: true,
-        selected_lead_ids: [],
       });
       expect(save.status).toBe(200);
+      expect((await api.put(STATUS, { isActive: true })).status).toBe(200);
       const backlog = await fx.addLead(org, customer);
       await db.lead.update({ where: { id: backlog.id }, data: { created_at: new Date(Date.now() - 5 * 3_600_000) } });
     }

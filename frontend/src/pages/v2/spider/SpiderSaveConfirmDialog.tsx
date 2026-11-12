@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, type ReactNode } from 'react';
 import {
   Bell,
   Mail,
@@ -9,39 +9,33 @@ import {
   AlertTriangle,
   CheckCircle2,
   UserCheck,
-  User,
   Shield,
-  Info,
   Layers,
+  Save,
 } from 'lucide-react';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import { Heading } from '@/components/ui/heading';
-import { DialogList } from '@/ui-kit/components/ui/dialogList';
 import { toast } from '@/ui-kit/components/ui/sonner';
 import { cn } from '@/lib/utils';
 import { AI_AGENTS } from '@/lib/ai-center/agents';
 import {
-  type WatcherCustomer,
-  type WatcherLead,
   type SpiderNotificationsConfig,
   type LeadStageConfig,
   type SpiderAssignmentsConfig,
   type SystemRoleItem,
   type AssignmentUserItem,
-  formatCurrentStageName,
-  getSpiderLeadOwnerName,
-  isLeadInAllowedAlertStage,
-  selectedLeadsListOf,
 } from '@/lib/spider/watcher';
 
 /*
  * The review shown when Save is clicked on Spider's Configuration tab, copied from the contractor's
  * sandbox build (`frontend/src/components/ai-center/SpiderConfigPanel.tsx` at 3bb6606,
- * `SpiderSaveConfirmDialog`) as it is (Ran, 15 Oct). Confirming saves the settings only: it never
- * switches Spider on (D1, the page's switch does that).
+ * `SpiderSaveConfirmDialog`) as it is (Ran, 15 Oct), less his old activation note and its button label
+ * (Ran, 10 Nov). Save while Spider is Active opens it with a Save button, and confirming saves
+ * the settings only. Activate opens it too (#3432), with the "When you activate"
+ * box at the top and the button reading Activate; the page then activates.
  *
  * Changes to his code:
  *   - The Spider image is ours (the agent's own still).
@@ -50,10 +44,10 @@ import {
  *     dynamic-viewport cap, the leads list is capped through DialogList (one scroller on a phone),
  *     a popover's cap sits on the popover itself, and a button's or avatar's type size sits on the
  *     text inside it.
- *   - A selected lead that is not in the loaded list is named from the server (`selectedLeadLabels`:
- *     its real lead number and customer) instead of his invented "Customer Account" / "Active Lead";
- *     its stage chip is left out because its stage is not known here. "{N} Leads Selected" counts
- *     the leads the list names, so the count and the list always agree.
+ *   - Monitored Pipeline Targets (#3436): every open lead is watched, new ones included, except the
+ *     excluded ones, so the part always reads as auto-enrolled, with the number of open leads that will
+ *     be watched as a chip (mockup M1's "2,287 leads"). The page no longer downloads every lead, so
+ *     his list of selected leads is gone.
  */
 
 const SPIDER_IMAGE = AI_AGENTS.find((a) => a.id === 'spider')?.image;
@@ -64,15 +58,19 @@ export interface SpiderSaveConfirmDialogProps {
   notifications: SpiderNotificationsConfig;
   assignments: SpiderAssignmentsConfig;
   leadStages: LeadStageConfig[];
-  selectedLeadIds: string[];
-  selectedCustomerIds: string[];
-  storeCustomers: WatcherCustomer[];
+  /** The open leads Spider will watch once this is saved (the server's count, with the changes not saved yet). */
+  watchedLeads?: number;
   availableRoles: SystemRoleItem[];
   availableUsers: AssignmentUserItem[];
-  autoEnrollAllLeads?: boolean;
-  /** Lead number and customer for each selected lead, from the server. */
-  selectedLeadLabels?: Record<string, { lead_number: string; customer_name: string }>;
   onConfirm: () => void;
+  /**
+   * Set when Activate opened the review (#3432): the "When you activate" box, shown at the top, and the
+   * button reads Activate. Unset, this is the review Save opens while Spider is Active: the same title
+   * and four parts, no box, and the button reads Save (Ran, 10 Nov).
+   */
+  activation?: ReactNode;
+  /** The confirm button waits (e.g. until the activation numbers are read). */
+  confirmDisabled?: boolean;
 }
 
 /**
@@ -84,25 +82,13 @@ export function SpiderSaveConfirmDialog({
   notifications,
   assignments,
   leadStages,
-  selectedLeadIds,
-  selectedCustomerIds,
-  storeCustomers,
+  watchedLeads,
   availableRoles,
   availableUsers,
-  autoEnrollAllLeads = true,
-  selectedLeadLabels = {},
   onConfirm,
+  activation,
+  confirmDisabled = false,
 }: SpiderSaveConfirmDialogProps) {
-
-  const selectedCustomerCount = selectedCustomerIds.length;
-
-  // Build the list of selected leads
-  const selectedLeadsList = useMemo(
-    () => selectedLeadsListOf(storeCustomers, selectedLeadIds, selectedLeadLabels),
-    [storeCustomers, selectedLeadIds, selectedLeadLabels],
-  );
-  // The count is the leads the list names, so the two always agree.
-  const selectedLeadCount = selectedLeadsList.length;
 
   // Resolve assigned role details
   const selectedRoleDetails = useMemo(() => {
@@ -146,7 +132,6 @@ export function SpiderSaveConfirmDialog({
     return selectedUserDetails.map((u) => u.name);
   }, [selectedUserDetails]);
 
-  const [isLeadsExpanded, setIsLeadsExpanded] = useState(false);
   const [showValidationFeedback, setShowValidationFeedback] = useState(false);
 
   // 4 Required Validation Checks before activation
@@ -194,7 +179,8 @@ export function SpiderSaveConfirmDialog({
     if (validationErrors.length > 0) {
       e.preventDefault();
       setShowValidationFeedback(true);
-      toast.error('Cannot Activate Spider Agent', {
+      // Save while Active is no activation (Ran, 10 Nov): its own words; Activate's are unchanged.
+      toast.error(activation ? 'Cannot Activate Spider Agent' : 'Cannot Save Spider Settings', {
         description: validationErrors.map((v) => `${v.section}: ${v.prompt}`).join(' | '),
       });
       return;
@@ -234,31 +220,18 @@ export function SpiderSaveConfirmDialog({
 
         {/* Modal Body */}
         <div className="flex-1 overflow-y-auto p-6 space-y-4">
-          {/* Disclaimer / Before You Activate */}
-          <div className="rounded-xl border border-ai-200 bg-ai-50/60 p-4 flex items-start gap-3 shadow-xs">
-            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-ai-50 border border-ai-200 text-ai-600 mt-0.5">
-              <Info className="h-4 w-4" />
-            </div>
-            <div className="space-y-1.5">
-              <p className="text-xs font-bold text-text-primary">Before You Activate</p>
-              <p className="text-xs text-text-secondary leading-relaxed">
-                Please review your selected leads, notification channels, recipients, and alert settings before activating this Spider campaign.
-              </p>
-              <p className="text-xs text-text-secondary leading-relaxed">
-                Once activated, Spider will begin monitoring your selected leads based on the conditions you&apos;ve configured. When a relevant condition is detected, Spider will prepare an alert and send it to the selected recipients through your chosen notification channels.
-              </p>
-            </div>
-          </div>
+          {/* Activate: the "When you activate" box at the top (#3432). Save while Active: no box (Ran, 10 Nov). */}
+          {activation}
 
           {/* Missing Validation Error Callout */}
           {showValidationFeedback && validationErrors.length > 0 && (
             <div className="rounded-xl border border-danger/30 bg-danger/10 p-3.5 text-xs text-danger space-y-1.5 animate-in fade-in-0 duration-150">
               <p className="font-bold flex items-center gap-1.5">
                 <AlertTriangle className="h-4 w-4" />
-                Required Items Missing Before Activation ({validationErrors.length})
+                {activation ? 'Required Items Missing Before Activation' : 'Required Items Missing Before Saving'} ({validationErrors.length})
               </p>
               <p className="text-[11px] opacity-90">
-                At least one item must be selected from every required section before activating:
+                At least one item must be selected from every required section before {activation ? 'activating' : 'saving'}:
               </p>
               <ul className="list-disc pl-4 space-y-0.5 text-[11px]">
                 {validationErrors.map((err, idx) => (
@@ -270,8 +243,6 @@ export function SpiderSaveConfirmDialog({
 
           {/* 1. Monitored Pipeline Targets */}
           <div className="rounded-xl border border-border bg-surface-light p-4 shadow-sm">
-            {/* Wraps on a narrow screen: a three-digit "{n} Leads Selected" moves under the title
-                instead of pushing past the card (his markup was only ever seen with one digit). */}
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="min-w-0 flex-[1_1_16rem]">
                 <div className="flex flex-wrap items-center gap-2 mb-1">
@@ -279,69 +250,24 @@ export function SpiderSaveConfirmDialog({
                   <span className="text-xs font-bold text-text-primary uppercase tracking-wider">
                     Monitored Pipeline Targets
                   </span>
-                  {autoEnrollAllLeads && (
-                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-ai-50 border border-ai-200 text-ai-600">
-                      Auto-Enrolled
-                    </span>
-                  )}
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-ai-50 border border-ai-200 text-ai-600">
+                    Auto-Enrolled
+                  </span>
                 </div>
                 <p className="text-xs text-text-secondary">
-                  {autoEnrollAllLeads
-                    ? 'All incoming and active pipeline leads are automatically enrolled in multi-stage tracking.'
-                    : `Monitoring ${selectedLeadCount} lead${selectedLeadCount === 1 ? '' : 's'} across ${selectedCustomerCount} customer account${selectedCustomerCount === 1 ? '' : 's'}.`}
+                  All incoming and active pipeline leads are automatically enrolled in multi-stage tracking.
                 </p>
               </div>
 
-              {selectedLeadsList.length > 0 && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setIsLeadsExpanded((prev) => !prev)}
-                  className="h-auto gap-1.5 px-3 py-1 cursor-pointer active:scale-95 transition-all select-none shrink-0"
-                  title={isLeadsExpanded ? "Click to collapse monitored leads" : "Click to view monitored leads"}
+              {watchedLeads !== undefined && (
+                <span
+                  data-spider-review-watched
+                  className="shrink-0 rounded-full border border-ai-200 bg-ai-50 px-3 py-1 text-xs font-bold text-ai-strong"
                 >
-                  <span className="text-xs font-bold">{selectedLeadCount} Leads Selected</span>
-                  <ChevronDown
-                    className={cn(
-                      "h-3.5 w-3.5 transition-transform duration-200",
-                      isLeadsExpanded ? "rotate-180" : ""
-                    )}
-                  />
-                </Button>
+                  {watchedLeads.toLocaleString()} {watchedLeads === 1 ? 'lead' : 'leads'}
+                </span>
               )}
             </div>
-
-            {isLeadsExpanded && selectedLeadsList.length > 0 && (
-              <DialogList cap="max-h-72 overflow-y-auto" className="mt-3.5 pt-3.5 border-t border-border/70 space-y-1.5 pr-1 animate-in fade-in-0 duration-150">
-                {selectedLeadsList.map(({ customer, lead }) => {
-                  const stageName = lead.stageLabel || lead.stageId ? formatCurrentStageName(lead.stageLabel || lead.stageId) : null;
-                  const ownerName = lead.assignedToName || getSpiderLeadOwnerName(lead) || 'Unassigned';
-                  return (
-                    <div
-                      key={lead.id}
-                      className="flex items-center justify-between gap-2.5 p-2.5 rounded-xl border border-border/60 bg-background-light/40 text-xs"
-                    >
-                      <div className="min-w-0 flex-1 flex items-center gap-2 flex-wrap">
-                        <span className="font-bold text-text-primary truncate max-w-[140px]">{customer.name}</span>
-                        <span className="rounded bg-ai-50 border border-ai-200 px-1.5 py-0.5 text-[10px] font-mono font-bold text-ai-600">
-                          {lead.leadNumber || lead.id}
-                        </span>
-                        {stageName && (
-                          <span className="rounded bg-surface-light border border-border px-1.5 py-0.5 text-[10px] font-semibold text-text-secondary">
-                            {stageName}
-                          </span>
-                        )}
-                      </div>
-                      <span className="shrink-0 inline-flex items-center gap-1 rounded bg-surface-light border border-border px-2 py-0.5 text-[11px] font-medium text-text-secondary">
-                        <User className="h-3 w-3 text-text-soft" />
-                        {ownerName}
-                      </span>
-                    </div>
-                  );
-                })}
-              </DialogList>
-            )}
           </div>
 
           {/* 2. Notification Channels */}
@@ -528,11 +454,12 @@ export function SpiderSaveConfirmDialog({
             variant="solid"
             tone="ai"
             onClick={handleActivate}
+            disabled={confirmDisabled}
             className="gap-1.5 font-semibold px-6"
-            title="Activate Spider Agent"
           >
-            <CheckCircle2 className="h-4 w-4" />
-            Active
+            {/* Activate opens it with the box; Save (while Active) without, and the button says Save (Ran, 10 Nov). */}
+            {activation ? <CheckCircle2 className="h-4 w-4" /> : <Save className="h-4 w-4" />}
+            {activation ? 'Activate' : 'Save'}
           </Button>
         </div>
       </DialogContent>

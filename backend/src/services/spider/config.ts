@@ -160,8 +160,6 @@ export interface SpiderSettingsView {
   status_limits: Record<SpiderStatus, SpiderStatusLimit>;
   channels: SpiderChannels;
   recipients: SpiderRecipients;
-  watch_all_leads: boolean;
-  selected_lead_ids: string[];
   updated_at: string | null;
 }
 
@@ -213,8 +211,27 @@ const statusLimitsSchema = z
   // The retired stages are accepted from an older screen and dropped here, so they are never stored.
   .transform((limits) => Object.fromEntries(Object.entries(limits).filter(([key]) => isWatchedStatus(key))));
 
-/** Why a settings save is refused while Spider is off. Shown to the Admin as it is. */
-export const SPIDER_OFF_SETTINGS_MESSAGE = 'Spider is off. Turn it on to change its settings.';
+/** Why Activate is refused: no status has a time limit switched on (#3431). Shown to the Admin as it is. */
+export const SPIDER_ACTIVATE_NEEDS_LIMIT_MESSAGE = 'Switch on a time limit for at least one status before activating Spider.';
+
+/**
+ * Why a save is refused when Spider was activated or deactivated while it was being saved: the save stored nothing,
+ * because whether it records a starting trigger depends on which of the two it was. Shown to the Admin as it is.
+ */
+export const SPIDER_SAVE_RACED_MESSAGE = 'Spider was activated or deactivated while you were saving. Save again.';
+
+/**
+ * Why a settings save from a screen older than #3436 is refused (it still sends its lead selection, which no longer
+ * applies): nothing is stored, so that screen never says "Saved" for lead choices that were not applied. Shown as it is.
+ */
+export const SPIDER_STALE_PAGE_MESSAGE = 'This page is out of date. Reload it and save again.';
+
+/** Why Activate is refused when the settings changed while it was checking them (#3431). Shown as it is. */
+export const SPIDER_ACTIVATE_RACED_MESSAGE = "Spider's settings changed while you were activating. Check them and activate again.";
+
+/** A failed Activate or Deactivate (PUT /spider/status 500), named by what was tried (Ran, 10 Nov). Shown as it is. */
+export const SPIDER_ACTIVATE_FAILED_MESSAGE = 'Could not activate Spider. Try again later.';
+export const SPIDER_DEACTIVATE_FAILED_MESSAGE = 'Could not deactivate Spider. Try again later.';
 
 export const updateSpiderSettingsSchema = z
   .object({
@@ -232,12 +249,18 @@ export const updateSpiderSettingsSchema = z
         lead_owner: z.boolean(),
       })
       .strict(),
-    watch_all_leads: z.boolean(),
-    selected_lead_ids: z.array(z.string().uuid()).max(5000),
+    // Since #3436 only a screen from before it sends these (the old "Auto-select new leads" and selected leads; the
+    // frontend and backend deploy separately). The exclusion list changes only through PATCH /spider/exclusions: a
+    // settings save once rebuilt it from these, which refused a company past 5,000 leads, excluded every lead created
+    // after the page loaded, and could undo an exclusion saved a moment earlier. They pass validation so the save can
+    // answer SPIDER_STALE_PAGE_MESSAGE (409, nothing stored) rather than a field error the old screen cannot explain,
+    // and never "Saved" for lead choices that were not applied.
+    watch_all_leads: z.boolean().optional(),
+    selected_lead_ids: z.array(z.string().uuid()).max(5000).optional(),
   })
   .strict()
-  // The contractor's three required checks (Ran, 15 Oct, D3). Spider may still be switched ON with
-  // nothing set up (the switch is separate, 14 Oct); it then watches nothing until a save passes these.
+  // The contractor's three required checks (Ran, 15 Oct, D3). Activate is refused until a save has passed them
+  // (#3431: at least one status with a time limit).
   .superRefine((b, ctx) => {
     if (!Object.values(b.channels).some(Boolean)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['channels'], message: SPIDER_REQUIRED_MESSAGES.channel });
@@ -257,8 +280,16 @@ export function hasRecipient(r: { roles: readonly unknown[]; user_ids: readonly 
 
 export type UpdateSpiderSettingsBody = z.infer<typeof updateSpiderSettingsSchema>;
 
-/** The AI Agentic Farm's on/off switch: only the one flag, nothing else in the settings. */
-export const setSpiderActiveSchema = z.object({ isActive: z.boolean() }).strict();
+/**
+ * Activate or Deactivate (#3431): the one flag, plus, for Activate, what to do about the leads already past their limit.
+ * `send` records the SWITCHED_ON starting trigger, so they arrive as one starting summary per person. `skip` records no
+ * trigger and marks the backlog skipped, so only leads that pass their limit from now on are alerted. Left out, it reads
+ * as 'send' (today's behaviour), so a screen from before the review keeps working. It is ignored on Deactivate. Nothing
+ * else in the settings is taken here.
+ */
+export const setSpiderActiveSchema = z
+  .object({ isActive: z.boolean(), startingSummary: z.enum(['send', 'skip']).optional() })
+  .strict();
 
 export type SetSpiderActiveBody = z.infer<typeof setSpiderActiveSchema>;
 
@@ -285,8 +316,8 @@ export function readStatusLimits(raw: Prisma.JsonValue | undefined): Record<Spid
 
 /**
  * Whether a company has set Spider up: its stored row watches at least one status with a time
- * limit. Independent of the switch: Spider may be on before it is set up, and watches nothing until
- * then. No row is never set up.
+ * limit. Activate is refused until it is (#3431). A company activated before that rule may still be
+ * Active and not set up; it watches nothing until then. No row is never set up.
  */
 export function isSpiderSetUp(row: { status_limits: Prisma.JsonValue } | null | undefined): boolean {
   if (!row) return false;
@@ -317,8 +348,6 @@ export interface SpiderSettingsRow {
   status_limits: Prisma.JsonValue;
   channels: Prisma.JsonValue;
   recipients: Prisma.JsonValue;
-  watch_all_leads: boolean;
-  selected_lead_ids: string[];
   updated_at: Date;
 }
 
@@ -329,8 +358,6 @@ export function settingsView(row: SpiderSettingsRow | null): SpiderSettingsView 
     status_limits: readStatusLimits(row?.status_limits),
     channels: readChannels(row?.channels),
     recipients: readRecipients(row?.recipients),
-    watch_all_leads: row?.watch_all_leads ?? true,
-    selected_lead_ids: row?.selected_lead_ids ?? [],
     updated_at: row?.updated_at?.toISOString() ?? null,
   };
 }

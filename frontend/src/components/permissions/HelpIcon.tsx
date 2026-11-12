@@ -7,8 +7,9 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/ui-kit/components/ui/
 /**
  * The help icon beside a switch. It shows the catalog's text for that switch, as written: hover opens it with a
  * mouse, a tap opens it on a touch screen (a hover tooltip never shows there), and Enter opens it from the keyboard.
+ * Its accessible name is "About {label}", unless a screen's approved copy gives the whole name (`ariaLabel`).
  */
-export function HelpIcon({ label, text }: { label: string; text: string }) {
+export function HelpIcon({ label, text, ariaLabel }: { label: string; text: string; ariaLabel?: string }) {
   const [open, setOpen] = useState(false);
   const pointer = useRef<string>('mouse');
 
@@ -19,7 +20,7 @@ export function HelpIcon({ label, text }: { label: string; text: string }) {
           type="button"
           variant="ghost"
           size="icon-sm"
-          aria-label={`About ${label}`}
+          aria-label={ariaLabel ?? `About ${label}`}
           className="size-6 shrink-0 rounded-full"
           onPointerDown={(e) => {
             pointer.current = e.pointerType;
