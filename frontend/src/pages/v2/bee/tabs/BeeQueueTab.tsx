@@ -461,33 +461,13 @@ export const BeeQueueTab: React.FC = () => {
         const {
           timeStr,
           dateStr,
-          isDefaultTz,
-          userTzAbbr,
-          customerTimezone,
-          customerTimeStr,
         } = formatQueueScheduledTime(item);
 
         return (
           <div className="flex flex-col gap-0.5 whitespace-nowrap">
-            <div className="flex items-center gap-1.5">
-              <span className="font-semibold text-text-primary text-xs">
-                {dateStr.split(',')[0]}, {timeStr}
-              </span>
-              {userTzAbbr && (
-                <span className="text-[10px] text-text-secondary font-medium">
-                  {userTzAbbr}
-                </span>
-              )}
-            </div>
-
-            {!isDefaultTz && customerTimeStr && (
-              <span
-                className="text-[10px] text-text-secondary truncate max-w-[170px]"
-                title={`Customer local time: ${customerTimeStr} (${customerTimezone})`}
-              >
-                Local: {customerTimeStr}
-              </span>
-            )}
+            <span className="font-semibold text-text-primary text-xs">
+              {dateStr.split(',')[0]}, {timeStr}
+            </span>
 
             {item.is_rescheduled && (
               <span
