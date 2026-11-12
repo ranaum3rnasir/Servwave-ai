@@ -50,10 +50,19 @@ describe('the embedded look', () => {
     expect(appearance().variables.borderRadius).toBe('12px');
   });
 
-  it('falls back to the kit face and an 8px radius where no shell is mounted', () => {
-    const v = appearance().variables;
-    expect(v.fontFamily).toBe('Figtree, system-ui, sans-serif');
-    expect(v.borderRadius).toBe('8px');
+  it('falls back to the kit face and an 8px radius where the frame declares no face and no radius', () => {
+    // Stated here, not left to the fake browser: what it reports for an element with no font-family differs by
+    // version (an empty string, or the CSS placeholder "depends on user agent"), and neither is what a browser reports.
+    const style = vi
+      .spyOn(window, 'getComputedStyle')
+      .mockReturnValue({ fontFamily: '', getPropertyValue: () => '' } as unknown as CSSStyleDeclaration);
+    try {
+      const v = appearance().variables;
+      expect(v.fontFamily).toBe('Figtree, system-ui, sans-serif');
+      expect(v.borderRadius).toBe('8px');
+    } finally {
+      style.mockRestore();
+    }
   });
 
   it('sets the badge, button and table-row options to match the kit tables', () => {

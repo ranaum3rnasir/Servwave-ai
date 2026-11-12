@@ -1,0 +1,4 @@
+{
+  "maxTestFiles": 1570,
+  "note": "The number of frontend test files. It moves with the files in the same diff: add k test files, raise it by k; delete, lower it (docs/ci.md). It is bookkeeping, not a budget, so it lives outside test-budget.json and changing it does not force a full Frontend run."
+}

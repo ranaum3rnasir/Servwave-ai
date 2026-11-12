@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import {
   frontendReport, relevantLines, parseRunLines, classify, slowestFilesFromLines, measuredFromLines, budgetRows, actionFor,
   ERROR_FALLBACK_REASONS, FALLBACK_MARKER, retriedMarker, FRONTEND_JOB_NAME,
+  FULL_RUN_THRESHOLD, FULL_RUN_MARKER, NOT_COUNTED_REASONS, decisionOf, fullRunShare, fullRunsOverLine,
 } from './frontend.mjs';
 
 const NOW = '2026-11-08T12:00:00Z';
@@ -384,4 +385,166 @@ test('M1d: at most 5 flaky-test tickets per run (the most-retried first), the ov
   const { section, actions } = report(runs);
   assert.equal(actions.length, 5);
   assert.match(section.markdown, /3 more tests are over the line and got no ticket this run \(at most 5 tickets per run, the most-retried first\)/);
+});
+
+// ---- #3404: the share of full runs among pull request runs into staging ------------------------------------------------------------
+
+const PREVIOUS_WEEK = '2026-10-30T12:00:00Z'; // NOW is 2026-11-08T12:00Z: this is in the 7 days before the last 7
+const onFull = (reason) => [`TEST-CI-VERDICT result=passed code=0 reasons=none mode=full selection=${reason} files=10/10 passed=100 failed=0 retried=0`];
+const onSelected = (reason = 'changed-files') => [`TEST-CI-VERDICT result=passed code=0 reasons=none mode=selected-12-of-1597 selection=${reason} files=12/12 passed=9 failed=0 retried=0`];
+/** A pull request run into staging. */
+const pr = (lines, over = {}) => run({ event: 'pull_request', headBranch: 'feature/x', lines, ...over });
+const many = (n, make) => Array.from({ length: n }, make);
+/** `full` deliberate full runs (a lockfile change) among `total` pull request runs, selection on. */
+const week = (full, total, over = {}) => [...many(full, () => pr(onFull('lockfile'), over)), ...many(total - full, () => pr(onSelected(), over))];
+const fullRunActions = (r) => r.actions.filter((a) => a.cause === 'full-run-share');
+
+test('#3404: the report shows runs, full runs, their share and a row per reason, this week beside the previous one', () => {
+  const runs = [
+    ...many(3, () => pr(onFull('workflows'))), ...many(2, () => pr(onFull('lockfile'))), ...many(15, () => pr(onSelected())),
+    ...many(4, () => pr(onFull('lockfile'), { doneAt: PREVIOUS_WEEK })), ...many(6, () => pr(onSelected('no-frontend-change'), { doneAt: PREVIOUS_WEEK })),
+  ];
+  const { section, actions } = report(runs);
+  assert.match(section.markdown, /#### Share of full runs on pull requests into staging/);
+  assert.match(section.markdown, /\| Pull request runs into staging \| 20 \| 10 \|/);
+  assert.match(section.markdown, /\| Full runs \| 5 of 20 \(25%\) \| 4 of 10 \(40%\) \|/);
+  assert.match(section.markdown, /\| Selected runs \| 15 \| 6 \|/);
+  assert.match(section.markdown, /\| workflows \| 3 \| 0 \|\n\| lockfile \| 2 \| 4 \|/); // the most frequent this week first
+  assert.match(section.markdown, /Deliberate full runs \(full runs that are not error-type fallbacks\): \*\*5 of 20 \(25%\)\*\*\. Line: 35%, not over\./);
+  assert.deepEqual(fullRunActions({ actions }), []); // the previous week was over the line; only this week is judged
+});
+
+test('#3404: in shadow mode the figures come from what the selector would have done, and the section says so', () => {
+  const runs = [...many(2, () => pr(shadowLines('lockfile'))), ...many(8, () => pr(shadowLines('changed-files', 'selected-4-of-1597')))];
+  const { section } = report(runs);
+  assert.match(section.markdown, /Selection is in shadow mode: every run ran every test\. The figures below are what the selector would have done\./);
+  assert.match(section.markdown, /\| Full runs \| 2 of 10 \(20%\) \| none counted \|/);
+  assert.match(section.markdown, /\| Selected runs \| 8 \| 0 \|/);
+  assert.match(section.markdown, /\| lockfile \| 2 \| 0 \|/);
+});
+
+test('#3404: a week that switched from shadow to on says how many runs were shadow', () => {
+  const { section } = report([pr(shadowLines('lockfile')), pr(onSelected()), pr(onSelected())]);
+  assert.match(section.markdown, /Some runs were in shadow mode \(1 this week, 0 the week before\)/);
+  assert.match(section.markdown, /\| Full runs \| 1 of 3 \(33\.3%\) \|/);
+});
+
+test('#3404: the line is one named number: at it nothing is written, under it nothing, over it one ticket', () => {
+  assert.equal(FULL_RUN_THRESHOLD, 0.35);
+  assert.deepEqual(fullRunActions(report(week(6, 20))), []); // 30%: under
+  assert.deepEqual(fullRunActions(report(week(7, 20))), []); // 35%: the line itself is within it
+  const over = fullRunActions(report(week(8, 20))); // 40%: over
+  assert.equal(over.length, 1);
+  assert.equal(over[0].kind, 'open');
+  assert.match(over[0].title, /more than 35% of this week's pull request runs were full Frontend runs/);
+  assert.deepEqual(over[0].labels, ['priority:medium', 'module:general', 'ci-budget']);
+  assert.match(over[0].body, /\*\*8 of 20 \(40%\)\*\* of the pull request runs into staging were deliberate full runs\. The line is 35%\./);
+  assert.match(over[0].body, /\| lockfile \| 8 \| 0 \|/);
+  assert.ok(over[0].body.trimEnd().endsWith(FULL_RUN_MARKER));
+  assert.match(report(week(8, 20)).section.markdown, /Line: 35%, over\./);
+});
+
+test('#3404: exactly one open ticket for this cause: a second breach comments on it, and only on a ticket that ends with the marker', () => {
+  const open = [{ number: 41, body: `earlier report\n${FULL_RUN_MARKER}\n` }];
+  const second = fullRunActions(report(week(8, 20), { openTickets: open }));
+  assert.equal(second.length, 1);
+  assert.deepEqual([second[0].kind, second[0].number], ['comment', 41]);
+  const forged = [{ number: 7, body: `text ${FULL_RUN_MARKER} more text` }, { number: 8, pull_request: {}, body: `x\n${FULL_RUN_MARKER}` }];
+  assert.equal(fullRunActions(report(week(8, 20), { openTickets: forged }))[0].kind, 'open');
+  const other = [{ number: 9, body: `report\n${FALLBACK_MARKER}\n` }]; // the error-fallback ticket is another cause
+  assert.equal(fullRunActions(report(week(8, 20), { openTickets: other }))[0].kind, 'open');
+});
+
+test('#3404: in shadow mode a breach is worded as what would have been', () => {
+  const runs = [...many(5, () => pr(shadowLines('workflows'))), ...many(5, () => pr(shadowLines('changed-files', 'selected-4-of-1597')))];
+  assert.match(fullRunActions(report(runs))[0].body, /\*\*5 of 10 \(50%\)\*\* of the pull request runs into staging would have been deliberate full runs/);
+});
+
+test('#3404: promotions into main, pushes, the nightly run, manual runs and hosted shards are not counted', () => {
+  const always = [
+    ...many(10, () => pr(onFull('promotion-into-main'))),
+    ...many(10, () => pr(onFull('base-not-staging'))),
+    ...many(10, () => run({ event: 'push', headBranch: 'staging', lines: onFull('not-pull-request') })),
+    ...many(10, () => run({ event: 'push', headBranch: 'main', lines: onFull('lockfile') })), // a push is never counted, whatever it prints
+    ...many(10, () => run({ event: 'schedule', headBranch: 'main', lines: onFull('nightly') })),
+    ...many(10, () => run({ event: 'workflow_dispatch', headBranch: 'staging', lines: onFull('manual') })),
+    ...many(10, () => pr(['TEST-CI-VERDICT result=passed code=0 reasons=none mode=shard-1-of-6 selection=hosted-shard files=10/10 passed=100 failed=0 retried=0'])),
+  ];
+  const { section, actions } = report([...always, ...week(1, 10)]);
+  assert.match(section.markdown, /\| Pull request runs into staging \| 10 \| 0 \|/);
+  assert.match(section.markdown, /\| Full runs \| 1 of 10 \(10%\) \| none counted \|/);
+  assert.deepEqual(fullRunActions({ actions }), []);
+  for (const reason of ['promotion-into-main', 'base-not-staging', 'not-pull-request', 'nightly', 'manual', 'hosted-shard']) assert.ok(NOT_COUNTED_REASONS.includes(reason), reason);
+});
+
+test('#3404: an error-type fallback is a full run in the table but not a deliberate one: it has its own line and ticket', () => {
+  const runs = [...many(5, () => pr(onFull('selector-threw'))), ...many(5, () => pr(onSelected()))];
+  const { section, actions } = report(runs);
+  assert.match(section.markdown, /\| Full runs \| 5 of 10 \(50%\) \|/);
+  assert.match(section.markdown, /\| selector-threw \(error-type\) \| 5 \| 0 \|/);
+  assert.match(section.markdown, /Deliberate full runs[^\n]*\*\*0 of 10 \(0%\)\*\*\. Line: 35%, not over\./);
+  assert.deepEqual(fullRunActions({ actions }), []);
+  assert.equal(actions.filter((a) => a.cause === 'error-fallbacks').length, 1);
+});
+
+test('#3404: with selection off no run prints a decision, so nothing is counted and no ticket is asked for', () => {
+  const { section, actions } = report(many(30, () => pr([verdict()])));
+  assert.match(section.markdown, /Test selection is off, so no run printed a decision to count: every run was full\./);
+  assert.deepEqual(actions, []);
+});
+
+test('#3404: a week with no pull request run into staging at all says so, and is never over the line', () => {
+  const { section, actions } = report([run({ lines: onFull('not-pull-request') })]);
+  assert.match(section.markdown, /No pull request run into staging printed a selection decision in the last 14 days\./);
+  assert.deepEqual(fullRunActions({ actions }), []);
+  assert.equal(fullRunsOverLine({ runs: 0, deliberate: 0 }), false);
+});
+
+test('#3404: a run with no verdict, an unreadable log or a shadow run with no shadow line is not counted', () => {
+  const runs = [pr([]), pr(null), pr([verdict('selection=shadow ')]), ...week(1, 4)];
+  assert.match(report(runs).section.markdown, /\| Pull request runs into staging \| 4 \| 0 \|/);
+});
+
+test('#3404: text taken from a log is escaped in the table and in the ticket, and the rows are capped', () => {
+  const evil = '@team#9<!--x-->';
+  const runs = [...many(6, () => pr(onFull(evil))), ...many(4, () => pr(onSelected()))];
+  const { section, actions } = report(runs);
+  assert.match(section.markdown, /\| `@team#9<! --x-- >` \| 6 \| 0 \|/);
+  assert.doesNotMatch(section.markdown, /\| @team#9/);
+  const ticket = fullRunActions({ actions })[0];
+  assert.match(ticket.body, /\| `@team#9<! --x-- >` \| 6 \| 0 \|/);
+  assert.doesNotMatch(ticket.body, /<!--x-->/);
+  const flood = many(40, (_, i) => pr(onFull(`made-up-${String(i).padStart(2, '0')}`)));
+  const flooded = report(flood);
+  assert.equal((flooded.section.markdown.match(/\| made-up-\d\d \| 1 \| 0 \|/g) ?? []).length, 15);
+  assert.match(flooded.section.markdown, /and 25 more reasons not listed\./);
+  assert.match(fullRunActions(flooded)[0].body, /and 25 more reasons not listed\./);
+});
+
+test('#3404: fullRunShare is a pure tally of one week: at, under and over the line', () => {
+  const end = Date.parse(NOW);
+  const tally = (full, total) => fullRunShare(week(full, total), end);
+  assert.deepEqual([tally(7, 20).runs, tally(7, 20).full, tally(7, 20).selected, tally(7, 20).deliberate], [20, 7, 13, 7]);
+  assert.equal(fullRunsOverLine(tally(6, 20)), false);
+  assert.equal(fullRunsOverLine(tally(7, 20)), false);
+  assert.equal(fullRunsOverLine(tally(8, 20)), true);
+  assert.equal(fullRunsOverLine(tally(1, 1)), true); // one run, full: over, the share is of the runs there were
+  assert.equal(fullRunShare(week(8, 20), end - 7 * 86_400_000).runs, 0); // the same runs are not in the week before
+  assert.equal(fullRunShare(week(8, 20, { doneAt: PREVIOUS_WEEK }), end - 7 * 86_400_000).full, 8);
+});
+
+test('#3404: decisionOf tells a counted decision from a run that is not a pull request into staging', () => {
+  const parsed = (lines) => parseRunLines(lines);
+  assert.deepEqual(decisionOf({ event: 'pull_request' }, parsed(onFull('lockfile'))), { decided: 'full', reason: 'lockfile', source: 'on' });
+  assert.deepEqual(decisionOf({ event: 'pull_request' }, parsed(onSelected('no-frontend-change'))), { decided: 'selected', reason: 'no-frontend-change', source: 'on' });
+  assert.deepEqual(decisionOf({ event: 'pull_request' }, parsed(shadowLines('changed-files', 'selected-3-of-9'))), { decided: 'selected', reason: 'changed-files', source: 'shadow' });
+  assert.deepEqual(decisionOf({ event: 'push' }, parsed(onFull('lockfile'))), { skipped: 'not-a-pull-request' });
+  assert.deepEqual(decisionOf({ event: 'pull_request' }, parsed(onFull('promotion-into-main'))), { skipped: 'always-full' });
+  assert.deepEqual(decisionOf({ event: 'pull_request' }, parsed([verdict()])), { skipped: 'selection-off' });
+  assert.deepEqual(decisionOf({ event: 'pull_request' }, parsed([verdict('selection=shadow ')])), { skipped: 'no-decision' });
+});
+
+test('#3404: every reason this report leaves out of the share is a code the selector really prints', () => {
+  const source = readFileSync(fileURLToPath(new URL('../../frontend/scripts/test-select-lib.mjs', import.meta.url)), 'utf8');
+  for (const code of NOT_COUNTED_REASONS) assert.match(source, new RegExp(`'${code}'`), `${code} is not a reason the selector prints`);
 });

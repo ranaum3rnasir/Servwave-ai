@@ -1,8 +1,7 @@
 {
-  "maxCpuSeconds": 4500,
+  "maxCpuSeconds": 3600,
   "cpuEnforcement": "warn",
-  "cpuEnforcementNote": "CPU over budget only warns until a 6-worker Mac baseline is recorded; then change this to \"fail\" (one-line diff, Ran reviews).",
+  "cpuEnforcementNote": "CPU over budget only warns (Ran's decision, 2026-11-10: the figure reads about 16% higher on a pull request run than on the idle machine). Changing this to \"fail\" is a one-line diff Ran reviews. maxCpuSeconds is lowered after every gain (docs/ci.md); a raise is reviewed.",
   "maxMinutes": 10.0,
-  "workers": 6,
-  "maxTestFiles": 1559
+  "workers": 6
 }

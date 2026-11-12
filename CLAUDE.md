@@ -121,9 +121,10 @@ server. A brake in `npm run test:ci` now fails the check on growth (`docs/ci.md`
 7. **The budget.** The check judges what your change does, not totals. A test over 2 s, or a file over 10 s of
    body time, in a file you added or changed fails. A page fails its ceiling in `frontend/test-page-ceilings.json`
    only if you add test files mounting it and it is then over (a new page starts at 3). `maxTestFiles` in
-   `frontend/test-budget.json` moves with your file count in the same diff: add k test files, raise it by k;
-   delete, lower it. That is bookkeeping, not a raise. What Ran reviews are the raises: CPU-seconds, minutes, a
-   page ceiling, the over-the-line list. Do not raise those to get green. (CPU over budget only warns while
+   `frontend/test-file-count.json` moves with your file count in the same diff: add k test files, raise it by k;
+   delete, lower it. That is bookkeeping, not a raise, and it lives in its own file so that moving it does not
+   force a full Frontend run. What Ran reviews are the raises in `frontend/test-budget.json` (CPU-seconds,
+   minutes), a page ceiling, the over-the-line list. Do not raise those to get green. (CPU over budget only warns while
    `cpuEnforcement` is `"warn"`.)
 
 A builder's report carries one line: `tests added to: <file>` or `new file because: <reason>`; the

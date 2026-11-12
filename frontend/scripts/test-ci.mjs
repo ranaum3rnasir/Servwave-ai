@@ -32,7 +32,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   BAIL_ON_PULL_REQUEST, DEFAULT_FILE_MARGIN_MS, DEFAULT_IDLE_MS, DEFAULT_TEST_TIMEOUT_MS, EXIT_CODES,
-  USAGE, buildVitestArgs, checkWatchdog, emptySetVerdict, evaluateSafely, expectedFromTracked, failedSoFar, parseEvents,
+  USAGE, buildVitestArgs, checkWatchdog, compileCache, emptySetVerdict, evaluateSafely, expectedFromTracked, failedSoFar, parseEvents,
   parseOptions, parseShard, renderSummary, resolveWorkers, retriedLines, shardSlice, verdictLine, wrapperConfigSource,
 } from './test-ci-lib.mjs';
 import { selectForRun } from './test-select-io.mjs';
@@ -45,6 +45,8 @@ import {
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPORTER = join(HERE, 'test-ci-reporter.mjs');
+// The compile-cache variables every test tool process of this command gets (set once in main, read by the lone re-runs too).
+let compileCacheVars = {};
 
 function printVerdict(verdict, extra) {
   const line = verdictLine(verdict, extra);
@@ -96,7 +98,7 @@ async function rerunAlone({ file, frontend, wrapper, workers, parentEventFile, n
     cwd: frontend,
     stdio: 'ignore',
     detached: true,
-    env: { ...process.env, VITEST_MAX_WORKERS: '1', TEST_CI_EVENT_FILE: events, TEST_CI_PARENT_PID: String(process.pid), TEST_CI_BRAKE_RERUN: '1' },
+    env: { ...process.env, ...compileCacheVars, VITEST_MAX_WORKERS: '1', TEST_CI_EVENT_FILE: events, TEST_CI_PARENT_PID: String(process.pid), TEST_CI_BRAKE_RERUN: '1' },
   });
   const limit = setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ } }, 600_000);
   await new Promise((res) => child.on('exit', res));
@@ -159,7 +161,7 @@ async function applyBrake({ opts, frontend: runRoot, events, mode, verdict, work
   const result = reasons.length ? 'failed' : notJudged ? 'not-judged' : 'passed';
   const notJudgedParts = [];
   if (pages.status === 'not-judged') notJudgedParts.push(`pages=not-judged (${pages.reason})`);
-  if (fileCount?.status === 'not-judged') notJudgedParts.push(`files=not-judged (${NO_BASE_REASON})`);
+  if (fileCount?.status === 'not-judged') notJudgedParts.push(`files=not-judged (${fileCount.reason ?? NO_BASE_REASON})`);
   if (time.skipped) notJudgedParts.push(`time=not-judged (${time.reason})`);
   const line = brakeLine({ result, reasons: notJudged ? ['main-run-red'] : reasons, notJudged: notJudgedParts });
   const markdown = renderBrakeSummary({ time, lists, pages, budget, budgetFigures: mode === 'full' ? budgetTable({ budget: files.budget, measured }) : '', slowest, line, cpuWarning, fileCount });
@@ -258,8 +260,11 @@ async function main() {
     console.error(`test-ci: ${err.message}`);
     process.exit(EXIT_CODES.incomplete);
   }
+  const cache = compileCache(process.env, frontend);
+  compileCacheVars = cache.vars;
   const preflight = {
     workers: `${workers.workers} (${workers.why})`,
+    'compile cache': cache.why,
     'load (1 min)': os.loadavg()[0].toFixed(2),
     'swap in use': swapInUse(),
     'other test runs seen': otherTestRuns(),
@@ -285,7 +290,7 @@ async function main() {
     cwd: frontend,
     stdio: 'inherit',
     detached: true, // its own process group, so the watchdog can kill the workers too
-    env: { ...process.env, VITEST_MAX_WORKERS: String(workers.workers), TEST_CI_EVENT_FILE: eventFile, TEST_CI_PARENT_PID: String(process.pid) },
+    env: { ...process.env, ...compileCacheVars, VITEST_MAX_WORKERS: String(workers.workers), TEST_CI_EVENT_FILE: eventFile, TEST_CI_PARENT_PID: String(process.pid) },
   });
   console.log(`test-ci: test tool pid ${child.pid}`);
 

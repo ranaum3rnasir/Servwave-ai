@@ -11,6 +11,7 @@ import {
   budgetTable,
   buildBaseline,
   checkBudget,
+  COUNT_IN_OLD_PLACE_REASON,
   checkFileCount,
   countTestFiles,
   cpuSecondsOf,
@@ -227,7 +228,7 @@ describe('test-file count on the change itself', () => {
   it('a file added without raising the number, or the number raised without a file, fails and names the numbers', () => {
     const more = checkFileCount({ files: 11, maxTestFiles: 10, base: { files: 10, maxTestFiles: 10 } });
     expect(more.problems).toEqual(['file-count-not-in-budget']);
-    expect(more.line).toBe('this change moves the test files by +1 (10 -> 11) but maxTestFiles by +0 (10 -> 10). Move maxTestFiles by +1 in the same diff.');
+    expect(more.line).toBe('this change moves the test files by +1 (10 -> 11) but maxTestFiles by +0 (10 -> 10). Move maxTestFiles in test-file-count.json by +1 in the same diff.');
     const fewer = checkFileCount({ files: 9, maxTestFiles: 10, base: { files: 10, maxTestFiles: 10 } });
     expect(fewer.line).toContain('by -1 (10 -> 9) but maxTestFiles by +0');
     expect(checkFileCount({ files: 10, maxTestFiles: 12, base: { files: 10, maxTestFiles: 10 } }).status).toBe('failed');
@@ -238,6 +239,13 @@ describe('test-file count on the change itself', () => {
       expect(r).toMatchObject({ status: 'not-judged', judged: 'none', problems: [], line: null });
       expect(r.notes.join()).toContain('not judged (no base: shallow checkout or no remote)');
     }
+  });
+  it('a base that still keeps the count in the budget file (#3401): not judged, and the reason names the old place', () => {
+    const r = checkFileCount({ files: 11, maxTestFiles: 10, base: null, reason: COUNT_IN_OLD_PLACE_REASON });
+    expect(r).toMatchObject({ status: 'not-judged', judged: 'none', problems: [], line: null, reason: COUNT_IN_OLD_PLACE_REASON });
+    expect(r.notes).toEqual([`test files: not judged (${COUNT_IN_OLD_PLACE_REASON})`]);
+    expect(COUNT_IN_OLD_PLACE_REASON).toContain('test-budget.json');
+    expect(COUNT_IN_OLD_PLACE_REASON).toContain('test-file-count.json');
   });
 });
 

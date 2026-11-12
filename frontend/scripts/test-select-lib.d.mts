@@ -1,5 +1,6 @@
 export type Change = { status: string; path: string; oldPath?: string };
-export type Lists = { alwaysRun: string[]; triggers: { code: string; patterns: string[] }[]; knownAreas: string[] };
+export type Trigger = { code: string; patterns: string[]; except?: string[] };
+export type Lists = { alwaysRun: string[]; outsideReaders?: string[]; triggers: Trigger[]; knownAreas: string[] };
 export type Decision = { mode: 'full' | 'selected'; reason: string; files: string[]; total: number | null; detail: string | null; alwaysRun?: number };
 export type SelectionInput = {
   mode?: string;
@@ -38,3 +39,12 @@ export declare function shadowReport(opts: { decision: Decision; failing: string
 export declare function isTestSupportPath(path: string): boolean;
 export declare function localImports(source: string): string[];
 export declare function unlistedTests(opts: { files: { path: string; source: string }[]; alwaysRun: string[]; readLocal?: (fromPath: string, specifier: string) => { path: string; source: string } | null }): { path: string; signals: string[]; via?: string[] }[];
+export declare const OUTSIDE_IMPORT_SIGNAL: string;
+export declare function leavesFrontend(fromPath: string, specifier: string): boolean;
+export declare function outsideImports(files: { path: string; source: string }[]): { path: string; specifier: string }[];
+export declare function firesTrigger(trigger: Trigger, path: string): boolean;
+export declare const WORKFLOW_TEST_SIGNAL: RegExp;
+export declare function pathsLeavingFrontend(mod: { path: string; source: string }): string[];
+export declare function outsideReach(mod: { path: string; source: string }): string[];
+export declare function unlistedOutsideReaders(opts: { files: { path: string; source: string }[]; outsideReaders: string[]; readLocal?: (fromPath: string, specifier: string) => { path: string; source: string } | null }): { path: string; signals: string[]; via?: string[] }[];
+export declare function needlessOutsideReaders(opts: { files: { path: string; source: string }[]; outsideReaders: string[]; readLocal?: (fromPath: string, specifier: string) => { path: string; source: string } | null }): string[];

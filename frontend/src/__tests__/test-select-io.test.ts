@@ -21,6 +21,8 @@ const git = (cwd: string, ...args: string[]) =>
 const BUTTON = 'frontend/src/components/Button.tsx';
 const BUTTON_TEST = 'frontend/src/components/__tests__/Button.test.tsx';
 const GUARD = 'frontend/src/__tests__/disk-reader.guard.test.ts';
+/** On the real outside-readers list by its name (`test-select-*.test.ts`), and on the always-run list like every outside reader. */
+const OUTSIDE = 'frontend/src/__tests__/test-select-fixture.test.ts';
 
 interface Repo { root: string; frontend: string; head: string; baseTip: string; mergeBase: string }
 
@@ -43,6 +45,7 @@ function pullRequestRepo(change: (root: string) => void): Repo {
   write(root, BUTTON, 'export const Button = 1;\n');
   write(root, BUTTON_TEST, 'it("x", () => {});\n');
   write(root, GUARD, 'it("g", () => {});\n');
+  write(root, OUTSIDE, 'it("o", () => {});\n');
   write(root, 'docs/ci.md', '# ci\n');
   git(root, 'add', '-A');
   git(root, 'commit', '-q', '-m', 'base');
@@ -73,8 +76,8 @@ describe('selectForRun over a real merge ref', () => {
     const r = pullRequestRepo((root) => write(root, BUTTON, 'export const Button = 2;\n'));
     const asked: string[] = [];
     const d = await selectForRun({ env: prEnv(r), frontend: r.frontend, runList: answering(r, [BUTTON_TEST], asked) });
-    expect(d).toMatchObject({ mode: 'selected', reason: 'changed-files', total: 2 });
-    expect(d.files).toEqual(['src/__tests__/disk-reader.guard.test.ts', 'src/components/__tests__/Button.test.tsx']);
+    expect(d).toMatchObject({ mode: 'selected', reason: 'changed-files', total: 3 });
+    expect(d.files).toEqual(['src/__tests__/disk-reader.guard.test.ts', 'src/__tests__/test-select-fixture.test.ts', 'src/components/__tests__/Button.test.tsx']);
     expect(asked).toEqual([r.mergeBase]);
     expect(asked[0]).not.toBe(r.baseTip);
   });
@@ -83,7 +86,23 @@ describe('selectForRun over a real merge ref', () => {
     // docs/other.md only changed on staging; the pull request touches nothing but docs/ci.md.
     const r = pullRequestRepo((root) => write(root, 'docs/ci.md', '# ci changed\n'));
     const d = await selectForRun({ env: prEnv(r), frontend: r.frontend, runList: answering(r, []) });
-    expect(d).toMatchObject({ mode: 'selected', reason: 'always-run-only' });
+    expect(d).toMatchObject({ mode: 'selected', reason: 'no-frontend-change' });
+  });
+
+  it('a docs-only pull request runs the outside readers only, not the rest of the always-run list (#3403)', async () => {
+    const r = pullRequestRepo((root) => write(root, 'docs/ci.md', '# ci changed\n'));
+    const d = await selectForRun({ env: prEnv(r), frontend: r.frontend, runList: answering(r, []) });
+    expect(d).toMatchObject({ mode: 'selected', reason: 'no-frontend-change', total: 3, alwaysRun: 1 });
+    expect(d.files).toEqual(['src/__tests__/test-select-fixture.test.ts']);
+  });
+
+  it('a backend-only pull request does the same, and a frontend file beside it brings the whole always-run list back (#3403)', async () => {
+    const backend = pullRequestRepo((root) => write(root, 'backend/src/x.ts', 'export const x = 1;\n'));
+    expect((await selectForRun({ env: prEnv(backend), frontend: backend.frontend, runList: answering(backend, []) })).files).toEqual(['src/__tests__/test-select-fixture.test.ts']);
+    const both = pullRequestRepo((root) => { write(root, 'backend/src/x.ts', 'export const x = 1;\n'); write(root, 'frontend/src/lib/new.ts', 'export const n = 1;\n'); });
+    const d = await selectForRun({ env: prEnv(both), frontend: both.frontend, runList: answering(both, []) });
+    expect(d).toMatchObject({ mode: 'selected', reason: 'always-run-only', alwaysRun: 2 });
+    expect(d.files).toEqual(['src/__tests__/disk-reader.guard.test.ts', 'src/__tests__/test-select-fixture.test.ts']);
   });
 
   it('a lockfile change is a full run, reason=lockfile', async () => {
@@ -94,6 +113,11 @@ describe('selectForRun over a real merge ref', () => {
   it('a deleted source file is a full run, reason=deleted-source', async () => {
     const r = pullRequestRepo((root) => rmSync(join(root, BUTTON)));
     expect(await selectForRun({ env: prEnv(r), frontend: r.frontend, runList: answering(r, []) })).toMatchObject({ mode: 'full', reason: 'deleted-source' });
+  });
+
+  it('a file deleted outside the frontend folder is a selected run (#3402)', async () => {
+    const r = pullRequestRepo((root) => rmSync(join(root, 'docs/ci.md')));
+    expect(await selectForRun({ env: prEnv(r), frontend: r.frontend, runList: answering(r, []) })).toMatchObject({ mode: 'selected', reason: 'no-frontend-change' });
   });
 
   it('a renamed source file is a full run, reason=renamed-source', async () => {

@@ -10,9 +10,11 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
-import { checkFileCount, countTestFiles, isPageModule, pageCeilings, pagesGrownBy, scanPageImports } from './test-brake-lib.mjs';
+import { COUNT_IN_OLD_PLACE_REASON, checkFileCount, countTestFiles, isPageModule, pageCeilings, pagesGrownBy, scanPageImports } from './test-brake-lib.mjs';
 
 export const BUDGET_FILE = 'test-budget.json';
+/** The test-file count (#3401). Its own file, NOT on the selector's guarded list: moving the count with the files is not an edit of the selector. */
+export const FILE_COUNT_FILE = 'test-file-count.json';
 export const PAGE_CEILINGS_FILE = 'test-page-ceilings.json';
 export const TIME_LIST_FILE = 'test-time-baseline.json';
 
@@ -137,8 +139,14 @@ export function changedTestSources(frontend, resolved) {
 export function loadBrakeFiles(frontend, overrides = {}) {
   const at = (name, key) => resolve(overrides[key] ?? join(frontend, name));
   const listPath = at(TIME_LIST_FILE, 'timeList');
+  const budgetFile = readJson(at(BUDGET_FILE, 'budget'));
+  const countPath = at(FILE_COUNT_FILE, 'fileCount');
+  // Loud, never a silent pass: a count in the old place or no count file at all is an error, not "not judged".
+  if ('maxTestFiles' in budgetFile) throw new Error(`${BUDGET_FILE} carries maxTestFiles: the count lives in ${FILE_COUNT_FILE} (#3401). Move it there.`);
+  if (!existsSync(countPath)) throw new Error(`${FILE_COUNT_FILE} is missing: maxTestFiles lives there (#3401).`);
   return {
-    budget: readJson(at(BUDGET_FILE, 'budget')),
+    // The count is read from its own file and carried on the budget object, so the budget table and the weekly report keep one shape.
+    budget: { ...budgetFile, maxTestFiles: readJson(countPath).maxTestFiles },
     ceilings: readJson(at(PAGE_CEILINGS_FILE, 'pageCeilings')),
     listed: existsSync(listPath) ? readJson(listPath) : { tests: [], files: [] },
   };
@@ -164,8 +172,11 @@ export function judgeGrowth(frontend, { base, env, overrides = {} }) {
   // With no base the count is not judged anyway, so a root that is not a git work tree (a fixture, a copied folder) is not an error there.
   let filesNow = 0;
   try { filesNow = trackedTestCount(frontend, null); } catch (e) { if (resolved) throw e; }
-  const baseBudget = baseCopy(frontend, BUDGET_FILE, resolved);
-  const baseFiles = resolved && Number.isInteger(baseBudget?.maxTestFiles) ? { files: trackedTestCount(frontend, resolved), maxTestFiles: baseBudget.maxTestFiles } : null;
-  const fileCount = checkFileCount({ files: filesNow, maxTestFiles: files.budget.maxTestFiles, base: baseFiles });
+  const baseCount = baseCopy(frontend, FILE_COUNT_FILE, resolved);
+  const baseFiles = resolved && Number.isInteger(baseCount?.maxTestFiles) ? { files: trackedTestCount(frontend, resolved), maxTestFiles: baseCount.maxTestFiles } : null;
+  // A base from before #3401 keeps the count in the budget file: this change's own difference cannot be read from it, so the
+  // count is NOT JUDGED and the verdict line and the summary say why (never a silent pass).
+  const inOldPlace = !baseFiles && Number.isInteger(baseCopy(frontend, BUDGET_FILE, resolved)?.maxTestFiles);
+  const fileCount = checkFileCount({ files: filesNow, maxTestFiles: files.budget.maxTestFiles, base: baseFiles, reason: inOldPlace ? COUNT_IN_OLD_PLACE_REASON : undefined });
   return { files, resolved, scan, pages, fileCount, filesNow };
 }

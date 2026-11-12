@@ -26,6 +26,9 @@ export const SELECTION_MODES = Object.freeze(['off', 'shadow', 'on']);
 /**
  * The selector and its lists, hard-coded HERE and not read from the lists file, so a pull request that edits the
  * lists cannot also edit what counts as "the selector". A change to any of these is a full run.
+ * `frontend/test-file-count.json` (the test-file count, #3401) is deliberately NOT here: the brake makes every pull
+ * request that adds or deletes a test file move it, and that bookkeeping is not an edit of the selector. The brake
+ * still judges the count on every run, selected or full.
  */
 export const SELECTOR_PATHS = Object.freeze([
   'frontend/scripts/test-*',
@@ -58,6 +61,171 @@ export function localImports(source) {
   return [...found];
 }
 
+/** The always-run signal of a test whose import leaves the frontend folder (#3402). Needs the file's path, so it is not a source pattern. */
+export const OUTSIDE_IMPORT_SIGNAL = 'imports-outside-frontend';
+
+/**
+ * Whether a local specifier, read from a frontend-relative file, resolves outside the frontend folder (`../../../backend/x`
+ * from `src/__tests__/a.test.ts`). Path arithmetic only, no disk. `@/` is `src/`.
+ */
+export function leavesFrontend(fromPath, specifier) {
+  const parts = specifier.startsWith('@/') ? ['src', ...specifier.slice(2).split('/')] : [...fromPath.split('/').slice(0, -1), ...specifier.split('/')];
+  let depth = 0;
+  for (const part of parts) {
+    if (part === '' || part === '.') continue;
+    if (part === '..') { depth -= 1; if (depth < 0) return true; } else depth += 1;
+  }
+  return false;
+}
+
+/**
+ * The imports of each file that leave the frontend folder: [{ path, specifier }]. A file deleted or renamed outside the
+ * frontend folder does not force a full run (#3402), which is only safe while every frontend file that imports from out
+ * there is an always-run test. The guard test applies this to every file under `src/`.
+ */
+export function outsideImports(files) {
+  return files.flatMap((f) => localImports(f.source).filter((s) => leavesFrontend(f.path, s)).map((specifier) => ({ path: f.path, specifier })));
+}
+
+/**
+ * What in a workflow's text says it can run a frontend test or pull in another local workflow or action. A workflow on the
+ * `workflows` trigger's `except` list must show none of it; the guard test applies this to each one (#3402).
+ */
+export const WORKFLOW_TEST_SIGNAL = /test:ci|vitest|\bnpm\s+(?:run\s+)?test\b|playwright|uses:\s*\.\/\.github\//;
+
+// ---------------------------------------------------------------- reading outside the frontend folder (#3403)
+
+/** Source text without comments, so a path named in a comment is not taken for one the code builds. */
+function stripComments(source) {
+  return source.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:'"`\\])\/\/[^\n]*/g, '$1');
+}
+
+/** Apply path segments to a folder (an array of names under the frontend folder). Returns null when the path climbs above it. */
+function walkPath(start, segments) {
+  const at = [...start];
+  for (const part of segments) {
+    if (part === '' || part === '.') continue;
+    if (part === '..') { if (at.length === 0) return null; at.pop(); } else at.push(part);
+  }
+  return at;
+}
+
+/** The arguments of the call whose opening bracket is at `open`, split at top-level commas. Strings and nested brackets are skipped over. */
+function callArgs(text, open) {
+  const args = [];
+  let depth = 0;
+  let start = open + 1;
+  for (let i = open; i < text.length; i++) {
+    const c = text[i];
+    if (c === "'" || c === '"' || c === '`') { i += 1; while (i < text.length && text[i] !== c) i += text[i] === '\\' ? 2 : 1; continue; }
+    if (c === '(' || c === '[' || c === '{') depth += 1;
+    else if (c === ')' || c === ']' || c === '}') { depth -= 1; if (depth === 0) { args.push(text.slice(start, i).trim()); return args.filter((a) => a !== ''); } }
+    else if (c === ',' && depth === 1) { args.push(text.slice(start, i).trim()); start = i + 1; }
+  }
+  return null;
+}
+
+const PLAIN_STRING = /^(['"`])((?:(?!\1|\$\{)[^\\])*)\1$/;
+const OWN_FILE = /^(?:__filename|import\.meta\.filename|fileURLToPath\(\s*import\.meta\.url\s*\))$/;
+const FS_CALL_WITH_CLIMB = /\b(?:readFileSync|readdirSync|existsSync|statSync|lstatSync|openSync|createReadStream|readFile|readdir|stat|access)\(\s*(['"`])\.\.\//;
+
+/**
+ * Whether a module builds a path that leaves the frontend folder, or may (#3403). It follows the ways the tests build paths:
+ * `resolve(...)` and `join(...)` from `__dirname`, `import.meta.dirname`, `dirname(fileURLToPath(import.meta.url))`, `process.cwd()`
+ * (the frontend folder: the tests run from it) or a constant built the same way, with literal segments; `new URL('<path>',
+ * import.meta.url)`; and a literal relative path. Returns the reasons found, in a fixed order:
+ *
+ *   `path-leaves-frontend`     a path that ends above the frontend folder
+ *   `climbs-from-unknown-base` a `..` applied to something this cannot follow (a variable, a function result): counted as leaving
+ *
+ * `mod` is { path (frontend-relative), source }. No disk, no evaluation of code: text only, so it errs toward "leaves".
+ */
+export function pathsLeavingFrontend(mod) {
+  const src = stripComments(mod.source);
+  const here = mod.path.split('/').slice(0, -1);
+  const consts = new Map();
+  const found = new Set();
+  const literal = (arg) => PLAIN_STRING.exec(arg)?.[2];
+  /** The folder an expression names: an array, `null` when it leaves the frontend folder, `undefined` when it cannot be followed. */
+  const folderOf = (expr) => {
+    if (expr === '__dirname' || expr === 'import.meta.dirname') return here;
+    if (expr === 'process.cwd()') return [];
+    if (consts.has(expr)) return consts.get(expr);
+    const dir = /^(?:path\.)?dirname\(([\s\S]*)\)$/.exec(expr);
+    if (dir) {
+      const inner = dir[1].trim();
+      if (OWN_FILE.test(inner)) return here;
+      const of = folderOf(inner);
+      return of && of.length > 0 ? of.slice(0, -1) : of === undefined ? undefined : null;
+    }
+    const url = /^(?:fileURLToPath\(\s*)?new URL\(\s*(['"])([^'"]*)\1\s*,\s*import\.meta\.url\s*\)(?:\.pathname)?\s*\)?$/.exec(expr);
+    if (url) return walkPath(here, url[2].split('/'));
+    const call = /^(?:path\.)?(?:resolve|join)\(/.exec(expr);
+    if (call && expr.endsWith(')')) return pathCall(callArgs(expr, call[0].length - 1));
+    return undefined;
+  };
+  /** One resolve/join call: the folder it names, as far as its leading arguments can be followed. */
+  function pathCall(args) {
+    if (!args || args.length === 0) return undefined;
+    const first = literal(args[0]);
+    let at = first !== undefined ? (first.startsWith('/') ? undefined : walkPath([], first.split('/'))) : folderOf(args[0]);
+    for (const arg of args.slice(1)) {
+      const text = literal(arg);
+      if (text === undefined) break; // a variable segment: what follows cannot be followed, what came before stands
+      if (at === undefined) { if (text.split('/').includes('..')) found.add('climbs-from-unknown-base'); continue; }
+      if (at === null) break;
+      at = walkPath(at, text.split('/'));
+    }
+    if (at === null) found.add('path-leaves-frontend');
+    return at;
+  }
+  // constants first, in source order, so a path built in two steps (FRONTEND, then REPO = resolve(FRONTEND, '..')) is followed
+  for (const m of src.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=;]+)?=\s*/g)) {
+    const from = m.index + m[0].length;
+    const head = /^(?:path\.)?(?:resolve|join|dirname)\(|^fileURLToPath\(|^new URL\(/.exec(src.slice(from, from + 40));
+    if (!head) continue;
+    const open = from + src.slice(from).indexOf('(');
+    const args = callArgs(src, open);
+    if (!args) continue;
+    let end = open;
+    for (let depth = 0; end < src.length; end++) {
+      const c = src[end];
+      if (c === "'" || c === '"' || c === '`') { end += 1; while (end < src.length && src[end] !== c) end += src[end] === '\\' ? 2 : 1; continue; }
+      if (c === '(') depth += 1; else if (c === ')') { depth -= 1; if (depth === 0) break; }
+    }
+    const value = folderOf(src.slice(from, end + 1).trim());
+    if (value === null) found.add('path-leaves-frontend');
+    if (value !== undefined) consts.set(m[1], value);
+  }
+  for (const m of src.matchAll(/\b(?:path\.)?(?:resolve|join)\(/g)) pathCall(callArgs(src, m.index + m[0].length - 1));
+  for (const m of src.matchAll(/new URL\(\s*(['"])([^'"]*)\1\s*,\s*import\.meta\.url/g)) if (walkPath(here, m[2].split('/')) === null) found.add('path-leaves-frontend');
+  if (FS_CALL_WITH_CLIMB.test(src)) found.add('path-leaves-frontend'); // a bare relative path handed to the file system is read from the frontend folder
+  const withoutImports = src.replace(/(?:^|[\s;{}])(?:import|export)\s[^;'"`]*?from\s+['"][^'"]*['"]/g, ' ').replace(/import\(\s*['"][^'"]*['"]\s*\)/g, ' ');
+  for (const m of withoutImports.matchAll(/(['"`])((?:\.\.?\/)[^'"`\n]*)\1/g)) {
+    if (m[2].includes('${')) { if (m[2].split('/').includes('..')) found.add('climbs-from-unknown-base'); } else if (walkPath(here, m[2].split('/')) === null) found.add('path-leaves-frontend');
+  }
+  if (/\$\{[^}]*\}\/\.\.(?:\/|['"`])/.test(src)) found.add('climbs-from-unknown-base');
+  return ['path-leaves-frontend', 'climbs-from-unknown-base'].filter((r) => found.has(r));
+}
+
+/**
+ * What makes a test one that can be affected from OUTSIDE the frontend folder (#3403): it imports a module from out there,
+ * runs a child process (what that process reads cannot be seen from here, so it counts), or builds a path that leaves the
+ * frontend folder. Judged on one module; `unlistedOutsideReaders` applies it to a test and the modules it imports.
+ */
+export function outsideReach(mod) {
+  const found = [];
+  if (localImports(mod.source).some((s) => leavesFrontend(mod.path, s))) found.push(OUTSIDE_IMPORT_SIGNAL);
+  if (ALWAYS_RUN_SIGNALS['runs-child-process'].test(mod.source)) found.push('runs-child-process');
+  return [...found, ...pathsLeavingFrontend(mod)];
+}
+
+/** Every always-run signal one module shows: the source patterns, and an import that leaves the frontend folder. */
+function signalsOf(mod) {
+  const found = alwaysRunSignals(mod.source);
+  return localImports(mod.source).some((s) => leavesFrontend(mod.path, s)) ? [...found, OUTSIDE_IMPORT_SIGNAL] : found;
+}
+
 /**
  * Whether a frontend-relative path is test support code (a helper, mock, fixture or harness) and not application code.
  * Application code is not followed: the test tool's import graph already sees it, so a change to it selects its tests.
@@ -72,8 +240,8 @@ export function isTestSupportPath(path) {
  * specifier)` returns `{ path, source }` of a local module or null; without it only the test's own source is judged.
  * `via` names the helper files that carry a signal the test itself does not show.
  */
-function signalsWithHelpers(file, readLocal) {
-  const signals = new Set(alwaysRunSignals(file.source));
+function signalsWithHelpers(file, readLocal, judge = signalsOf, follow = isTestSupportPath) {
+  const signals = new Set(judge(file));
   const via = new Set();
   if (readLocal) {
     const seen = new Set([file.path]);
@@ -81,10 +249,11 @@ function signalsWithHelpers(file, readLocal) {
     while (queue.length) {
       const from = queue.shift();
       for (const spec of localImports(from.source)) {
+        if (leavesFrontend(from.path, spec)) continue; // judged as an outside import of `from`; nothing out there is read here
         const mod = readLocal(from.path, spec);
-        if (!mod || seen.has(mod.path) || !isTestSupportPath(mod.path)) continue;
+        if (!mod || seen.has(mod.path) || !follow(mod.path)) continue;
         seen.add(mod.path);
-        const found = alwaysRunSignals(mod.source);
+        const found = judge(mod);
         if (found.length) { found.forEach((s) => signals.add(s)); via.add(mod.path); }
         queue.push(mod);
       }
@@ -93,9 +262,34 @@ function signalsWithHelpers(file, readLocal) {
   return { signals: [...signals], via: [...via] };
 }
 
+/** Test support, and anything in the frontend folder that is not under `src/` (its scripts, its end-to-end helpers, its config files): none of it is application code. */
+const isNotApplicationCode = (path) => isTestSupportPath(path) || !path.startsWith('src/');
+
 /**
- * The always-run guard's check: test files (frontend-relative `path` and `source`) that show a signal, in their own source
- * or (with `readLocal`) in a local module they import, and match no always-run pattern. `alwaysRun` patterns are
+ * The outside-readers guard's check (#3403): test files that can be affected from outside the frontend folder (`outsideReach`, in
+ * their own source or in a module they import that is not application code) and match no `outsideReaders` pattern. A pull
+ * request that changes nothing under `frontend/` runs only that list, so a test missing from it would be skipped by exactly the
+ * change that can break it.
+ */
+export function unlistedOutsideReaders({ files, outsideReaders, readLocal }) {
+  return files
+    .map((f) => ({ path: f.path, ...signalsWithHelpers(f, readLocal, outsideReach, isNotApplicationCode) }))
+    .filter((f) => f.signals.length > 0 && !matchesAny(FRONTEND_PREFIX + f.path, outsideReaders))
+    .map((f) => (f.via.length ? f : { path: f.path, signals: f.signals }));
+}
+
+/** The reverse check: tests on the `outsideReaders` list that show no way of being affected from outside the frontend folder. */
+export function needlessOutsideReaders({ files, outsideReaders, readLocal }) {
+  return files
+    .filter((f) => matchesAny(FRONTEND_PREFIX + f.path, outsideReaders))
+    .filter((f) => signalsWithHelpers(f, readLocal, outsideReach, isNotApplicationCode).signals.length === 0)
+    .map((f) => f.path);
+}
+
+/**
+ * The always-run guard's check: test files (frontend-relative `path` and `source`) that show a signal (a source pattern, or
+ * an import that leaves the frontend folder), in their own source or (with `readLocal`) in a local module they import, and
+ * match no always-run pattern. `alwaysRun` patterns are
  * repository-root relative, like the lists file.
  */
 export function unlistedTests({ files, alwaysRun, readLocal }) {
@@ -105,8 +299,12 @@ export function unlistedTests({ files, alwaysRun, readLocal }) {
     .map((f) => (f.via.length ? f : { path: f.path, signals: f.signals }));
 }
 
-/** Glob to RegExp: `**` any depth, `*` within one segment, `?` one character, `{a,b}` alternatives. */
+const compiledGlobs = new Map();
+
+/** Glob to RegExp: `**` any depth, `*` within one segment, `?` one character, `{a,b}` alternatives. Compiled once per glob. */
 export function globToRegExp(glob) {
+  const known = compiledGlobs.get(glob);
+  if (known) return known;
   let re = '';
   let depth = 0;
   for (let i = 0; i < glob.length; i++) {
@@ -121,7 +319,9 @@ export function globToRegExp(glob) {
     else if (c === ',' && depth > 0) re += '|';
     else re += c.replace(/[.+^$()|[\]\\]/g, '\\$&');
   }
-  return new RegExp(`^${re}$`);
+  const compiled = new RegExp(`^${re}$`);
+  compiledGlobs.set(glob, compiled);
+  return compiled;
 }
 
 export function matchesAny(path, globs) {
@@ -134,6 +334,13 @@ export function normalizeMode(raw) {
   if (v === '') return 'off';
   return SELECTION_MODES.includes(v) ? v : 'invalid';
 }
+
+/**
+ * Whether a changed path fires a full-run trigger: it matches one of the trigger's patterns and none of its `except`
+ * entries (#3402). `except` names the files under a pattern that cannot reach the frontend tests (the backend's manifest,
+ * a workflow that runs no frontend test), so anything new under the pattern is still a full run until it is listed.
+ */
+export const firesTrigger = (trigger, path) => matchesAny(path, trigger.patterns) && !matchesAny(path, trigger.except ?? []);
 
 const full = (reason, extra = {}) => ({ mode: 'full', reason, files: [], total: extra.total ?? null, detail: extra.detail ?? null });
 
@@ -180,7 +387,7 @@ export function decideEarly({ mode, shard, event, baseRef }) {
  * @param {string[]} input.tracked         every tracked path, repository-root relative
  * @param {string[]|null} input.listed     the test tool's `list --changed` files, repository-root relative (null = unreadable)
  * @param {null|'threw'|'timeout'} [input.selectorError]
- * @param {{alwaysRun:string[], triggers:{code:string,patterns:string[]}[], knownAreas:string[]}} input.lists
+ * @param {{alwaysRun:string[], outsideReaders?:string[], triggers:{code:string,patterns:string[],except?:string[]}[], knownAreas:string[]}} input.lists
  */
 export function decideSelection(input) {
   const early = decideEarly(input);
@@ -203,9 +410,11 @@ export function decideSelection(input) {
   const known = (p) => isCleanPath(p) && (matchesAny(p, lists.knownAreas) || lists.triggers.some((t) => matchesAny(p, t.patterns)));
   if (changed.some((c) => !['A', 'M', 'D', 'R'].includes(c.status) || !allPathsOf(c).every(known))) return full('unclassified-path'); // ROW:unclassified-path
   for (const t of lists.triggers) {
-    if (allPaths.some((p) => matchesAny(p, t.patterns))) return full(t.code); // ROW:trigger
+    if (allPaths.some((p) => firesTrigger(t, p))) return full(t.code); // ROW:trigger
   }
-  const goneSource = (p) => !isFrontendTest(p) && !isSnapshot(p);
+  // Only inside the frontend folder (#3402): a module a test imports can vanish there without the tool's list showing it. Outside it,
+  // the only frontend files that import or read anything are always-run tests (the guard test keeps that true), and those run anyway.
+  const goneSource = (p) => p.startsWith(FRONTEND_PREFIX) && !isFrontendTest(p) && !isSnapshot(p);
   if (changed.some((c) => c.status === 'D' && goneSource(c.path))) return full('deleted-source'); // ROW:deleted-source
   if (changed.some((c) => c.status === 'R' && goneSource(c.oldPath))) return full('renamed-source'); // ROW:renamed-source
 
@@ -230,6 +439,16 @@ export function decideSelection(input) {
   const alwaysRun = totalFiles.filter((f) => matchesAny(FRONTEND_PREFIX + f, lists.alwaysRun));
   if (alwaysRun.length === 0) return full('empty-always-run', { total: totalFiles.length }); // ROW:empty-always-run
 
+  const reached = input.listed.filter(isFrontendTest).map(toFrontend);
+  // Nothing under frontend/ changed (#3403): the only tests such a change can reach are the ones that read, import or run something
+  // outside the frontend folder. The always-run tests that read only inside it see nothing new, so they are not run.
+  if (allPaths.every((p) => !p.startsWith(FRONTEND_PREFIX))) {
+    const outside = totalFiles.filter((f) => matchesAny(FRONTEND_PREFIX + f, lists.outsideReaders ?? []));
+    if (outside.length === 0) return full('empty-outside-readers', { total: totalFiles.length }); // ROW:empty-outside-readers
+    const files = [...new Set([...outside, ...reached])].sort();
+    return { mode: 'selected', reason: 'no-frontend-change', files, total: totalFiles.length, alwaysRun: outside.length, detail: null };
+  }
+
   const snapshotTests = [];
   for (const p of live.filter(isSnapshot)) {
     const dir = p.slice(0, p.lastIndexOf('/__snapshots__/'));
@@ -238,7 +457,6 @@ export function decideSelection(input) {
     snapshotTests.push(toFrontend(test));
   }
   const changedTests = live.filter(isFrontendTest).map(toFrontend);
-  const reached = input.listed.filter(isFrontendTest).map(toFrontend);
   const files = [...new Set([...alwaysRun, ...reached, ...changedTests, ...snapshotTests])].sort();
   const extra = files.length - alwaysRun.length;
   return { mode: 'selected', reason: extra > 0 ? 'changed-files' : 'always-run-only', files, total: totalFiles.length, alwaysRun: alwaysRun.length, detail: null };

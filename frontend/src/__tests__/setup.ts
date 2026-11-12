@@ -64,9 +64,22 @@ vi.mock('@/lib/supabase', () => ({
 if (!global.fetch) {
   global.fetch = vi.fn().mockResolvedValue({ ok: false }) as unknown as typeof fetch;
 }
-if (!global.URL.createObjectURL) {
-  global.URL.createObjectURL = vi.fn(() => 'blob:preview');
-  global.URL.revokeObjectURL = vi.fn();
+// The test tool's fake-browser environment replaces URL.createObjectURL with a shim that copies a
+// Blob's bytes out of a private field of the fake browser's Blob. From jsdom 30 that field is gone, so
+// the shim throws for every Blob and File a test or the app makes. No test loads a blob: URL back (the
+// fake browser cannot), so when the shim throws the caller gets a unique opaque blob: URL instead, which
+// is all the app uses one for (an <img>/<iframe> src, a download link, a later revokeObjectURL).
+const shimCreateObjectURL = global.URL.createObjectURL?.bind(global.URL);
+global.URL.createObjectURL = (obj: Blob | MediaSource): string => {
+  try {
+    if (shimCreateObjectURL) return shimCreateObjectURL(obj);
+  } catch {
+    // fall through to the opaque URL
+  }
+  return `blob:nodedata:${crypto.randomUUID()}`;
+};
+if (!global.URL.revokeObjectURL) {
+  global.URL.revokeObjectURL = () => {};
 }
 
 // ─── Mock @/stores/auth.store ─────────────────────────────

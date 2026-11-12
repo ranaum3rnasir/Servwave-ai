@@ -1,4 +1,5 @@
 export declare const BUDGET_FILE: string;
+export declare const FILE_COUNT_FILE: string;
 export declare const PAGE_CEILINGS_FILE: string;
 export declare const TIME_LIST_FILE: string;
 export declare function readJson(path: string): any;

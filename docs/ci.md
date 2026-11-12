@@ -63,6 +63,79 @@ between runs (see "The Database check").
   check without a second `tsc`; `npm run build` keeps its own `tsc -b` for local use and the hosting
   provider.
 
+### Tool costs: the fake browser's version, the pre-bundled date packages, the compile cache
+
+Three costs in the Frontend tests were in the tools, not in the tests. All were measured on 2026-11-10 on a 4-core cloud
+box (not the CI machine: read the ratios, not the seconds) on a fixed 1-in-5 sample of the suite (313 files, 3,759 tests);
+the first two also on a full run.
+
+- **The fake browser (jsdom) is pinned to 30.1.3 or later, never back to 27 or 28.** A role query with a name
+  (`getByRole('button', { name })`, about 12,900 calls in 959 test files) asks the fake browser for the computed style of
+  every candidate element. jsdom 27 and 28 made that call several times slower (jsdom issue 3984, reported by a team whose
+  test time doubled); 30.1.3 fixed it. A profile of the slowest file (`settings-roles-manage`) on 28.1.0 showed 48% of the
+  worker's time inside `getComputedStyle` and 2% in rendering. That file: 64 s on 28.1.0, 28 s on 26.1.0, 14 s on 31.0.0.
+  The sample's test time: 743 s on 28.1.0, 461 s on 30.1.3 (38% less), 421 s on 31.0.0. 31.0.0 was five days old on the
+  day of the measurement and rewrites the style code, so it is the next step, not this one. **jsdom is not "only a test
+  dependency": a jsdom major is a CI-time change. Run the sample before and after, and write both numbers in the pull
+  request.** jsdom is the only package that uses `undici`, so the `undici` floor in the root `overrides` moves with jsdom's
+  own requirement (now `^8.12.1`). When the lockfile keeps an old copy at the root, delete the `node_modules/jsdom` and
+  `node_modules/undici` entries from `package-lock.json` and run `npm install`: the test tool only finds jsdom at the root.
+- **The date packages are pre-bundled for tests** (`deps.optimizer.client` in `frontend/vitest.config.ts`). `date-fns-tz`
+  and `react-day-picker` import the whole `date-fns` entry file, and so do about 50 application modules. The app build drops
+  the unused functions; a test file loaded all of the roughly 300 function files, once per file. On the full run that was
+  694 of the 1,451 seconds spent loading modules. With the list in place the sample's module loading fell from 314 s to
+  174 s. Add a package to that list only with a before/after measurement.
+
+- **Node's compile cache is on for the test tool and its workers.** Every test file runs in a fresh worker process, and
+  each process compiled the same tool code again: the fake browser, the test library, React. `npm run test:ci` sets
+  `NODE_COMPILE_CACHE` to `frontend/node_modules/.cache/test-ci/compile-cache` (`compileCache` in
+  `frontend/scripts/test-ci-lib.mjs`), so a worker reuses what an earlier worker compiled. The directory is inside
+  `node_modules`: `npm ci` deletes it, so every CI run starts it empty and it can never be older than the installed
+  packages (18 MB after the sample). On the sample through `npm run test:ci` at 4 workers: 229.6 s with it off, 210.3 s
+  starting from an empty directory (8% less), 213.5 s on a second run with the directory full, so an empty start costs
+  nothing. Starting the fake browser fell from 209 s to 165 s summed over the workers, CPU-seconds from 839 to 777.
+  On the CI machine the gain was smaller: the next pull request run of the same suite took 767 s against 783 s (2%
+  less), with fake-browser start-up at 551 s against 616 s and CPU-seconds at 3,233 against 3,309. One run each, on a
+  machine shared with the Backend and Database jobs.
+  The preflight block prints which setting applies. A `NODE_COMPILE_CACHE` the caller set is left alone, and
+  `NODE_DISABLE_COMPILE_CACHE=1` (Node's own switch) turns it off for a run. A plain `npx vitest` does not use it.
+
+To repeat the measurement: `git ls-files 'src/**' | grep -E '\.test\.(ts|tsx)$' | sort | awk 'NR%5==3'` in `frontend/` is
+the sample; run it with `npx vitest run <files> --maxWorkers=4` on each version and compare the `Duration` line.
+To see which modules a file's loading time goes to, run that one file with `experimental: { importDurations: { print: true, limit: 40 } }`
+added under `test` in a scratch copy of the config.
+
+### When the Frontend check gets slow: look in this order
+
+The check is kept fast by measuring where the time goes before anything is cut. In November 2026 the suite was believed
+to be slow because it mounts pages; the profile showed rendering was 2% and one tool version was 48%.
+
+1. **Read the `Duration` line of the newest full run** (the nightly's log): `tests`, `import`, `environment`, `setup`,
+   summed over the workers. Compare the split with the last report, not only the total. Test bodies up means steps 2
+   and 5; `import` up means step 3; `environment` or `setup` up means a tool or the set-up file changed (step 4).
+   Compare a nightly with a nightly and a pull request run with a pull request run. A pull request's Frontend job
+   shares the machine with its own Backend and Database jobs and is about a quarter slower than the nightly run on the
+   idle machine: the same code took 13.0 minutes in the nightly and 16.7 in a pull request on 2026-11-10, and its
+   CPU-seconds read 16% higher (3,835 against 4,462). Both run 4 workers (Ran's decision in #3251: 6 was no faster
+   under load and grew swap).
+2. **Profile the slowest file before rewriting it.** The 20 slowest files are in the job summary of every full run. Start
+   Node's profiler from a scratch set-up file (`node:inspector`, `Profiler.start`, write the profile in `afterAll`), run
+   the one file with one worker, and add up self time per package. Time in `jsdom`, `cssstyle` or a selector package is
+   the fake browser, not the test.
+3. **Look at what the files load.** Run a few files with the import breakdown (see above). A package that loads hundreds
+   of files per test file goes on the pre-bundle list in `frontend/vitest.config.ts`, with the sample measured before and
+   after.
+4. **Ask what tool version changed** since the last good week: `jsdom`, `vitest`, `@testing-library/*`, `react`. Run the
+   sample on both versions. `src/__tests__/vitest-config.test.ts` fails when jsdom is older than 30.1.3.
+5. **Only then cut tests**, by the rules in the project rules file ("Frontend tests: where a test belongs"): a rule table
+   moves to the function or hook that owns the rule, a page is mounted once per state, tests of the CI tooling do not
+   belong in the product run.
+6. **Lower the numbers after every gain.** `maxCpuSeconds` in `frontend/test-budget.json` is lowered each time the
+   suite gets cheaper, to the highest figure of the newest full runs plus about a tenth (a pull request run reads higher
+   than the nightly, and the budget is compared on both), so the gain cannot be spent again without a reviewed raise.
+   Lowering needs no review; a raise does. It was 4,500 until 2026-11-10 and is 3,600 after the tool fixes (3,309 and
+   3,233 measured on pull request runs). The number is pinned in `src/__tests__/test-brake-guard.test.ts`: change both.
+
 ### Frontend tests: one command, one verdict (`npm run test:ci`)
 
 The Mac job, the hosted fallback shards, the agents' CI-mirror run and a laptop all run the frontend
@@ -71,7 +144,7 @@ tests the same way: `npm run test:ci` in `frontend/` (`scripts/test-ci.mjs`, dec
 (`--bail=50` on pull requests) and a reporter of our own that appends one line per event to a file as
 it happens. That file, not the tool's end-of-run report, decides the result.
 
-It prints a preflight block (worker count and why, 1-minute load, swap in use, other test runs seen),
+It prints a preflight block (worker count and why, the compile cache, 1-minute load, swap in use, other test runs seen),
 then one machine-readable line, and appends the same information to the job summary, including
 **every retried test** (file, test, attempts, time, first error line):
 
@@ -115,7 +188,7 @@ the brake is red). Decisions are pure functions in `frontend/scripts/test-brake-
 |---|---|---|
 | Time ceiling | In a test file the pull request added or changed: a test over 2 s or a file over 10 s of summed body time fails and names it. A file over the line is re-run alone once and judged on that run only. Not judged on the staging to main promotion pull request (below). Needs the pull request's changed files (`GITHUB_BASE_REF`, or `--changed-from=FILE` / `--base=REF`); without a base nothing is judged and the summary says so. | `frontend/test-time-baseline.json`: tests and files already over the line, exact entries, may only shrink (compared with the base's copy). Generate with `node scripts/test-brake.mjs baseline --events=FILE` from the event file of a full run. |
 | Files per page | How many test files mount each `src/pages/**/*Page.tsx`: a test file mounts a page when it imports the page or that page's harness (the one mapping `PAGE_HARNESSES` in `frontend/scripts/test-brake-lib.mjs`; a page with a harness is listed there, so moving a file onto the harness does not lower the count, only merging files does). Judged on the pull request's own change: a page fails only if the pull request adds a test file that mounts it (or makes an existing one mount it) and its count is then over the ceiling. Raising a ceiling fails; lowering is free; a page not in the file starts at 3. The guard test in the ordinary suite only checks that the file is well-formed. | `frontend/test-page-ceilings.json`; `node scripts/test-brake.mjs page-ceilings [--write]` |
-| Budget (full run only) | CPU-seconds of the run, minutes of the test step (the idle machine's budget: judged only on the nightly run, which sets `TEST_CI_NIGHTLY=1`, and only at the budget's worker count; a pull request or push run reports its minutes in a note and is never red for them), number of test files (see below). Figures are in the job summary on every full run. CPU over budget only WARNS while `cpuEnforcement` is `"warn"` (until a 6-worker Mac baseline is recorded; exit unchanged, warning in the log and summary); at `"fail"` it is red (`cpu-over-budget`, exit 15). A missing or unknown value reads as `"fail"`. Every other reason stays red in both modes. | `frontend/test-budget.json` |
+| Budget (full run only) | CPU-seconds of the run, minutes of the test step (the idle machine's budget: judged only on the nightly run, which sets `TEST_CI_NIGHTLY=1`, and only at the budget's worker count; a pull request or push run reports its minutes in a note and is never red for them), number of test files (see below). Figures are in the job summary on every full run. CPU over budget only WARNS while `cpuEnforcement` is `"warn"` (Ran's decision on 2026-11-10, because the figure reads about 16% higher on a pull request run than on the idle machine; exit unchanged, warning in the log and summary); at `"fail"` it is red (`cpu-over-budget`, exit 15). A missing or unknown value reads as `"fail"`. Every other reason stays red in both modes. | `frontend/test-budget.json` (CPU-seconds, minutes, workers, enforcement); `frontend/test-file-count.json` (the number of test files) |
 | Slowest files | The 20 slowest files of a full run by body time, in the log and the job summary. | none |
 
 **Judged on the pull request's own change.** A number the pull request did not change can never fail it, so two pull
@@ -132,9 +205,18 @@ ceilings are NOT JUDGED: the verdict line says `pages=not-judged (no base: shall
 says the ceilings were not checked, and the step never fails or claims a pass for them. The Mac job, which has a base,
 is where they are judged. The test-file count is judged on every run, selected and shard runs included (it is a `git ls-files` count and does not depend on which tests ran); a run with no
 base prints `files=not-judged` the same way. The test-file count (with a base) must equal the pull request's own change to
-`maxTestFiles`: adding k test files means raising `maxTestFiles` by k in the same diff, deleting means lowering it,
-or the check fails and names both numbers (`file-count-not-in-budget`). `maxTestFiles` moving with the file count is
-bookkeeping; the raises Ran reviews are CPU-seconds, minutes, a page ceiling and the over-the-line list.
+`maxTestFiles` in `frontend/test-file-count.json`: adding k test files means raising `maxTestFiles` by k in the same diff,
+deleting means lowering it, or the check fails and names both numbers (`file-count-not-in-budget`). `maxTestFiles` moving
+with the file count is bookkeeping; the raises Ran reviews are CPU-seconds, minutes, a page ceiling and the over-the-line list.
+
+**Where the count lives (#3401).** `maxTestFiles` is in `frontend/test-file-count.json`, a file of its own, and not in
+`frontend/test-budget.json`. The budget file is on the selector's guarded list (a change to a real budget is a full run,
+`selector-edited`); the count file is deliberately not, so a pull request that adds or deletes a test file and moves the
+count still gets a selected run. A budget file that carries `maxTestFiles`, or a missing count file, is an error (the
+brake is red), never a silent pass. A pull request whose base is from before the move (the base still has the count in the
+budget file) is not judged for the count: the verdict line says
+`files=not-judged (the base keeps the count in test-budget.json: it moved to test-file-count.json, so this change is not compared)`
+and the summary says the count was not checked. The weekly report reads the count from the same file.
 The agents' rule is in the project rules file, "Frontend tests: where a test belongs".
 
 ### The nightly full run of staging (`ci-nightly.yml`, #3256)
@@ -192,21 +274,55 @@ returns `full` or `selected`, with a reason code. `frontend/scripts/test-select-
 - The base is the **merge base** of the merge ref's two parents. The changed-path list and the tool's file list come from the same
   tree; if the tree changed in between (a dirty checkout), it is a full run (`tree-mismatch`).
 - The selection always contains the **always-run list** (`alwaysRun` in `frontend/scripts/test-select-lists.json`): every test that reads
-  the disk, runs a child process or has a computed import, because the import graph cannot see what those depend on (a backend file read
-  at run time, a file named in a variable). That includes a test that does it only through a local test-support module it imports (a
+  the disk, runs a child process, has a computed import or imports a module from outside `frontend/`, because the import graph cannot
+  see what those depend on (a backend file read at run time, a file named in a variable) or cannot say that a file out there was deleted.
+  That includes a test that does it only through a local test-support module it imports (a
   `__tests__`, `support`, `harness` or similar helper, found by following relative and `@/` imports transitively; type-only imports are
-  skipped; application code is not followed, the import graph already covers it). The patterns go by file name; the guard `src/__tests__/test-select-always-run.guard.test.ts`
+  skipped; application code is not followed, the import graph already covers it). The patterns go by file name: a guard is named
+  `*.guard.test.*`, and a test that only has the word "guard" in its name (a leave or dirty guard of a form) is on the list only if it
+  reads the disk, by its own name. The guard `src/__tests__/test-select-always-run.guard.test.ts`
   fails when a test does any of those things and is not matched, naming the file. So "nothing to run" is never an outcome.
+- **A pull request that changes nothing under `frontend/` runs a shorter list (#3403).** When no changed path is under `frontend/`
+  and no full-run rule fires, the selection is the **outside readers** (`outsideReaders` in the same lists file) plus whatever the
+  tool lists as reached, with reason `no-frontend-change`. An outside reader is a test that can be affected from outside the frontend
+  folder: it imports a module from out there, runs a child process (what the child reads cannot be seen, so it counts), or builds a
+  path that leaves `frontend/`. The other always-run tests read only inside `frontend/`, where nothing changed, so they are not run.
+  One changed path under `frontend/` brings the whole always-run list back. An empty outside-readers list is a full run
+  (`empty-outside-readers`), so "nothing to run" is still never an outcome. Measured on the suite of 2026-11-11 at 4 workers: the
+  always-run list is 190 files, the outside readers 36; run alone they took 120 s and 73 s on the same machine (a 4-core machine,
+  not the CI machine). 53 s of the 73 are the CI tooling's own tests, which run child processes and so count as outside readers.
+- The guard keeps the outside-readers list right in both directions: a test that reaches outside and is not listed fails it by name
+  (`path-leaves-frontend`, `climbs-from-unknown-base`, `runs-child-process`, `imports-outside-frontend`), and so does a listed test
+  that reads only inside. It follows how the tests build paths: `resolve` and `join` from `__dirname`, `import.meta`, `process.cwd()`
+  (the frontend folder) or a constant built the same way, and a path relative to the file. A `..` applied to something it cannot
+  follow counts as leaving. Like the always-run guard it follows a test's imports into test support, and here also into the frontend's
+  own scripts and end-to-end helpers; it does not follow application code.
 - A changed snapshot file selects the test beside it.
-- Full-run triggers (`triggers` in the same file): any `package.json`, the lockfile, `tsconfig*`, the test and bundler configs and what they
-  import, the test set-up file, `.github/workflows`, `frontend/.env*`, and the command and its lists (the selector and the files it reads,
-  hard-coded in the policy so a pull request cannot change what counts as "the selector").
+- Full-run triggers (`triggers` in the same file): any `package.json` except the backend's, `.npmrc`, `.nvmrc`, every lockfile, `tsconfig*`,
+  the test and bundler configs and what they import, the test set-up file, `.github/workflows` and `.github/actions` except the workflows
+  that run no frontend test, `frontend/.env*`, and the command and its lists (the selector and the files it reads, hard-coded in the policy
+  so a pull request cannot change what counts as "the selector").
+
+**What does not force a full run, and why that is safe (#3402).** A full run is for a change that can affect every frontend test. Four
+rules used to fire on changes that cannot, and are narrowed. A trigger can carry an `except` list: a file on it is under the trigger's
+patterns but does not fire it, so anything new under the pattern is a full run until someone lists it.
+
+| Change | Before | Now | Why it cannot reach the frontend tests | What keeps that true |
+|---|---|---|---|---|
+| `backend/package.json` | `package-manifest` | selected | What the frontend installs comes from the root manifest, `frontend/package.json` and the one lockfile at the root. A backend dependency change that alters an installed package also changes the lockfile, which is still a full run. | `except` of the `package-manifest` trigger holds that one file; a manifest anywhere else is still a full run. |
+| `.claude/**`, `frontend/.storybook/**` | `unclassified-path` | selected | Agent tooling and the component browser's config. No test imports them. | They are known areas. An unknown top-level folder, or another dot-folder in `frontend/`, is still `unclassified-path`. |
+| A file deleted or renamed outside `frontend/` | `deleted-source`, `renamed-source` | selected | The rule exists because the tool cannot list the tests that imported a file that is gone. Outside `frontend/`, the only frontend files that import or read anything are always-run tests, and those run on every selected run. | The always-run guard: a test (or its support module) that imports from outside `frontend/` must be listed (`imports-outside-frontend`), and no other file under `src/` may import from out there. A non-test file deleted or renamed inside `frontend/` is still a full run. |
+| A workflow that runs no frontend test | `workflows` | selected | Only the CI workflow and the nightly workflow run the frontend tests. | `except` of the `workflows` trigger lists the eight others by name. The guard fails if a listed workflow names a test command (`test:ci`, `vitest`, `npm test`, `playwright`) or pulls in a local workflow or action. The CI workflow, the nightly workflow, anything under `.github/actions/` and any workflow nobody listed are still a full run. |
+
+A test that reads one of these paths from the disk (a workflow file, a backend file) is on the always-run list, so it runs whichever way
+the rule goes.
 
 **Every doubt is a full run, with a reason code printed and a unit test.** `selector-threw`, `selector-timeout` (the child that asks the tool
 gets 60 s; there is no network call), `not-pull-request`, `base-not-staging`, `not-two-parent-merge`, `head-mismatch`, `no-merge-base`,
-`base-not-merge-base`, `tree-mismatch`, `shallow-clone`, `deleted-source`, `renamed-source`, `too-many-paths` (more than 300 changed paths),
+`base-not-merge-base`, `tree-mismatch`, `shallow-clone`, `deleted-source`, `renamed-source` (a non-test file gone from inside `frontend/`),
+`too-many-paths` (more than 300 changed paths),
 `unclassified-path`, `case-mismatch` (imports are matched against the tracked-file list, not the disk), `listed-not-tracked`,
-`changed-not-tracked`, `selector-bad-output`, `snapshot-without-test`, `empty-always-run`, `selector-edited`, plus the triggers
+`changed-not-tracked`, `selector-bad-output`, `snapshot-without-test`, `empty-always-run`, `empty-outside-readers`, `selector-edited`, plus the triggers
 (`lockfile`, `package-manifest`, `tsconfig`, `test-config`, `setup-file`, `workflows`, `env-file`). There is no "changed since the last green run"
 logic, so a force-push is safe.
 
@@ -429,10 +545,21 @@ logs and writes the tickets. It reads the job's log lines: the `TEST-CI-VERDICT`
   off, which is today, every run is one row: `off`, `full`.
 - **Error-type fallbacks**: runs that went full because the selector itself failed: `selector-threw`, `selector-timeout` (it hung),
   `unclassified-path`, `no-changed-list`, `selector-bad-output`, `listed-not-tracked`, `changed-not-tracked`, `case-mismatch`,
-  `empty-always-run` (the list `ERROR_FALLBACK_REASONS` in `frontend.mjs`; a test pins that each is a code the selector prints). A deliberate
+  `empty-always-run`, `empty-outside-readers` (the list `ERROR_FALLBACK_REASONS` in `frontend.mjs`; a test pins that each is a code the selector prints). A deliberate
   full run (a lockfile change, a promotion, a workflow edit, a doubt about the checkout) is not one. When they are **strictly more than 5%** of the
   week's runs that printed a verdict, the job opens **one** ticket (`priority:medium`, `module:general`, `ci-budget`) or, when it is already
   open, comments on it.
+- **Share of full runs on pull requests into staging** (#3404): of the week's pull request runs into staging that printed a selection
+  decision, how many were full runs, with one row per reason code, this week beside the previous one. In shadow mode every run runs
+  everything, so the figures are what the selector would have done, and the section says so. Not counted, because they are always full:
+  promotion pull requests into `main`, pull requests into another branch, pushes, the nightly run, manual runs and hosted shards. With
+  the selection variable off no run prints a decision and the section says that. A selector that quietly stops selecting looks green
+  forever, only slower: this table is where it shows. When **deliberate** full runs (full runs that are not error-type fallbacks) are
+  **strictly more than 35%** of those runs (`FULL_RUN_THRESHOLD` in `frontend.mjs`; the replay of 60 pull requests with the rules of
+  #3400 gives 27%), the job opens **one** ticket (`priority:medium`, `module:general`, `ci-budget`) or comments on the open one, found
+  by its own hidden marker. The remedy is to read the pull requests behind the top reason and narrow the rule if their changes could
+  not reach a test; raising the line is not one. The reason text comes from pull request logs, so it is escaped and at most 15 rows
+  are printed.
 - **Tests retried in two or more runs**: a test counts once per workflow run (two attempts of one run are one run). Each test retried in at
   least two different runs this week gets its own ticket (`priority:low`), or a comment on the one already open for it. Runs from before the
   `TEST-CI-RETRIED` line existed logged only how many tests were retried, not which; they are counted in the report as "names not logged" and are never

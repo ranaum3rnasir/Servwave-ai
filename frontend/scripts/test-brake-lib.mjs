@@ -396,12 +396,15 @@ export function countTestFiles(trackedPaths) {
  *
  * `base` = { files, maxTestFiles } at the merge-base, or null when there is no base (a shallow checkout, a local run
  * without a remote, or maxTestFiles is new in this change): then the count is NOT JUDGED and the note says so.
+ * `reason` says why there is no base to compare with; the default is the no-base reason. The count lives in
+ * test-file-count.json (#3401); a base that still keeps it in test-budget.json passes COUNT_IN_OLD_PLACE_REASON.
  */
-export function checkFileCount({ files, maxTestFiles, base }) {
+export const COUNT_IN_OLD_PLACE_REASON = 'the base keeps the count in test-budget.json: it moved to test-file-count.json, so this change is not compared';
+export function checkFileCount({ files, maxTestFiles, base, reason = NO_BASE_REASON }) {
   if (base == null) {
     return {
-      status: 'not-judged', judged: 'none', problems: [],
-      notes: [`test files: not judged (${NO_BASE_REASON})`],
+      status: 'not-judged', judged: 'none', problems: [], reason,
+      notes: [`test files: not judged (${reason})`],
       line: null,
     };
   }
@@ -410,10 +413,10 @@ export function checkFileCount({ files, maxTestFiles, base }) {
   const ok = filesDelta === budgetDelta;
   const sign = (n) => (n >= 0 ? `+${n}` : `${n}`);
   return {
-    status: ok ? 'passed' : 'failed', judged: 'own-change',
+    status: ok ? 'passed' : 'failed', judged: 'own-change', reason: null,
     problems: ok ? [] : ['file-count-not-in-budget'],
     notes: [],
-    line: ok ? null : `this change moves the test files by ${sign(filesDelta)} (${base.files} -> ${files}) but maxTestFiles by ${sign(budgetDelta)} (${base.maxTestFiles} -> ${maxTestFiles}). Move maxTestFiles by ${sign(filesDelta)} in the same diff.`,
+    line: ok ? null : `this change moves the test files by ${sign(filesDelta)} (${base.files} -> ${files}) but maxTestFiles by ${sign(budgetDelta)} (${base.maxTestFiles} -> ${maxTestFiles}). Move maxTestFiles in test-file-count.json by ${sign(filesDelta)} in the same diff.`,
   };
 }
 

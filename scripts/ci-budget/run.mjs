@@ -29,6 +29,8 @@ const WORKFLOW = 'ci.yml';
 const NIGHTLY_WORKFLOW = 'ci-nightly.yml';
 const NIGHTLY_JOB_NAME = 'Full Frontend run of staging';
 const BUDGET_FILE = new URL('../../frontend/test-budget.json', import.meta.url);
+// The test-file count lives in its own file (#3401); it is carried on the budget object for the report's table.
+const FILE_COUNT_FILE = new URL('../../frontend/test-file-count.json', import.meta.url);
 /** How many of the newest counted runs to read logs from while looking for the ten-slowest-files table. */
 const LOG_LOOKBACK = 5;
 
@@ -130,10 +132,14 @@ async function pool(items, fn) {
   }));
 }
 
-/** The log lines the Frontend section reads, for each Frontend execution that finished in the last 7 days. `lines` is null when the log cannot be read. */
+/**
+ * The log lines the Frontend section reads, for each Frontend execution that finished in the last 7 days, and for the pull request
+ * executions of the 7 days before (the share of full runs is shown beside the previous week's, #3404). `lines` is null when the log cannot be read.
+ */
 async function readFrontendLogs(frontend) {
-  const from = Date.parse(now) - 7 * 86_400_000;
-  const week = frontend.filter((r) => r.completedAt && Date.parse(r.completedAt) > from && Date.parse(r.completedAt) <= Date.parse(now));
+  const end = Date.parse(now);
+  const finishedWithin = (r, days) => r.completedAt && Date.parse(r.completedAt) > end - days * 86_400_000 && Date.parse(r.completedAt) <= end;
+  const week = frontend.filter((r) => finishedWithin(r, 7) || (r.event === 'pull_request' && finishedWithin(r, 14)));
   await pool(week, async (r) => {
     try { r.lines = relevantLines(await getText(`actions/jobs/${r.jobId}/logs`)); } catch { r.lines = null; }
   });
@@ -204,7 +210,7 @@ const dbRecords = records.filter((r) => r.job === 'database');
 const feRecords = records.filter((r) => r.job === 'frontend');
 const weeks = measureWeeks(dbRecords, now);
 await readFrontendLogs(feRecords);
-const budget = JSON.parse(readFileSync(BUDGET_FILE, 'utf8'));
+const budget = { ...JSON.parse(readFileSync(BUDGET_FILE, 'utf8')), maxTestFiles: JSON.parse(readFileSync(FILE_COUNT_FILE, 'utf8')).maxTestFiles };
 const nightly = await findNightly(feRecords);
 const nightlyRuns = await readNightlyRuns();
 const frontendInput = async () => ({ now, runs: feRecords, nightly, nightlyRuns, budget, openTickets: await openTickets() });

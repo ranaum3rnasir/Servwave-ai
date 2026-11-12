@@ -23,6 +23,7 @@
  *   { ev: 'run-end',        reason }
  */
 import { createHash } from 'node:crypto';
+import { join } from 'node:path';
 
 /** Result words and their exit codes. 0 is the only green. */
 export const EXIT_CODES = Object.freeze({
@@ -108,6 +109,22 @@ export function resolveWorkers(env) {
   if (set.length === 0) return { workers: DEFAULT_WORKERS, why: `default ${DEFAULT_WORKERS} (no worker variable set)` };
   const lowest = set.reduce((a, b) => (b.n < a.n ? b : a));
   return { workers: lowest.n, why: `${lowest.name}=${lowest.n}` };
+}
+
+/** Where the compiled-code cache lives, relative to `frontend/`: inside node_modules, so a clean install empties it. */
+export const COMPILE_CACHE_DIR = 'node_modules/.cache/test-ci/compile-cache';
+
+/**
+ * Node's compile cache for the test tool and its workers (docs/ci.md, "The compile cache"). Every test file runs in a
+ * fresh worker process, and each one compiles the same tool code again (the fake browser, the test library, React).
+ * With one shared directory a worker reuses what an earlier worker compiled. Returns the variables to add to the
+ * tool's environment and a line for the preflight block. A NODE_COMPILE_CACHE the caller set is left alone, and so is
+ * NODE_DISABLE_COMPILE_CACHE, Node's own off switch.
+ */
+export function compileCache(env, frontend) {
+  if (env.NODE_DISABLE_COMPILE_CACHE) return { vars: {}, why: 'off (NODE_DISABLE_COMPILE_CACHE is set)' };
+  if (env.NODE_COMPILE_CACHE) return { vars: {}, why: 'the directory in NODE_COMPILE_CACHE (set by the caller)' };
+  return { vars: { NODE_COMPILE_CACHE: join(frontend, COMPILE_CACHE_DIR) }, why: COMPILE_CACHE_DIR };
 }
 
 /** Arguments for the test tool. `--retry=2`, explicit `--allowOnly=false`, `--bail=50` on pull requests. */

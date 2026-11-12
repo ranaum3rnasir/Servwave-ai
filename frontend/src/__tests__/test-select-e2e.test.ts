@@ -20,6 +20,16 @@ describe('npm run test:ci with test selection, over a real merge ref', () => {
     expect(o.summary).toContain('Selection (on): selected 2 of 3, reason=changed-files');
   }, 120_000);
 
+  it('on: a backend-only pull request runs only the tests that read outside the frontend folder, with a reason of its own (#3403)', async () => {
+    const pr = pullRequest({ change: (root) => write(root, 'backend/src/x.ts', 'export const x = 1;\n'), outsideReader: true });
+    const o = await run(pr, prEnv(pr, 'on'));
+    expect(o.code).toBe(0);
+    expect(o.out).toContain('test-select: on: selected 1 of 4, reason=no-frontend-change');
+    expect(o.verdict).toBe('TEST-CI-VERDICT result=passed code=0 reasons=none mode=selected-1-of-4 selection=no-frontend-change files=1/1 passed=1 failed=0 retried=0');
+    expect(ran(o)).toEqual(['src/__tests__/test-select-outside.test.ts']);
+    expect(o.summary).toContain('Selection (on): selected 1 of 4, reason=no-frontend-change');
+  }, 120_000);
+
   it('on: a lockfile change is a full run, reason=lockfile', async () => {
     const pr = pullRequest({ change: (root) => write(root, 'package-lock.json', '{"changed":true}') });
     const o = await run(pr, prEnv(pr, 'on'));

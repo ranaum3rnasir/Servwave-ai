@@ -29,7 +29,7 @@ export const GUARD = "import { expect, it } from 'vitest';\nit('guard', () => { 
 export interface Pr { frontend: string; head: string }
 
 /** A repository whose HEAD is the merge of a pull request that changes `change`, into a staging that moved on. */
-export function pullRequest(opts: { change: (root: string) => void; bTest?: string }): Pr {
+export function pullRequest(opts: { change: (root: string) => void; bTest?: string; outsideReader?: boolean }): Pr {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'test-select-e2e-')));
   roots.push(root);
   git(root, 'init', '-q', '-b', 'staging');
@@ -42,6 +42,8 @@ export function pullRequest(opts: { change: (root: string) => void; bTest?: stri
   write(root, 'frontend/src/a.test.ts', A_TEST);
   write(root, 'frontend/src/b.test.ts', opts.bTest ?? B_TEST);
   write(root, 'frontend/src/__tests__/disk.guard.test.ts', GUARD);
+  // on the real outside-readers list by its name (#3403); only the tests that ask for it get a fourth file
+  if (opts.outsideReader) write(root, 'frontend/src/__tests__/test-select-outside.test.ts', GUARD);
   git(root, 'add', '-A');
   git(root, 'commit', '-q', '-m', 'base');
   git(root, 'checkout', '-q', '-b', 'feature');
@@ -58,7 +60,8 @@ export function pullRequest(opts: { change: (root: string) => void; bTest?: stri
   // the test tool resolves from the repository's own dependencies; untracked, like a real checkout's node_modules
   symlinkSync(join(FRONTEND, '..', 'node_modules'), join(root, 'frontend', 'node_modules'));
   // the brake judges the repository it runs in: a generous budget, untracked like a developer's local copy
-  write(root, 'frontend/test-budget.json', JSON.stringify({ maxCpuSeconds: 100000, maxMinutes: 1000, workers: 6, maxTestFiles: 100000 }));
+  write(root, 'frontend/test-budget.json', JSON.stringify({ maxCpuSeconds: 100000, maxMinutes: 1000, workers: 6 }));
+  write(root, 'frontend/test-file-count.json', JSON.stringify({ maxTestFiles: 100000 }));
   write(root, 'frontend/test-page-ceilings.json', '{}');
   return { frontend: join(root, 'frontend'), head };
 }

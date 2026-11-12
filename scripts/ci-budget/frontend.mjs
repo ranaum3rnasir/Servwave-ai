@@ -5,6 +5,8 @@
 //   - durations and queue time: the Frontend job's own timestamps (same as the Database section).
 //   - selection mode and reason: the job log's `TEST-CI-VERDICT` line (its `selection=` word) and, in shadow, the
 //     `TEST-SELECT-SHADOW` line. With the selection variable off the verdict line has no `selection=` at all: that is "off".
+//   - the share of full runs (#3404): the same two lines, for `pull_request` executions only, this week and the week before. Whether a
+//     pull request went into staging is read from the reason code (a promotion into main prints `promotion-into-main`).
 //   - retried tests: one `TEST-CI-RETRIED` line per retried test, printed by the command since #3258. Runs older than that logged only
 //     the COUNT (`retried=N` on the verdict line), never the names (the names live in the job summary, which GitHub's API does not
 //     return). Such runs are counted and named in the report as "names not logged"; no name is ever guessed.
@@ -23,7 +25,7 @@ export const RETRY_RUNS_THRESHOLD = 2;
  * The reason codes `frontend/scripts/test-select-lib.mjs` prints when the selector itself broke, as opposed to a deliberate full run
  * (a lockfile change, a promotion, ...): it threw (`selector-threw`), hung (`selector-timeout`), or could not classify the change
  * (`unclassified-path`, `no-changed-list`, `selector-bad-output`, and the checks that its own lists disagree with the tracked files:
- * `listed-not-tracked`, `changed-not-tracked`, `case-mismatch`, `empty-always-run`). A test pins that each one is a real code.
+ * `listed-not-tracked`, `changed-not-tracked`, `case-mismatch`, `empty-always-run`, `empty-outside-readers`). A test pins that each one is a real code.
  */
 export const ERROR_FALLBACK_REASONS = [
   'selector-threw',
@@ -35,7 +37,24 @@ export const ERROR_FALLBACK_REASONS = [
   'changed-not-tracked',
   'case-mismatch',
   'empty-always-run',
+  'empty-outside-readers',
 ];
+
+/**
+ * Deliberate full runs above this share of a week's pull request runs into staging (strictly above) open or update one ticket (#3404).
+ * A selector that quietly stops selecting looks green forever: every run passes, only slower. The replay of 60 pull requests with the
+ * phase 1 rules of #3400 gives 27%, so 35% leaves room for a week with more workflow or lockfile changes than usual.
+ */
+export const FULL_RUN_THRESHOLD = 0.35;
+
+/**
+ * Reason codes of runs that are not a pull request into staging the selector judges: they are always full, by design, so they are not
+ * counted in the share (a promotion into main, a pull request into another branch, a push, the nightly run, a manual run, a hosted shard).
+ */
+export const NOT_COUNTED_REASONS = ['promotion-into-main', 'base-not-staging', 'not-pull-request', 'nightly', 'manual', 'hosted-shard'];
+
+/** At most this many reason rows are printed in the share table and in its ticket; a log could hold any number of made-up reasons. */
+const FULL_RUN_REASON_ROWS = 15;
 
 /** At most this many flaky-test tickets are opened or commented in one run; the rest are counted in the section (the most-retried come first). */
 export const MAX_RETRIED_TICKETS = 5;
@@ -57,6 +76,7 @@ export const TICKET_LABELS_RETRIED = ['priority:low', 'module:general', 'ci-budg
 
 /** Hidden markers: how the one open ticket per cause is found again. Distinct from the Database ticket's marker. */
 export const FALLBACK_MARKER = '<!-- ci-weekly-frontend:error-fallbacks -->';
+export const FULL_RUN_MARKER = '<!-- ci-weekly-frontend:full-run-share -->';
 export const retriedKey = (file, test) => createHash('sha1').update(`${file}\n${test}`).digest('hex').slice(0, 12);
 export const retriedMarker = (file, test) => `<!-- ci-weekly-frontend:retried:${retriedKey(file, test)} -->`;
 
@@ -218,6 +238,60 @@ export function tallyWeek(runs, now, nightlyRuns = []) {
   return { executions: week.length, logsMissing, noVerdict, runsWithVerdict: withVerdict.length, modeRows, errorFallbacks, errorByReason, errorRunIds, retriedTests, retriedUnnamed };
 }
 
+// ---- the share of full runs (#3404) ------------------------------------------------------------------------------------------
+
+/**
+ * What the selector decided, or in shadow would have decided, for one execution: `{ decided: 'full' | 'selected', reason, source }`,
+ * or `{ skipped: why }` when the execution is not a pull request into staging with a decision to count.
+ */
+export function decisionOf(run, parsed) {
+  if (run.event !== 'pull_request') return { skipped: 'not-a-pull-request' };
+  const k = classify(parsed);
+  if (k.selection === 'none' || k.selection === 'shard') return { skipped: 'no-decision' };
+  if (k.selection === 'off') return { skipped: 'selection-off' };
+  if (NOT_COUNTED_REASONS.includes(k.reason)) return { skipped: 'always-full' };
+  const decided = k.selection === 'shadow' ? k.would : k.ran;
+  if (decided !== 'full' && decided !== 'selected') return { skipped: 'no-decision' };
+  return { decided, reason: k.reason, source: k.selection };
+}
+
+/**
+ * The share of full runs among the pull request runs into staging that finished in the 7 days up to `end`. Pure.
+ * `deliberate` are the full runs that are not error-type fallbacks (those have a line and a ticket of their own).
+ */
+export function fullRunShare(runs, end) {
+  const out = { runs: 0, full: 0, selected: 0, deliberate: 0, shadow: 0, on: 0, selectionOff: 0, byReason: new Map() };
+  for (const r of runs) {
+    if (!r.startedAt || !inWeek(r, end) || !Array.isArray(r.lines)) continue;
+    const parsed = parseRunLines(r.lines);
+    if (!parsed.verdict) continue;
+    const d = decisionOf(r, parsed);
+    if (d.skipped) { if (d.skipped === 'selection-off') out.selectionOff += 1; continue; }
+    out.runs += 1;
+    out[d.source] += 1;
+    if (d.decided === 'selected') { out.selected += 1; continue; }
+    out.full += 1;
+    if (!ERROR_FALLBACK_REASONS.includes(d.reason)) out.deliberate += 1;
+    out.byReason.set(d.reason, (out.byReason.get(d.reason) ?? 0) + 1);
+  }
+  return out;
+}
+
+/** Whether a week's deliberate full runs are over the line (strictly above it; a week with no counted run is never over). */
+export const fullRunsOverLine = (share) => share.runs > 0 && share.deliberate / share.runs > FULL_RUN_THRESHOLD;
+
+/** The reason rows of the share table: this week's count beside the previous week's, the most frequent first, capped. */
+function fullRunReasonRows(current, previous) {
+  const reasons = [...new Set([...current.byReason.keys(), ...previous.byReason.keys()])]
+    .map((reason) => ({ reason, now: current.byReason.get(reason) ?? 0, before: previous.byReason.get(reason) ?? 0 }))
+    .sort((a, b) => b.now - a.now || b.before - a.before || (a.reason < b.reason ? -1 : 1));
+  const shown = reasons.slice(0, FULL_RUN_REASON_ROWS).map((r) => `| ${logWord(r.reason)}${ERROR_FALLBACK_REASONS.includes(r.reason) ? ' (error-type)' : ''} | ${r.now} | ${r.before} |`);
+  return { shown, more: Math.max(0, reasons.length - FULL_RUN_REASON_ROWS) };
+}
+
+/** "12 of 40 (30%)", or "none counted" for a week with no pull request run into staging that printed a decision. */
+const shareText = (part, whole) => (whole === 0 ? 'none counted' : `${part} of ${whole} (${pct(part, whole)})`);
+
 // ---- tickets: exactly one open ticket per cause ----------------------------------------------------------------------------------
 
 /**
@@ -233,8 +307,30 @@ export function actionFor(cause, openTickets) {
   return { kind: 'comment', cause: cause.key, number: marked[0].number, body: others.length ? `${body}\nAlso open with the same marker: ${others.join(', ')}.\n` : body };
 }
 
-function causesOf(tally, now) {
+function causesOf(tally, now, share) {
   const causes = [];
+  if (share && fullRunsOverLine(share.current)) {
+    const { current, previous } = share;
+    const rows = fullRunReasonRows(current, previous);
+    causes.push({
+      key: 'full-run-share',
+      marker: FULL_RUN_MARKER,
+      title: `CI: more than ${FULL_RUN_THRESHOLD * 100}% of this week's pull request runs were full Frontend runs`,
+      labels: TICKET_LABELS_FALLBACK,
+      body: [
+        `## Share of full Frontend runs (week to ${now.slice(0, 10)})`,
+        '',
+        `**${shareText(current.deliberate, current.runs)}** of the pull request runs into staging ${current.shadow > 0 && current.on === 0 ? 'would have been' : 'were'} deliberate full runs. The line is ${FULL_RUN_THRESHOLD * 100}%. Previous week: ${shareText(previous.deliberate, previous.runs)}.`,
+        '',
+        '| Reason for the full run | This week | Previous week |',
+        '|---|---|---|',
+        ...rows.shown,
+        ...(rows.more ? ['', `and ${rows.more} more reasons not listed.`] : []),
+        '',
+        'A full run is right for a lockfile, a CI workflow or a selector change. A share this high usually means one rule fires on changes that cannot affect the frontend tests, as the file-count rule did before #3401. Look at the top reason first: read the pull requests that hit it, and narrow the rule if their changes could not reach a test (docs/ci.md, "Selected runs"). Raising the line is not a remedy.',
+      ].join('\n'),
+    });
+  }
   if (tally.runsWithVerdict > 0 && tally.errorFallbacks / tally.runsWithVerdict > FALLBACK_THRESHOLD) {
     const reasons = [...tally.errorByReason].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
     causes.push({
@@ -311,6 +407,41 @@ export function frontendReport({ now, runs, nightly, budget, openTickets = [], n
     }
   }
 
+  // 1b. the share of full runs among pull request runs into staging (#3404)
+  const end = Date.parse(now);
+  const share = { current: fullRunShare(runs, end), previous: fullRunShare(runs, end - 7 * DAY_MS) };
+  out.push('#### Share of full runs on pull requests into staging (last 7 days beside the 7 before)', '');
+  if (share.current.runs === 0 && share.previous.runs === 0) {
+    out.push(share.current.selectionOff + share.previous.selectionOff > 0
+      ? 'Test selection is off, so no run printed a decision to count: every run was full.'
+      : 'No pull request run into staging printed a selection decision in the last 14 days.', '');
+  } else {
+    const { current, previous } = share;
+    const shadowOnly = current.shadow + previous.shadow > 0 && current.on + previous.on === 0;
+    if (current.shadow + previous.shadow > 0) {
+      out.push(shadowOnly
+        ? 'Selection is in shadow mode: every run ran every test. The figures below are what the selector would have done.'
+        : `Some runs were in shadow mode (${current.shadow} this week, ${previous.shadow} the week before): for those the figures are what the selector would have done.`, '');
+    }
+    const rows = fullRunReasonRows(current, previous);
+    out.push(
+      '| | This week | Previous week |', '|---|---|---|',
+      `| Pull request runs into staging | ${current.runs} | ${previous.runs} |`,
+      `| Full runs | ${shareText(current.full, current.runs)} | ${shareText(previous.full, previous.runs)} |`,
+      `| Selected runs | ${current.selected} | ${previous.selected} |`,
+      '',
+    );
+    if (rows.shown.length) {
+      out.push('| Reason for the full run | This week | Previous week |', '|---|---|---|', ...rows.shown, '');
+      if (rows.more) out.push(`and ${rows.more} more reasons not listed.`, '');
+    }
+    out.push(
+      `Deliberate full runs (full runs that are not error-type fallbacks): **${shareText(current.deliberate, current.runs)}**. Line: ${FULL_RUN_THRESHOLD * 100}%, ${fullRunsOverLine(current) ? 'over' : 'not over'}.`,
+      'Not counted, because they are always full: promotion pull requests into main, pushes, the nightly run, manual runs and hosted shards.',
+      '',
+    );
+  }
+
   // 2. retried tests
   out.push('#### Tests retried in two or more runs this week', '');
   const flaky = tally.retriedTests.filter((t) => t.runs >= RETRY_RUNS_THRESHOLD);
@@ -363,7 +494,7 @@ export function frontendReport({ now, runs, nightly, budget, openTickets = [], n
     else out.push('Previous week: no runs to compare with.', '');
   }
 
-  const causes = causesOf(tally, now);
+  const causes = causesOf(tally, now, share);
   const actions = causes.map((c) => actionFor(c, openTickets));
   // The Frontend causes have tickets of their own (above), so this section never opens the Database ticket: breach is false.
   return { section: { id: 'frontend', title: 'Frontend check', breach: false, markdown: out.join('\n').trimEnd() }, actions };

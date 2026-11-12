@@ -23,10 +23,11 @@ export declare function scanPageImports(opts: { tests: { path: string; source: s
 export type PageProblem = { kind: 'over-ceiling' | 'ceiling-raised' | 'new-page-over-start'; page: string; [k: string]: unknown };
 export declare function pagesGrownBy(opts: { changed: { path: string; source: string; baseSource: string | null }[]; pages: string[] }): string[];
 export declare const NO_BASE_REASON: string;
+export declare const COUNT_IN_OLD_PLACE_REASON: string;
 export declare function pageCeilings(opts: { actual: Record<string, number>; ceilings: Record<string, number>; baseCeilings: Record<string, number> | null; grown?: string[] | null }): { status: 'passed' | 'failed' | 'not-judged'; problems: PageProblem[]; comparedToBase: boolean; judged: 'none' | 'own-change'; reason?: string };
 export declare function countTestFiles(trackedPaths: string[]): number;
-export type FileCountVerdict = { status: 'passed' | 'failed' | 'not-judged'; judged: 'none' | 'own-change'; problems: string[]; notes: string[]; line: string | null };
-export declare function checkFileCount(opts: { files: number; maxTestFiles: number; base: { files: number; maxTestFiles: number } | null }): FileCountVerdict;
+export type FileCountVerdict = { status: 'passed' | 'failed' | 'not-judged'; judged: 'none' | 'own-change'; problems: string[]; notes: string[]; line: string | null; reason: string | null };
+export declare function checkFileCount(opts: { files: number; maxTestFiles: number; base: { files: number; maxTestFiles: number } | null; reason?: string }): FileCountVerdict;
 export declare function pageProblemLine(p: PageProblem): string;
 export declare function cpuSecondsOf(events: Ev[]): number | null;
 export type Budget = { maxCpuSeconds: number; maxMinutes: number; workers: number; maxTestFiles: number; cpuEnforcement?: string; cpuEnforcementNote?: string };

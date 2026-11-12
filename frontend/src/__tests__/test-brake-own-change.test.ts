@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { changedFiles, judgeGrowth } from '../../scripts/test-brake-io.mjs';
+import { COUNT_IN_OLD_PLACE_REASON } from '../../scripts/test-brake-lib.mjs';
 
 const PAGE = 'src/pages/v2/jobs/JobDetailPage.tsx';
 const ROOT = mkdtempSync(join(tmpdir(), 'brake-own-change-'));
@@ -25,8 +26,11 @@ const put = (path: string, text: string) => {
 const mountingTest = `import { JobDetailPage } from '../pages/v2/jobs/JobDetailPage';\nexport const x = JobDetailPage;\n`;
 const plainTest = `export const x = 1;\n`;
 const setJson = (name: string, value: unknown) => put(name, `${JSON.stringify(value, null, 2)}\n`);
-/** budget numbers: only maxTestFiles matters to these tests */
-const setBudget = (maxTestFiles: number) => setJson('test-budget.json', { maxCpuSeconds: 4500, maxMinutes: 10, workers: 6, maxTestFiles });
+/** The count lives in its own file (#3401); the budget file beside it carries the real budgets and no count. */
+const setBudget = (maxTestFiles: number) => {
+  setJson('test-budget.json', { maxCpuSeconds: 4500, maxMinutes: 10, workers: 6 });
+  setJson('test-file-count.json', { maxTestFiles });
+};
 const setCeiling = (n: number) => setJson('test-page-ceilings.json', { [PAGE]: n });
 const commit = (msg: string) => { git('add', '-A'); git('commit', '-q', '-m', msg); };
 const judge = (opts: { base?: string; env?: Record<string, string | undefined> } = {}) =>
@@ -111,7 +115,7 @@ describe('judged on the pull request\'s own change', () => {
     commit('two files, no budget');
     const bad = judge();
     expect(bad.fileCount).toMatchObject({ status: 'failed', problems: ['file-count-not-in-budget'] });
-    expect(bad.fileCount?.line).toBe('this change moves the test files by +2 (4 -> 6) but maxTestFiles by +0 (3 -> 3). Move maxTestFiles by +2 in the same diff.');
+    expect(bad.fileCount?.line).toBe('this change moves the test files by +2 (4 -> 6) but maxTestFiles by +0 (3 -> 3). Move maxTestFiles in test-file-count.json by +2 in the same diff.');
     setBudget(5);
     commit('budget +2');
     expect(judge().fileCount?.status).toBe('passed');
@@ -202,7 +206,7 @@ describe('a pull request into main (a promotion cut off main)', () => {
 
   it('the own change is HEAD vs the merge-base with origin/main, not origin/staging: no 1,000-file diff', () => {
     const changed = changedFiles(FRONTEND, { env: PR_INTO_MAIN });
-    expect(changed).toEqual(['src/__tests__/picked.test.tsx', 'test-budget.json']);
+    expect(changed).toEqual(['src/__tests__/picked.test.tsx', 'test-file-count.json']);
     const verdict = judge({ env: PR_INTO_MAIN });
     expect(verdict.resolved?.ref).toBe('origin/main');
     expect(verdict.resolved?.commit).toBe(git('rev-parse', 'origin/main'));
@@ -215,4 +219,43 @@ describe('a pull request into main (a promotion cut off main)', () => {
     expect(judge({ env: PR_INTO_MAIN }).fileCount).toMatchObject({ status: 'failed' });
   });
 
+});
+
+// #3401: the count moved out of test-budget.json into test-file-count.json. These run last: they move origin/staging.
+describe('the count lives in test-file-count.json, not in the budget file', () => {
+  it('a tree that still carries maxTestFiles in test-budget.json is an error, not a silent pass', () => {
+    git('checkout', '-q', '-b', 'old-place', 'main');
+    git('rm', '-q', 'frontend/test-file-count.json');
+    setJson('test-budget.json', { maxCpuSeconds: 4500, maxMinutes: 10, workers: 6, maxTestFiles: 4 });
+    commit('a base from before the move: the count is in the budget file');
+    expect(() => judge()).toThrow(/test-budget\.json carries maxTestFiles/);
+  });
+
+  it('a tree with no count file at all is an error too', () => {
+    setJson('test-budget.json', { maxCpuSeconds: 4500, maxMinutes: 10, workers: 6 });
+    expect(() => judge()).toThrow(/test-file-count\.json is missing/);
+    git('checkout', '-q', '--', 'frontend/test-budget.json');
+  });
+
+  it('a pull request whose base still has the count in the old place is not judged for the count, and says why', () => {
+    setStaging('old-place');
+    git('checkout', '-q', '-b', 'pr-after-move', 'old-place');
+    setBudget(5);
+    put('src/__tests__/after-move.test.tsx', plainTest);
+    commit('the count moved to its own file, and one test file was added');
+    const verdict = judge();
+    expect(verdict.fileCount).toMatchObject({ status: 'not-judged', judged: 'none', problems: [], reason: COUNT_IN_OLD_PLACE_REASON });
+    expect(verdict.fileCount?.notes.join()).toContain('the base keeps the count in test-budget.json');
+  });
+
+  it('once the base has the count file, the same kind of change is judged on its own difference again', () => {
+    setStaging('pr-after-move');
+    git('checkout', '-q', '-b', 'pr-next', 'pr-after-move');
+    put('src/__tests__/next.test.tsx', plainTest);
+    commit('one more test file, the count not moved');
+    expect(judge().fileCount).toMatchObject({ status: 'failed', problems: ['file-count-not-in-budget'] });
+    setBudget(6);
+    commit('the count +1');
+    expect(judge().fileCount).toMatchObject({ status: 'passed', judged: 'own-change' });
+  });
 });

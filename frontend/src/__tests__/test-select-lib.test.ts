@@ -22,7 +22,10 @@ import {
 } from '../../scripts/test-select-lib.mjs';
 
 const REAL: Lists = JSON.parse(readFileSync(resolve(__dirname, '../../scripts/test-select-lists.json'), 'utf8'));
-const LISTS: Lists = { ...REAL, alwaysRun: ['frontend/src/**/*guard*.test.ts'] };
+const GUARD = 'frontend/src/__tests__/disk-reader.guard.test.ts';
+// The fixture's one guard reads outside the frontend folder; INSIDE_GUARD (added by the tests that need it) reads only inside it.
+const INSIDE_GUARD = 'frontend/src/__tests__/reads-only-frontend.guard.test.ts';
+const LISTS: Lists = { ...REAL, alwaysRun: ['frontend/src/**/*guard*.test.ts'], outsideReaders: [GUARD] };
 
 const HEAD = 'bbbb000000000000000000000000000000000002';
 const BASE_TIP = 'aaaa000000000000000000000000000000000001';
@@ -31,7 +34,6 @@ const BUTTON = 'frontend/src/components/Button.tsx';
 const BUTTON_TEST = 'frontend/src/components/__tests__/Button.test.tsx';
 const BUTTON_SNAP = 'frontend/src/components/__tests__/__snapshots__/Button.test.tsx.snap';
 const HOME_TEST = 'frontend/src/pages/__tests__/Home.test.tsx';
-const GUARD = 'frontend/src/__tests__/disk-reader.guard.test.ts';
 const TRACKED = [
   'package-lock.json', 'package.json', 'docs/ci.md', 'backend/src/x.ts',
   'frontend/package.json', 'frontend/src/pages/Home.tsx', BUTTON, BUTTON_TEST, BUTTON_SNAP, HOME_TEST, GUARD,
@@ -70,7 +72,7 @@ describe('a selected run', () => {
   });
 
   it('always contains the always-run list, even when the change reaches no test at all', () => {
-    const d = decideSelection(facts({ changed: [change('M', 'docs/ci.md')], listed: [] }));
+    const d = decideSelection(facts({ changed: [change('M', 'frontend/src/pages/Home.tsx')], listed: [] }));
     expect(d).toMatchObject({ mode: 'selected', reason: 'always-run-only' });
     expect(d.files).toEqual(['src/__tests__/disk-reader.guard.test.ts']);
   });
@@ -78,6 +80,37 @@ describe('a selected run', () => {
   it('adds a changed test file even when the tool does not list it', () => {
     const d = decideSelection(facts({ changed: [change('M', HOME_TEST)], listed: [] }));
     expect(d.files).toContain('src/pages/__tests__/Home.test.tsx');
+  });
+
+  // #3401: the brake makes a pull request that adds or deletes a test file move the count in test-file-count.json.
+  // That bookkeeping is not an edit of the selector, so such a pull request still gets a selected run.
+  const COUNT_FILE = 'frontend/test-file-count.json';
+  const NEW_TEST = 'frontend/src/pages/__tests__/New.test.tsx';
+
+  it('a pull request that adds a test file and moves the count gets a selected run that contains the new file', () => {
+    const d = decideSelection(facts({
+      changed: [change('A', NEW_TEST), change('M', COUNT_FILE)],
+      tracked: [...TRACKED, NEW_TEST, COUNT_FILE],
+      listed: [NEW_TEST],
+    }));
+    expect(d).toMatchObject({ mode: 'selected', reason: 'changed-files' });
+    expect(d.files).toContain('src/pages/__tests__/New.test.tsx');
+  });
+
+  it('a pull request that deletes a test file and lowers the count stays selected', () => {
+    const d = decideSelection(facts({
+      changed: [change('D', HOME_TEST), change('M', COUNT_FILE)],
+      tracked: [...TRACKED.filter((p) => p !== HOME_TEST), COUNT_FILE],
+      listed: [],
+    }));
+    expect(d).toMatchObject({ mode: 'selected', reason: 'always-run-only' });
+  });
+
+  it('the count file is the only brake file that does not force a full run: the budget file next to it still does', () => {
+    const tracked = [...TRACKED, COUNT_FILE, 'frontend/test-budget.json'];
+    expect(decideSelection(facts({ changed: [change('M', COUNT_FILE)], tracked, listed: [] })).mode).toBe('selected');
+    expect(decideSelection(facts({ changed: [change('M', COUNT_FILE), change('M', 'frontend/test-budget.json')], tracked, listed: [] })))
+      .toMatchObject({ mode: 'full', reason: 'selector-edited' });
   });
 
   it('lets a deleted test file go: nothing is selected for it and the run stays selected', () => {
@@ -138,9 +171,11 @@ describe('fail-open rows: each is a full run with its own reason code', () => {
     ['the changed-path list is missing', { changed: null }, 'no-changed-list'],
     ['more than 300 paths changed', { changed: Array.from({ length: MAX_CHANGED_PATHS + 1 }, (_, i) => change('M', `docs/p${i}.md`)) }, 'too-many-paths'],
     ['a source file is deleted', { changed: [change('D', BUTTON)] }, 'deleted-source'],
-    ['a non-code file is deleted', { changed: [change('D', 'docs/ci.md')] }, 'deleted-source'],
+    ['a file inside the frontend folder that is not source code is deleted', { changed: [change('D', 'frontend/.storybook/preview.ts')] }, 'deleted-source'],
     ['a source file is renamed', { changed: [change('R', 'frontend/src/components/ButtonX.tsx', BUTTON)], tracked: [...TRACKED, 'frontend/src/components/ButtonX.tsx'] }, 'renamed-source'],
+    ['a source file is renamed out of the frontend folder', { changed: [change('R', 'backend/src/moved.ts', BUTTON)], tracked: [...TRACKED, 'backend/src/moved.ts'] }, 'renamed-source'],
     ['a path is in no area the policy knows', { changed: [change('M', 'somewhere/new/file.ts')] }, 'unclassified-path'],
+    ['a path is in a dot-folder of the frontend folder the policy does not know', { changed: [change('M', 'frontend/.cache/file.ts')] }, 'unclassified-path'],
     ['a path holds a control character', { changed: [change('M', 'docs/a\nb.md')] }, 'unclassified-path'],
     ['a path climbs out of the repository', { changed: [change('M', 'docs/../../etc/x')] }, 'unclassified-path'],
     ['a change has a status the policy does not know (type change)', { changed: [change('T', BUTTON)] }, 'unclassified-path'],
@@ -210,7 +245,9 @@ describe('full-run triggers: each forces a full run with its own code', () => {
     ['backend/package-lock.json', 'lockfile'],
     ['package.json', 'package-manifest'],
     ['frontend/package.json', 'package-manifest'],
-    ['backend/package.json', 'package-manifest'],
+    ['backend/tools/package.json', 'package-manifest'],
+    ['.npmrc', 'package-manifest'],
+    ['frontend/.npmrc', 'package-manifest'],
     ['.nvmrc', 'package-manifest'],
     ['frontend/tsconfig.json', 'tsconfig'],
     ['frontend/tsconfig.node.json', 'tsconfig'],
@@ -226,6 +263,8 @@ describe('full-run triggers: each forces a full run with its own code', () => {
     ['frontend/src/__tests__/setup.ts', 'setup-file'],
     ['.github/workflows/ci.yml', 'workflows'],
     ['.github/workflows/ci-nightly.yml', 'workflows'],
+    ['.github/workflows/a-workflow-nobody-listed.yml', 'workflows'],
+    ['.github/actions/setup/action.yml', 'workflows'],
     ['frontend/.env.example', 'env-file'],
     ['frontend/.env.production', 'env-file'],
   ];
@@ -241,6 +280,114 @@ describe('full-run triggers: each forces a full run with its own code', () => {
 
   it('wins over a plain source change in the same pull request', () => {
     expect(decideSelection(facts({ changed: [change('M', BUTTON), change('M', 'package-lock.json')] })).reason).toBe('lockfile');
+  });
+});
+
+describe('narrowed rules (#3402): a change that cannot reach the frontend tests does not force a full run', () => {
+  /** The change alone, with nothing listed by the tool: selected means the always-run list and nothing else. */
+  const alone = (changed: Change[], tracked: string[] = []) => decideSelection(facts({ changed, tracked: [...TRACKED, ...tracked], listed: [] }));
+  const TOLERATED_WORKFLOWS = REAL.triggers.find((t) => t.code === 'workflows')?.except ?? [];
+
+  // The reason says which selection it is: nothing under frontend/ changed (#3403), or a frontend change that reaches no test.
+  const selected: [string, Change[], string[], string][] = [
+    ["the backend's manifest", [change('M', 'backend/package.json')], ['backend/package.json'], 'no-frontend-change'],
+    ['a file of the agents\' tooling (.claude)', [change('M', '.claude/skills/ship-changes/SKILL.md')], ['.claude/skills/ship-changes/SKILL.md'], 'no-frontend-change'],
+    ['a storybook config file', [change('M', 'frontend/.storybook/main.ts')], ['frontend/.storybook/main.ts'], 'always-run-only'],
+    ['a file deleted outside the frontend folder', [change('D', 'docs/ci.md')], [], 'no-frontend-change'],
+    ['a backend source file deleted', [change('D', 'backend/src/x.ts')], [], 'no-frontend-change'],
+    ['a file renamed outside the frontend folder', [change('R', 'backend/src/y.ts', 'backend/src/x.ts')], ['backend/src/y.ts'], 'no-frontend-change'],
+    ['a file renamed into the frontend folder', [change('R', 'frontend/src/lib/moved.ts', 'backend/src/x.ts')], ['frontend/src/lib/moved.ts'], 'always-run-only'],
+    ['a deleted workflow that runs no frontend test', [change('D', '.github/workflows/back-merge.yml')], [], 'no-frontend-change'],
+  ];
+  it.each(selected)('%s: a selected run', (_name, changed, tracked, reason) => {
+    expect(alone(changed, tracked)).toMatchObject({ mode: 'selected', reason, files: ['src/__tests__/disk-reader.guard.test.ts'] });
+  });
+
+  it('tolerates eight workflows, and neither the CI workflow nor the nightly one', () => {
+    expect(TOLERATED_WORKFLOWS).toHaveLength(8);
+    expect(TOLERATED_WORKFLOWS).not.toContain('.github/workflows/ci.yml');
+    expect(TOLERATED_WORKFLOWS).not.toContain('.github/workflows/ci-nightly.yml');
+  });
+
+  it.each(TOLERATED_WORKFLOWS)('a change to %s (a workflow that runs no frontend test): a selected run', (path) => {
+    expect(alone([change('M', path)], [path])).toMatchObject({ mode: 'selected', reason: 'no-frontend-change' });
+  });
+
+  const stillFull: [string, Change[], string][] = [
+    ["the backend's manifest together with the lockfile", [change('M', 'backend/package.json'), change('M', 'package-lock.json')], 'lockfile'],
+    ["the backend's manifest together with the root manifest", [change('M', 'backend/package.json'), change('M', 'package.json')], 'package-manifest'],
+    ['a tolerated workflow together with the CI workflow', [change('M', '.github/workflows/back-merge.yml'), change('M', '.github/workflows/ci.yml')], 'workflows'],
+    ['the CI workflow deleted', [change('D', '.github/workflows/ci.yml')], 'workflows'],
+    ['a tolerated workflow renamed to a name nobody listed', [change('R', '.github/workflows/back-merge-2.yml', '.github/workflows/back-merge.yml')], 'workflows'],
+    ['a file deleted outside the frontend folder together with one deleted inside it', [change('D', 'docs/ci.md'), change('D', BUTTON)], 'deleted-source'],
+  ];
+  it.each(stillFull)('%s: still a full run', (_name, changed, reason) => {
+    expect(alone(changed)).toMatchObject({ mode: 'full', reason });
+  });
+
+  it('an exception is read from the trigger it belongs to: without the list, the backend manifest is a full run again', () => {
+    const lists: Lists = { ...LISTS, triggers: LISTS.triggers.map(({ code, patterns }) => ({ code, patterns })) };
+    expect(decideSelection(facts({ changed: [change('M', 'backend/package.json')], tracked: [...TRACKED, 'backend/package.json'], listed: [], lists })).reason).toBe('package-manifest');
+    expect(decideSelection(facts({ changed: [change('M', '.github/workflows/back-merge.yml')], tracked: [...TRACKED, '.github/workflows/back-merge.yml'], listed: [], lists })).reason).toBe('workflows');
+  });
+});
+
+describe('nothing under frontend/ changed (#3403): only the tests that read outside the frontend folder run', () => {
+  const TREE = [...TRACKED, INSIDE_GUARD, 'backend/src/y.ts', 'docs/new.md'];
+  const decide = (changed: Change[], over: Partial<SelectionInput> = {}) => decideSelection(facts({ changed, tracked: TREE, listed: [], ...over }));
+  const OUTSIDE_ONLY = ['src/__tests__/disk-reader.guard.test.ts'];
+  const BOTH = ['src/__tests__/disk-reader.guard.test.ts', 'src/__tests__/reads-only-frontend.guard.test.ts'];
+
+  it.each<[string, Change[]]>([
+    ['only backend files', [change('M', 'backend/src/x.ts'), change('A', 'backend/src/y.ts')]],
+    ['only docs', [change('M', 'docs/ci.md'), change('A', 'docs/new.md')]],
+    ['a root file that is no trigger', [change('M', 'CLAUDE.md')]],
+    ['backend, docs and a tolerated workflow together', [change('M', 'backend/src/x.ts'), change('M', 'docs/ci.md'), change('D', '.github/workflows/back-merge.yml')]],
+  ])('a pull request that changes %s runs the outside readers and not the other always-run tests', (_name, changed) => {
+    const d = decide(changed, { tracked: [...TREE, 'CLAUDE.md'] });
+    expect(d).toMatchObject({ mode: 'selected', reason: 'no-frontend-change', files: OUTSIDE_ONLY, alwaysRun: 1, total: 4 });
+    expect(selectionPhrase(d)).toBe('selected 1 of 4, reason=no-frontend-change');
+  });
+
+  it('still adds what the tool lists as reached (a test that imports a changed backend file)', () => {
+    const d = decide([change('M', 'backend/src/x.ts')], { listed: [HOME_TEST] });
+    expect(d).toMatchObject({ reason: 'no-frontend-change', files: ['src/__tests__/disk-reader.guard.test.ts', 'src/pages/__tests__/Home.test.tsx'], alwaysRun: 1 });
+  });
+
+  it.each<[string, Change[], string]>([
+    ['one source file under frontend/', [change('M', BUTTON)], 'always-run-only'],
+    ['one frontend file beside backend files', [change('M', 'backend/src/x.ts'), change('M', 'frontend/src/pages/Home.tsx')], 'always-run-only'],
+    ['a frontend file that is not source (frontend/public)', [change('M', 'frontend/public/robots.txt')], 'always-run-only'],
+    ['a file renamed out of an area outside into frontend/', [change('R', 'frontend/src/lib/moved.ts', 'backend/src/x.ts')], 'always-run-only'],
+  ])('a pull request that changes %s still gets the whole always-run list', (_name, changed, reason) => {
+    const d = decide(changed, { tracked: [...TREE, 'frontend/public/robots.txt', 'frontend/src/lib/moved.ts'] });
+    expect(d).toMatchObject({ mode: 'selected', reason, files: BOTH, alwaysRun: 2 });
+  });
+
+  it('a test file changed under frontend/ is a frontend change: the whole always-run list plus that test', () => {
+    const d = decide([change('M', HOME_TEST)]);
+    expect(d).toMatchObject({ reason: 'changed-files', files: [...BOTH, 'src/pages/__tests__/Home.test.tsx'] });
+  });
+
+  it('"nothing to run" is never an outcome: no test on the outside-readers list is a full run with its own reason', () => {
+    expect(decide([change('M', 'docs/ci.md')], { lists: { ...LISTS, outsideReaders: ['frontend/nothing/**'] } })).toMatchObject({ mode: 'full', reason: 'empty-outside-readers', files: [] });
+    expect(decide([change('M', 'docs/ci.md')], { lists: { ...LISTS, outsideReaders: [] } }).reason).toBe('empty-outside-readers');
+  });
+
+  it('a lists file from before the rule (no outsideReaders at all) is a full run, not a guess', () => {
+    const { outsideReaders: _gone, ...old } = LISTS;
+    expect(decide([change('M', 'docs/ci.md')], { lists: old }).reason).toBe('empty-outside-readers');
+  });
+
+  it.each<[string, Change[], Partial<SelectionInput>, string]>([
+    ['a path that cannot be classified', [change('M', 'somewhere/new/file.ts')], {}, 'unclassified-path'],
+    ['a full-run trigger beside it', [change('M', 'docs/ci.md'), change('M', 'package-lock.json')], {}, 'lockfile'],
+    ['a shallow checkout', [change('M', 'docs/ci.md')], { shallow: true }, 'shallow-clone'],
+    ['a failed git command (no changed-path list)', [], { changed: null }, 'no-changed-list'],
+    ['a selector that threw', [change('M', 'docs/ci.md')], { selectorError: 'threw' }, 'selector-threw'],
+    ['no test on the always-run list', [change('M', 'docs/ci.md')], { lists: { ...LISTS, alwaysRun: ['frontend/nothing/**'] } }, 'empty-always-run'],
+  ])('every doubt is still a full run: %s', (_name, changed, over, reason) => {
+    expect(decide(changed, over)).toMatchObject({ mode: 'full', reason });
   });
 });
 

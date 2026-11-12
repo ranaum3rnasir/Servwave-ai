@@ -7,7 +7,7 @@
  */
 import { spawn } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -17,13 +17,13 @@ const CONFIG = join(FRONTEND, 'scripts/__fixtures__/test-ci/vitest.config.mjs');
 
 /**
  * The environment a child run sees: the caller's, minus everything the test tool or the brake reads from the CI
- * runner (VITEST*, TEST_CI*, the worker count, CI, and every GITHUB_* variable such as GITHUB_BASE_REF and
- * GITHUB_EVENT_NAME). These runs must give the same answer on a laptop, on a push and on a pull request into any branch.
+ * runner (VITEST*, TEST_CI*, the worker count, CI, the compile-cache variables, and every GITHUB_* variable such as
+ * GITHUB_BASE_REF and GITHUB_EVENT_NAME). These runs must give the same answer on a laptop, on a push and on a pull request into any branch.
  */
 function childEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const k of Object.keys(env)) {
-    if (k.startsWith('VITEST') || k.startsWith('TEST_CI') || k === 'TEST_SELECTION' || k === 'PR_HEAD_SHA' || k.startsWith('GITHUB_') || k === 'FRONTEND_TEST_WORKERS' || k === 'CI') delete env[k];
+    if (k.startsWith('VITEST') || k.startsWith('TEST_CI') || k === 'TEST_SELECTION' || k === 'PR_HEAD_SHA' || k.startsWith('GITHUB_') || k === 'FRONTEND_TEST_WORKERS' || k === 'CI' || k === 'NODE_COMPILE_CACHE' || k === 'NODE_DISABLE_COMPILE_CACHE') delete env[k];
   }
   return env;
 }
@@ -56,7 +56,8 @@ function runCommand(files: string[], extra: string[] = [], opts: { killWhen?: (e
   const brakeRoot = opts.brakeRoot ?? join(dir, 'brake-root');
   if (!opts.brakeRoot) {
     mkdirSync(join(brakeRoot, 'src'), { recursive: true });
-    writeFileSync(join(brakeRoot, 'test-budget.json'), JSON.stringify({ maxCpuSeconds: 1, maxMinutes: 1, workers: 6, maxTestFiles: 0 }));
+    writeFileSync(join(brakeRoot, 'test-budget.json'), JSON.stringify({ maxCpuSeconds: 1, maxMinutes: 1, workers: 6 }));
+    writeFileSync(join(brakeRoot, 'test-file-count.json'), JSON.stringify({ maxTestFiles: 0 }));
     writeFileSync(join(brakeRoot, 'test-page-ceilings.json'), '{}');
   }
   const env = { ...childEnv(), ...opts.env };
@@ -84,6 +85,9 @@ describe('npm run test:ci on the fixture suite', () => {
     expect(r.out).toMatch(/preflight[\s\S]*workers: 4 \(default 4/);
     expect(r.summary).toContain('### Preflight');
     expect(r.events).toContain('"ev":"file-end"');
+    // The compile cache: the command names its directory and, after a run, Node has written compiled code there.
+    expect(r.out).toContain('compile cache: node_modules/.cache/test-ci/compile-cache');
+    expect(readdirSync(join(FRONTEND, 'node_modules/.cache/test-ci/compile-cache')).length).toBeGreaterThan(0);
   }, 60_000);
 
   it('a planted failure ends red as "failed" (exit 10)', async () => {
@@ -256,7 +260,8 @@ function shallowClone(): string {
   put(origin, 'frontend/src/pages/ShallowPage.tsx', 'export const ShallowPage = () => null;\n');
   put(origin, 'frontend/src/__tests__/a.test.tsx', mount);
   put(origin, 'frontend/src/__tests__/b.test.tsx', mount);
-  put(origin, 'frontend/test-budget.json', JSON.stringify({ maxCpuSeconds: 1, maxMinutes: 1, workers: 6, maxTestFiles: 2 }));
+  put(origin, 'frontend/test-budget.json', JSON.stringify({ maxCpuSeconds: 1, maxMinutes: 1, workers: 6 }));
+  put(origin, 'frontend/test-file-count.json', JSON.stringify({ maxTestFiles: 2 }));
   put(origin, 'frontend/test-page-ceilings.json', JSON.stringify({ 'src/pages/ShallowPage.tsx': 1 }));
   git(origin, 'add', '-A');
   git(origin, 'commit', '-q', '-m', 'base');

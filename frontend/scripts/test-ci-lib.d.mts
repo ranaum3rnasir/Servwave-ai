@@ -21,6 +21,8 @@ export declare function expectedFromTracked(trackedPaths: string[]): string[];
 export declare function shardSlice(files: string[], index: number, count: number): string[];
 export declare function parseShard(text: string): { index: number; count: number };
 export declare function resolveWorkers(env: Record<string, string | undefined>): { workers: number; why: string };
+export declare const COMPILE_CACHE_DIR: string;
+export declare function compileCache(env: Record<string, string | undefined>, frontend: string): { vars: Record<string, string>; why: string };
 export declare function buildVitestArgs(opts: { reporterPath: string; shard?: { index: number; count: number } | null; bail?: number; files?: string[]; config?: string }): string[];
 export declare function parseEvents(text: string): { events: TestCiEvent[]; badLines: number };
 export declare function evaluate(input: {

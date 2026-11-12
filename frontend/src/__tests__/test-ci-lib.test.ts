@@ -10,6 +10,7 @@ import {
   EXIT_CODES,
   buildVitestArgs,
   checkWatchdog,
+  compileCache,
   evaluate,
   evaluateSafely,
   expectedFromTracked,
@@ -438,6 +439,18 @@ describe('test:ci expected set, shards, workers, arguments', () => {
     expect(resolveWorkers({ FRONTEND_TEST_WORKERS: '2', VITEST_MAX_WORKERS: '6' })).toEqual({ workers: 2, why: 'FRONTEND_TEST_WORKERS=2' });
     expect(resolveWorkers({}).why).toContain('default');
     expect(() => resolveWorkers({ VITEST_MAX_WORKERS: 'many' })).toThrow();
+  });
+
+  it('compile cache: one shared directory inside node_modules by default; a caller\'s own setting and Node\'s off switch are left alone', () => {
+    expect(compileCache({}, '/repo/frontend')).toEqual({
+      vars: { NODE_COMPILE_CACHE: '/repo/frontend/node_modules/.cache/test-ci/compile-cache' },
+      why: 'node_modules/.cache/test-ci/compile-cache',
+    });
+    expect(compileCache({ NODE_COMPILE_CACHE: '/elsewhere' }, '/repo/frontend').vars).toEqual({});
+    expect(compileCache({ NODE_COMPILE_CACHE: '/elsewhere' }, '/repo/frontend').why).toContain('set by the caller');
+    const off = compileCache({ NODE_DISABLE_COMPILE_CACHE: '1', NODE_COMPILE_CACHE: '/elsewhere' }, '/repo/frontend');
+    expect(off.vars).toEqual({});
+    expect(off.why).toMatch(/^off /);
   });
 
   it('starts the tool with --retry=2 and --allowOnly=false always, --bail=50 only when asked', () => {

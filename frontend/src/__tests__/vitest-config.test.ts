@@ -6,6 +6,7 @@
  * this jsdom test would pull the bundler into the wrong environment.
  */
 import { execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -40,5 +41,19 @@ describe('vitest config', () => {
 
   it('sets no worker cap when the variable is unset (local runs)', () => {
     expect(loadTestConfig().maxWorkers).toBeUndefined();
+  });
+
+  it('runs on a fake browser from 30.1.3 up: 27 and 28 compute styles several times slower (docs/ci.md)', () => {
+    // The copy the test tool itself loads, read from disk (this file is on the selection always-run list).
+    const { version } = createRequire(import.meta.url)('jsdom/package.json') as { version: string };
+    const [major, minor, patch] = version.split('.').map((n) => Number.parseInt(n, 10)) as [number, number, number];
+    const atLeast = major > 30 || (major === 30 && (minor > 1 || (minor === 1 && patch >= 3)));
+    expect(atLeast, `jsdom ${version} is installed; the Frontend tests need 30.1.3 or later`).toBe(true);
+  });
+
+  it('pre-bundles the date packages, whose entry files load about 300 files each', () => {
+    const client = (loadTestConfig().deps as { optimizer: { client: { enabled: boolean; include: string[] } } }).optimizer.client;
+    expect(client.enabled).toBe(true);
+    expect(client.include).toEqual(expect.arrayContaining(['date-fns', 'date-fns/locale', 'date-fns-tz', 'react-day-picker']));
   });
 });

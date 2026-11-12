@@ -6,7 +6,8 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { NEW_PAGE_START } from '../../scripts/test-brake-lib.mjs';
-import { PAGE_CEILINGS_FILE, loadBrakeFiles, scanPages } from '../../scripts/test-brake-io.mjs';
+import { BUDGET_FILE, FILE_COUNT_FILE, PAGE_CEILINGS_FILE, loadBrakeFiles, scanPages } from '../../scripts/test-brake-io.mjs';
+import { SELECTOR_PATHS } from '../../scripts/test-select-lib.mjs';
 
 const FRONTEND = resolve(__dirname, '../..');
 
@@ -30,9 +31,21 @@ describe('the committed brake files', () => {
     expect(files.ceilings['src/pages/v2/jobs/JobDetailPage.tsx']).toBeGreaterThan(0);
   });
 
-  it('the budget file has the figures of the issue and a whole-number test-file count (it moves with the files, in the same diff)', () => {
-    expect(files.budget).toMatchObject({ maxCpuSeconds: 4500, maxMinutes: 10, workers: 6 });
+  it('the budget file has the reviewed figures and a whole-number test-file count (it moves with the files, in the same diff)', () => {
+    // CPU-seconds: 4500 in the issue, lowered to 3600 on 2026-11-10 after the tool fixes (3,233 and 3,309 measured on pull
+    // request runs on the CI machine). Lower it again after every gain (docs/ci.md); a raise is Ran's to review.
+    expect(files.budget).toMatchObject({ maxCpuSeconds: 3600, maxMinutes: 10, workers: 6 });
     expect(Number.isInteger(files.budget.maxTestFiles) && files.budget.maxTestFiles > 0).toBe(true);
+  });
+
+  it('the test-file count is in its own file, not in the budget file, and the selector does not guard it (#3401)', () => {
+    const budgetFile = JSON.parse(readFileSync(resolve(FRONTEND, BUDGET_FILE), 'utf8'));
+    const countFile = JSON.parse(readFileSync(resolve(FRONTEND, FILE_COUNT_FILE), 'utf8'));
+    expect(budgetFile).not.toHaveProperty('maxTestFiles');
+    expect(Number.isInteger(countFile.maxTestFiles) && countFile.maxTestFiles > 0).toBe(true);
+    // the real budget figures stay guarded: a pull request that changes one still gets a full Frontend run
+    expect(SELECTOR_PATHS).toContain(`frontend/${BUDGET_FILE}`);
+    expect(SELECTOR_PATHS.some((p) => p.includes(FILE_COUNT_FILE))).toBe(false);
   });
 });
 
