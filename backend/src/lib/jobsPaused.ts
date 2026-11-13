@@ -20,11 +20,14 @@ import { logger } from './logger';
 export const JOB_NAMES = [
   'invoice-due', // daily invoice overdue / due-soon check
   'automations', // Automation Center poller, every minute
-  'spider', // Spider lead watcher sweep, every 2 minutes
+  'spider', // Spider lead watcher sweep: every 2 minutes, every 10 once the check runs beside it (#3471)
   'attachments', // received-mail attachments retry sweep
   'stripe-fees', // Stripe fee reconciliation sweep: the nightly cron run AND the run at boot (one job, one name)
   'payment-reconcile', // nightly payment reconcile against the processor
   'account-status', // nightly Stripe account-status refresh
+  'spider-watch-backfill', // Spider watch list: the backfill at boot, when SPIDER_WATCH_LIST=backfill (services/spider/watchList.ts)
+  'spider-watch-check', // Spider watch list: the nightly check, when SPIDER_WATCH_LIST=check
+  'spider-tick', // Spider's check every few seconds (services/spider/tick.ts), when SPIDER_WATCH_LIST=check
 ] as const;
 
 export type JobName = (typeof JOB_NAMES)[number];

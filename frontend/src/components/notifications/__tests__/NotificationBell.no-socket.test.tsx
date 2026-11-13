@@ -12,6 +12,8 @@ import api from '@/lib/axios';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/auth.store';
 import { NotificationBell } from '../NotificationBell';
+import { closeLiveLine } from '@/lib/live/liveLine';
+import { fakeLiveLine } from '@/__tests__/harness/fakeLiveLine';
 
 const mockApi = vi.mocked(api);
 const UNREAD_URL = '/api/notifications/unread-count';
@@ -61,5 +63,20 @@ describe('NotificationBell with a signed-in user', () => {
     });
     await act(async () => {});
     expect(unreadCalls(), 'a focus event asks again').toBeGreaterThan(before);
+  });
+
+  it('holds the live line open while it is mounted (#3473), sending the sign-in token in a header and nothing in the address', async () => {
+    const live = fakeLiveLine();
+    try {
+      mount();
+      await act(async () => {});
+      expect(live.fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = live.fetchMock.mock.calls[0]!;
+      expect(url).toBe('/api/live');
+      expect((init!.headers as Record<string, string>).Authorization).toMatch(/^Bearer /);
+    } finally {
+      act(() => closeLiveLine());
+      vi.unstubAllGlobals();
+    }
   });
 });

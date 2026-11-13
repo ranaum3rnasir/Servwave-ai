@@ -19,6 +19,7 @@
  *
  * Logs carry ids only.
  */
+import { randomUUID } from 'crypto';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { logger } from '../../lib/logger';
@@ -35,6 +36,77 @@ export async function claimVisits(rows: Prisma.SpiderAlertCreateManyInput[]): Pr
     skipDuplicates: true,
     select: { id: true, lead_id: true },
   });
+  return new Map(written.map((w) => [w.lead_id, w.id]));
+}
+
+/** The alert-log columns a claim may set: the table's own, never a name built from data. */
+const CLAIM_COLUMNS: ReadonlySet<string> = new Set(Object.values(Prisma.SpiderAlertScalarFieldEnum));
+
+/**
+ * The check's claim (tick.ts, #3469): writes the claims of one company's due stays and clears their watch rows'
+ * `pending`, in ONE statement (a data-modifying CTE), so a crash can never leave a claimed stay pending, nor a settled
+ * stay unclaimed. Returns, by lead id, the alert ids of the claims THIS call wrote.
+ *
+ * A row is claimed only while its stay is still the lead's watched stay (the watch row's stage and entered-stage instant
+ * match the claim) and Spider is still on for the company in the switched-on period the check read (`activatedAt`): the
+ * check's switch check, in the same statement, so a check that began before a switch-off never claims into it (D4).
+ * A stay already claimed by anyone (the sweep, the starting summary, another server's check) is skipped by the unique
+ * key and left out of the result; its watch row's `pending` is cleared all the same (a backfilled or repaired row comes
+ * back pending, #3468). The watch row of a stay that moved on meanwhile is never touched: its new stay stays pending.
+ * Takes no lock beyond the statement's own writes. Throws when the statement fails: then nothing was claimed or cleared.
+ */
+export async function claimWatchedStays(
+  orgId: string,
+  activatedAt: Date,
+  rows: readonly Prisma.SpiderAlertCreateManyInput[],
+): Promise<Map<string, string>> {
+  if (rows.length === 0) return new Map();
+  const withIds = rows.map((r) => ({ ...r, id: r.id ?? randomUUID(), organization_id: orgId }));
+  const columns = [...new Set(withIds.flatMap((r) => Object.keys(r)))];
+  for (const c of columns) {
+    if (!CLAIM_COLUMNS.has(c)) throw new Error(`claimWatchedStays: unknown alert-log column ${c}`);
+  }
+  const list = Prisma.raw(columns.map((c) => `"${c}"`).join(', '));
+  const fromBatch = Prisma.raw(columns.map((c) => `b."${c}"`).join(', '));
+  // Dates go in as ISO text ending in Z: a timestamp-without-time-zone column takes the UTC wall time as written.
+  const batch = JSON.stringify(withIds);
+  const written = await prisma.$queryRaw<{ id: string; lead_id: string }[]>`
+    WITH batch AS (
+      SELECT * FROM json_populate_recordset(NULL::spider_alerts, ${batch}::json)
+    ),
+    live AS (
+      SELECT w.lead_id
+        FROM spider_lead_watch w
+        JOIN batch b ON b.lead_id = w.lead_id
+       WHERE w.organization_id = ${orgId}::uuid
+         AND b.organization_id = ${orgId}::uuid
+         AND w.stage = b.status::text
+         AND w.entered_at = b.entered_status_at
+         AND EXISTS (
+           SELECT 1 FROM spider_settings s
+            WHERE s.organization_id = ${orgId}::uuid
+              AND s.is_active
+              AND s.activated_at = (${activatedAt.toISOString()}::timestamptz AT TIME ZONE 'UTC'))
+    ),
+    ins AS (
+      INSERT INTO spider_alerts (${list})
+      SELECT ${fromBatch} FROM batch b WHERE b.lead_id IN (SELECT lead_id FROM live)
+      ON CONFLICT DO NOTHING
+      RETURNING id, lead_id
+    ),
+    settled AS (
+      UPDATE spider_lead_watch w
+         SET pending = false
+        FROM batch b
+       WHERE w.lead_id IN (SELECT lead_id FROM live)
+         AND w.lead_id = b.lead_id
+         AND w.organization_id = ${orgId}::uuid
+         AND w.stage = b.status::text
+         AND w.entered_at = b.entered_status_at
+         AND w.pending
+      RETURNING w.lead_id
+    )
+    SELECT id::text AS id, lead_id::text AS lead_id FROM ins`;
   return new Map(written.map((w) => [w.lead_id, w.id]));
 }
 

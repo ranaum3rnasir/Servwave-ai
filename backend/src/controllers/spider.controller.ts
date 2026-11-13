@@ -15,7 +15,6 @@ import {
   customerName,
   hasRecipient,
   isSpiderSetUp,
-  isWatchedStatus,
   readChannels,
   settingsOptions,
   settingsView,
@@ -27,8 +26,9 @@ import {
   SPIDER_DEACTIVATE_FAILED_MESSAGE,
   SPIDER_REQUIRED_MESSAGES,
   type SetSpiderActiveBody,
-  type SpiderStatus,
   type UpdateSpiderSettingsBody,
+  readRecipients,
+  type SpiderRecipients,
 } from '../services/spider/config';
 import {
   skippedStayKey,
@@ -40,7 +40,10 @@ import {
   alertStillOpen,
   excludedAmong,
   openAlertRulesOf,
+  endAlertsNoLongerOpen,
+  limitsNarrowed,
 } from '../services/spider/sweep';
+import { rearmWatchedStays, wakeSpiderTick } from '../services/spider/tick';
 import {
   HISTORY_EXPORT_MAX,
   HISTORY_ROW_SELECT,
@@ -53,7 +56,9 @@ import {
   storedRecipients,
   type HistoryRow,
 } from '../services/spider/history';
-import { SPIDER_STAGE_NAME } from '../services/spider/messages';
+import { spiderAlertCard } from '../services/spider/unreadCards';
+import { ownerRowsAdminNoLongerHolds, readerKeepsCard, recipientsNarrowed } from '../services/spider/recipientCoverage';
+import { publishSpiderLive } from '../services/spider/liveMessages';
 import { spiderActivationPreview } from '../services/spider/activationPreview';
 import { mergeTriggerKind, readSpiderSummary, settingsTriggerKind } from '../services/spider/summary';
 import type { SpiderTriggerKind } from '../services/spider/summaryMessages';
@@ -127,6 +132,8 @@ export async function setSpiderActive(req: Request, res: Response) {
       // switch after writing its alert rows (sweep.ts stillOn), so the flag must be committed before
       // this clear starts, or an alert written in between could stay open.
       await endOpenAlertsOnSwitchOff(orgId);
+      // Every screen in the company re-reads now rather than at its next check (#3472).
+      publishSpiderLive(orgId, { type: 'settings_changed' });
       res.json({ isActive, isSetUp: isSpiderSetUp(row) });
       return;
     }
@@ -151,6 +158,8 @@ export async function setSpiderActive(req: Request, res: Response) {
       data: { is_active: true, activated_at: now, ...activate },
     });
     if (count === 1) {
+      await rearmAfterActivate(orgId);
+      publishSpiderLive(orgId, { type: 'settings_changed' });
       res.json({ isActive, isSetUp: true });
       return;
     }
@@ -184,6 +193,34 @@ export async function getSpiderActivationPreview(req: Request, res: Response) {
   } catch (err) {
     logger.error(`[spider] activation preview failed for org ${orgId}`, err);
     res.status(500).json({ error: 'Could not load the Spider review' });
+  }
+}
+
+/**
+ * After Activate is written: the company's stays are watched again in the new switched-on period, and the check runs now
+ * (tick.ts). A failure never fails the switch: the 2-minute sweep alerts by the same rules meanwhile.
+ */
+async function rearmAfterActivate(orgId: string): Promise<void> {
+  try {
+    await rearmWatchedStays(orgId);
+  } catch (err) {
+    logger.error(`[spider] could not re-arm the watch list on activate for org ${orgId}: ${err instanceof Error ? err.name : 'unknown error'}`);
+  }
+}
+
+/**
+ * The save-time ending (#3456), after a save that narrowed what is watched is committed: the open alerts the saved
+ * settings no longer alert are ended in the same request, so reversing the save cannot bring them back (sweep.ts
+ * endAlertsNoLongerOpen). A failure never fails the save: for most people the unread read already hides them and the next
+ * sweep ends them. Not for an Admin alerted as a chosen role, by name or as the fallback (stored 'admin' or 'user'): a sweep
+ * cannot tell those apart from a change nobody made, so only this request ends their alert (a failed or raced ending leaves it until the stage changes; an Admin alerted as the lead's
+ * owner is ended by the sweep like anyone).
+ */
+export async function endAlertsAfterNarrowingSave(orgId: string, beforeRecipients?: SpiderRecipients): Promise<void> {
+  try {
+    await endAlertsNoLongerOpen(orgId, new Date(), beforeRecipients);
+  } catch (err) {
+    logger.error(`[spider] could not end the alerts a save narrowed for org ${orgId}: ${err instanceof Error ? err.name : 'unknown error'}`);
   }
 }
 
@@ -229,6 +266,9 @@ export function triggerData(
     summary_trigger_since: waiting ? (existing.summary_trigger_since ?? existing.summary_trigger_at) : now,
   };
 }
+
+/** How many times a Save merges its trigger again when another Save or an Include again recorded one at the same moment. */
+const SAVE_TRIGGER_TRIES = 5;
 
 /**
  * Saves Spider's settings (Admin only), Active or Not active (#3431: like an integration, Spider is set up before it
@@ -285,10 +325,11 @@ export async function updateSpiderSettings(req: Request, res: Response) {
 
     // The first save of a company that never set Spider up makes its row, Not active (skipDuplicates: when another
     // Admin's save created it a moment earlier this inserts nothing).
-    let existing = await prisma.spiderSettings.findUnique({ where: { organization_id: orgId }, select });
+    // `recipients` too: a role or person taken out of them ends their open alerts (#3462).
+    let existing = await prisma.spiderSettings.findUnique({ where: { organization_id: orgId }, select: { ...select, recipients: true } });
     if (!existing) {
       await prisma.spiderSettings.createMany({ data: [{ organization_id: orgId }], skipDuplicates: true });
-      existing = await prisma.spiderSettings.findUniqueOrThrow({ where: { organization_id: orgId }, select });
+      existing = await prisma.spiderSettings.findUniqueOrThrow({ where: { organization_id: orgId }, select: { ...select, recipients: true } });
     }
 
     // The exclusion list is never written here (#3436): only PATCH /spider/exclusions changes it, so a save never undoes
@@ -300,19 +341,49 @@ export async function updateSpiderSettings(req: Request, res: Response) {
           excluded_lead_ids: existing.excluded_lead_ids,
         })
       : null;
-    const { count } = await prisma.spiderSettings.updateMany({
-      where: { organization_id: orgId, is_active: existing.is_active },
-      data: {
-        status_limits: body.status_limits,
-        channels: body.channels,
-        recipients,
-        ...(trigger ? triggerData(existing, trigger, new Date()) : {}),
-      },
-    });
+    // The trigger is merged from the trigger as read, so the write is conditional on it (#3444 item 1): an Include again (or another
+    // Save) that recorded a trigger between the read and this write is never overwritten. A write that finds the trigger changed
+    // writes nothing and merges again from the newer one; one that finds Spider switched on or off meanwhile answers 409 as before.
+    let count = 0;
+    for (let tries = 0; tries < SAVE_TRIGGER_TRIES; tries += 1) {
+      ({ count } = await prisma.spiderSettings.updateMany({
+        where: {
+          organization_id: orgId,
+          is_active: existing.is_active,
+          summary_trigger_at: existing.summary_trigger_at,
+          summary_trigger_kind: existing.summary_trigger_kind,
+          summary_trigger_since: existing.summary_trigger_since,
+        },
+        data: {
+          status_limits: body.status_limits,
+          channels: body.channels,
+          recipients,
+          ...(trigger ? triggerData(existing, trigger, new Date()) : {}),
+        },
+      }));
+      if (count === 1) break;
+      const now = await prisma.spiderSettings.findUnique({ where: { organization_id: orgId }, select });
+      if (!now || now.is_active !== existing.is_active) break;
+      existing = { ...existing, summary_trigger_at: now.summary_trigger_at, summary_trigger_kind: now.summary_trigger_kind, summary_trigger_since: now.summary_trigger_since };
+    }
     if (count === 0) {
       res.status(409).json({ error: SPIDER_SAVE_RACED_MESSAGE });
       return;
     }
+    if (existing.is_active) {
+      // A stage switched off or a limit lengthened: the alerts it no longer alerts end now (#3456). A shorter limit or a
+      // stage switched on may bring a crossing nearer: the check runs now (#3469).
+      // A role or person taken out of the recipients, or "lead owner" switched off: their open alerts end now (#3462).
+      if (
+        limitsNarrowed(existing.status_limits, body.status_limits as Prisma.JsonValue) ||
+        recipientsNarrowed(readRecipients(existing.recipients), recipients)
+      ) {
+        await endAlertsAfterNarrowingSave(orgId, readRecipients(existing.recipients));
+      }
+      wakeSpiderTick();
+    }
+    // Committed: every screen in the company re-reads its alerts (a channel switched, a limit changed, #3472).
+    publishSpiderLive(orgId, { type: 'settings_changed' });
     const row = await prisma.spiderSettings.findUnique({ where: { organization_id: orgId } });
     res.json({ settings: settingsView(row), options: settingsOptions() });
   } catch (err) {
@@ -487,28 +558,6 @@ export async function getSpiderHistoryFilters(req: Request, res: Response) {
 /** Enough for the contractor's "99+" badge, still a bounded list. */
 export const UNREAD_ALERTS_LIMIT = 100;
 
-/** The card fields every alert carries from the moment it was raised (the notification data). */
-const CARD_FIELDS = [
-  'lead_number',
-  'customer_name',
-  'company_name',
-  'status',
-  'status_label',
-  'stage_name',
-  'service_location',
-  'service_request',
-  'assigned_to',
-  'address',
-  'owner_name',
-  'entered_status_at',
-  'stage_entered_at',
-  'lead_created_at',
-  'counted_from',
-  'time_in_status',
-] as const;
-
-const str = (v: unknown): string | null => (typeof v === 'string' && v.length > 0 ? v : null);
-
 /**
  * The signed-in person's own unread Spider alerts - a bounded list for the popup cards and the red
  * frame - plus whether the company's in-app and red-frame channels are on. `id` is the
@@ -544,11 +593,11 @@ export async function getMyUnreadSpiderAlerts(req: Request, res: Response) {
         where: unreadOf(SPIDER_FRAME_VERB),
         orderBy: { created_at: 'desc' },
         take: UNREAD_ALERTS_LIMIT,
-        select: { notification: { select: { object_id: true, data: true } } },
+        select: { id: true, notification: { select: { object_id: true, data: true } } },
       }),
       prisma.spiderSettings.findUnique({
         where: { organization_id: orgId },
-        select: { channels: true, is_active: true, status_limits: true },
+        select: { channels: true, is_active: true, status_limits: true, recipients: true },
       }),
     ]);
     const channels = settings ? readChannels(settings.channels) : null;
@@ -556,7 +605,7 @@ export async function getMyUnreadSpiderAlerts(req: Request, res: Response) {
     // Spider off (D4): nothing of it shows, whatever is still stored - switching off ends the alerts
     // and the sweep ends any it missed. No row is not off: a company only gets a row by switching on.
     if (settings && !settings.is_active) {
-      res.json({ alerts: [], in_app: channels ? channels.in_app : true, red_frame: redFrame, frame: false });
+      res.json({ alerts: [], in_app: channels ? channels.in_app : true, red_frame: redFrame, frame: false, frame_ids: [] });
       return;
     }
     const leadIds = [...rows, ...frameRows].map((r) => r.notification.object_id);
@@ -567,41 +616,46 @@ export async function getMyUnreadSpiderAlerts(req: Request, res: Response) {
     // The listed leads' exclusions stand in for the whole list: the rule only asks about these leads.
     const rules = openAlertRulesOf(settings && { status_limits: settings.status_limits, excluded_lead_ids: [...excluded] });
     const now = new Date();
-    const stillOpen = (n: { object_id: string; data: unknown }) =>
-      alertStillOpen(alertedVisitOf(n.object_id, n.data), visits.get(n.object_id), rules, now);
-    const alerts = rows.flatMap((r) => {
-      const leadId = r.notification.object_id;
-      const visit = visits.get(leadId);
-      if (!stillOpen(r.notification)) return [];
-      const data = (r.notification.data ?? {}) as Record<string, unknown>;
-      const card: Record<string, unknown> = {};
-      for (const k of CARD_FIELDS) card[k] = data[k] ?? null;
-      // Alerts raised before the contractor's fields were stored fall back to what they carry.
-      const stageName =
-        str(data.stage_name) ?? (isWatchedStatus(String(data.status)) ? SPIDER_STAGE_NAME[data.status as SpiderStatus] : null);
-      return [
-        {
-          id: r.id,
-          created_at: r.created_at.toISOString(),
-          ...card,
-          lead_id: leadId,
-          stage_name: stageName,
-          // His click routes on the lead's stage now: "Estimate" once its status is Estimate Sent.
-          current_stage: visit?.lead_status === 'ESTIMATED' ? 'Estimate' : stageName,
-          service_location: str(data.service_location) ?? str(data.address),
-          assigned_to: str(data.assigned_to) ?? str(data.owner_name),
-          stage_entered_at: str(data.stage_entered_at) ?? str(data.entered_status_at),
-          message: str(data.body),
-        },
-      ];
-    });
+    // The reader's own coverage (#3462): a person no entry of the saved recipients names loses the card at once (a role
+    // removed, a lead reassigned). An Admin keeps theirs: only the save that removed what chose them ends them
+    // (recipientCoverage.ts). No read of its own: the settings row above already holds the recipients.
+    const recipients = settings ? readRecipients(settings.recipients) : null;
+    const reader = { id: user.id, role: user.role, is_admin: user.is_admin };
+    // An Admin alerted as the lead's owner who no longer owns it loses the card too (ruling 3): the rows an Admin reader's
+    // stored list says so for, read once for the page (nothing for a reader the saved entries name).
+    const ownerOf = (leadId: string) => visits.get(leadId)?.owner_id;
+    const alertIdOf = (data: unknown) => {
+      const id = (data as { spider_alert_id?: unknown } | null)?.spider_alert_id;
+      return typeof id === 'string' ? id : null;
+    };
+    const hiddenOwnerRows =
+      recipients && reader.is_admin
+        ? await ownerRowsAdminNoLongerHolds({
+            orgId,
+            reader,
+            recipients,
+            rows: [...rows, ...frameRows].map((r) => ({ id: r.id, leadId: r.notification.object_id, alertId: alertIdOf(r.notification.data) })),
+            ownerOf,
+          })
+        : new Set<string>();
+    const stillOpen = (r: { id: string; notification: { object_id: string; data: unknown } }) =>
+      alertStillOpen(alertedVisitOf(r.notification.object_id, r.notification.data), visits.get(r.notification.object_id), rules, now) &&
+      !hiddenOwnerRows.has(r.id) &&
+      (!recipients || readerKeepsCard(recipients, reader, ownerOf(r.notification.object_id)));
+    // The same card the live line's "alert added" message carries (services/spider/unreadCards.ts).
+    const alerts = rows.flatMap((r) =>
+      stillOpen(r) ? [spiderAlertCard(r, visits.get(r.notification.object_id)?.lead_status)] : [],
+    );
+    // The open red-frame-only records' own ids, so the live line's "alert ended" message can tell the screen which went.
+    const frameIds = frameRows.filter((r) => stillOpen(r)).map((r) => r.id);
     res.json({
       alerts,
       in_app: channels ? channels.in_app : true,
       red_frame: redFrame,
       // Whether the red frame shows now: its switch is on and an in-app alert or a red-frame-only
       // record is still open for this person.
-      frame: redFrame && (alerts.length > 0 || frameRows.some((r) => stillOpen(r.notification))),
+      frame: redFrame && (alerts.length > 0 || frameIds.length > 0),
+      frame_ids: frameIds,
     });
   } catch (err) {
     logger.error(`[spider] unread alerts read failed for org ${orgId}`, err);

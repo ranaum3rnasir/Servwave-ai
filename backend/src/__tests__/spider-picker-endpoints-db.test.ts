@@ -646,6 +646,7 @@ suite('Spider picker endpoints (#3435, real database)', () => {
         ['save', (api, _c, lead) => api.patch(EXCLUSIONS, { exclude: [lead], include: [] })],
       ];
       const counts: Record<string, [number, number]> = {};
+      const sql: Record<string, [string[], string[]]> = {};
       for (const [name, call] of requests) {
         // Once each first, so anything the sign-in caches is warm for both.
         await call(await smallApi(), small, smallLead.id);
@@ -655,9 +656,13 @@ suite('Spider picker endpoints (#3435, real database)', () => {
         const asBig = await bigApi();
         const b = await countQueries(() => call(asBig, big, bigLead.id));
         counts[name] = [s.count, b.count];
+        sql[name] = [s.queries.map((q) => q.sql.slice(0, 160)), b.queries.map((q) => q.sql.slice(0, 160))];
       }
       console.log('[3435 query counts] small vs 2,000+ customers', JSON.stringify(counts));
-      for (const [name, [s, b]] of Object.entries(counts)) expect(b, name).toBe(s);
+      for (const [name, [s, b]] of Object.entries(counts)) {
+        if (b !== s) console.error(`[3435 DIFF] ${name}\nsmall: ${JSON.stringify(sql[name]![0], null, 1)}\nbig: ${JSON.stringify(sql[name]![1], null, 1)}`);
+        expect(b, name).toBe(s);
+      }
     }, 300_000);
   });
 });

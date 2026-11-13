@@ -24,6 +24,9 @@ const EXPECTED_NAMES = [
   'stripe-fees',
   'payment-reconcile',
   'account-status',
+  'spider-watch-backfill',
+  'spider-watch-check',
+  'spider-tick',
 ] as const;
 
 // The setting is read through the app's configuration (config/env.ts, here the shared test env of setup.ts), so a case sets it there.

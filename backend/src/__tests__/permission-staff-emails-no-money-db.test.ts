@@ -131,7 +131,7 @@ describe('M4: every email sender is decided (source guard)', () => {
   it('no other file calls the mail provider except the ones decided', () => {
     const callers = sourceFiles(SRC)
       .filter((f) => !f.endsWith(join('lib', 'email.ts')))
-      .filter((f) => /\bemails\.send\(|\bdispatchEmail\(/.test(readFileSync(f, 'utf8')))
+      .filter((f) => /\bemails\.send\(|\bbatch\.send\(|\bdispatchEmail\(/.test(readFileSync(f, 'utf8')))
       .map((f) => f.slice(SRC.length + 1))
       .sort();
     expect(callers).toEqual(Object.keys(OTHER_MAIL_FILES).sort());

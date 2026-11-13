@@ -154,6 +154,16 @@ const envSchema = z.object({
   // JOBS_PAUSED (#3109): background jobs to pause, comma-separated names or `all`. Optional, no default (unset = every
   // job runs). The names and the parsing live in lib/jobsPaused.ts; documented in .env.example.
   JOBS_PAUSED: z.string().optional(),
+  // SPIDER_WATCH_LIST (#3468): what the server does with Spider's watch list besides keeping it (the database keeps it on
+  // every lead save). Optional, no default (unset = nothing). `backfill` = write the rows of the leads that have none, once
+  // at every boot; `check` = the nightly check compares the list with the leads and repairs it. Chosen on purpose, one
+  // after the other. Read and explained in services/spider/watchList.ts (any other value is warned about and does
+  // nothing); documented in .env.example.
+  SPIDER_WATCH_LIST: z.string().optional(),
+  // LIVE_LINES_MAX (#3472): the most live lines (GET /api/live) one server keeps open at once, across everyone. Past it a
+  // screen is refused (503) and keeps its 30-second checks. Each person may hold at most 5 on top of this. Documented in
+  // .env.example; services/live/liveLines.ts reads it.
+  LIVE_LINES_MAX: z.coerce.number().int().positive().default(2000),
   // Where "book a call" requests from the AI Agentic Farm catalog land — always
   // ServWave's own sales inbox, regardless of which org's user is booking.
   AI_FARM_SALES_EMAIL: z.string().trim().default('info@servwave.com'),

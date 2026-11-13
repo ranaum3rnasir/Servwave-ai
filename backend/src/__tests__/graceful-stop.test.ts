@@ -13,7 +13,7 @@ import { describe, it, expect } from 'vitest';
 import { spawn } from 'child_process';
 import { readFileSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
-import { STOP_WAIT_MS } from '../lib/graceful-stop';
+import { STOP_WAIT_MS, _resetStopRequest, installStopSignals, onStopTimeLeft, requestStop, stopRequested, stopTimeLeftMs, type StopProcess } from '../lib/graceful-stop';
 
 const BACKEND = join(__dirname, '..', '..');
 const CHILD = join(__dirname, 'fixtures', 'graceful-stop-child.ts');
@@ -91,14 +91,72 @@ describe('the server stop signal (real process)', () => {
   });
 });
 
+describe('the stop budget (what work that may finish inside the bounded wait asks)', () => {
+  it('no stop: unlimited; the handler starts the budget with its own bounded wait, a later request changes nothing', () => {
+    _resetStopRequest();
+    try {
+      expect(stopTimeLeftMs()).toBe(Infinity);
+      const handlers = new Map<string, Parameters<StopProcess['on']>[1]>();
+      const proc: StopProcess = {
+        pid: 4242,
+        on: (signal, fn) => handlers.set(signal, fn),
+        removeListener: (signal) => handlers.delete(signal),
+        kill: () => undefined,
+      };
+      installStopSignals({ finishing: async () => undefined, maxWaitMs: 3_000, proc });
+      handlers.get('SIGTERM')!('SIGTERM');
+      expect(stopRequested()).toBe(true);
+      const left = stopTimeLeftMs();
+      expect(left).toBeGreaterThan(2_500);
+      expect(left).toBeLessThanOrEqual(3_000);
+      requestStop(60_000);
+      expect(stopTimeLeftMs()).toBeLessThanOrEqual(3_000);
+    } finally {
+      _resetStopRequest();
+    }
+    expect(stopTimeLeftMs()).toBe(Infinity);
+  });
+
+  it('a watcher is called once when the given time is left of the bounded wait, never without a stop, never once cancelled', async () => {
+    _resetStopRequest();
+    try {
+      const calls: string[] = [];
+      const leftWhen: number[] = [];
+      onStopTimeLeft(400, () => {
+        calls.push('before the stop');
+        leftWhen.push(stopTimeLeftMs());
+      });
+      const cancel = onStopTimeLeft(400, () => calls.push('cancelled'));
+      cancel();
+      await new Promise((r) => setTimeout(r, 100));
+      expect(calls).toEqual([]);
+
+      requestStop(1_000);
+      onStopTimeLeft(2_000, () => calls.push('already that close'));
+      await new Promise((r) => setTimeout(r, 50));
+      expect(calls).toEqual(['already that close']);
+      await new Promise((r) => setTimeout(r, 900));
+      expect(calls).toEqual(['already that close', 'before the stop']);
+      expect(leftWhen[0]).toBeGreaterThan(200);
+      expect(leftWhen[0]).toBeLessThanOrEqual(400);
+    } finally {
+      _resetStopRequest();
+    }
+  });
+});
+
 /** The source with comments blanked out. */
 const code = (rel: string) => readFileSync(join(BACKEND, rel), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
 
 describe('the stop signal is wired (source guard)', () => {
-  it('the server installs the handler once, waiting on the Spider sweep', () => {
+  it('the server installs the handler once, waiting on the Spider sweep and the Spider check (and ending every live line first, #3472)', () => {
     const index = code('src/index.ts');
     expect(index.match(/\binstallStopSignals\s*\(/g) ?? []).toHaveLength(1);
-    expect(index).toMatch(/installStopSignals\(\{\s*finishing:\s*whenSpiderSweepIdle\s*\}\)/);
+    const finishing = /installStopSignals\(\{\s*finishing:\s*\(\)\s*=>\s*\{([\s\S]*?)\n\s*\},?\s*\}\)/.exec(index)?.[1];
+    expect(finishing).toBeDefined();
+    expect(finishing).toMatch(/\bendAllLiveLines\(\)/);
+    // The wait ends only once both the sweep (#2993) and the check (#3469) have finished their current step.
+    expect(finishing).toMatch(/return\s+Promise\.all\(\[\s*whenSpiderSweepIdle\(\),\s*whenSpiderTickIdle\(\)\s*\]\)[^;]*;\s*$/);
   });
 
   it('no other code handles SIGTERM or SIGINT', () => {

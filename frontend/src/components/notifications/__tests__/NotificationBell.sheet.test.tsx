@@ -15,6 +15,7 @@ vi.mock('@/lib/api/notifications', () => ({
   useMarkSeen: () => ({ mutate: vi.fn() }),
   useNotifications: () => ({ data: { pages: [{ items: [] }] }, isLoading: false, hasNextPage: false }),
   useReadAll: () => ({ mutate: vi.fn(), isPending: false }),
+  useBellLiveUpdates: () => {},
 }));
 vi.mock('@/lib/notifications/useNotificationRefresh', () => ({ useNotificationRefresh: () => {} }));
 vi.mock('@/lib/notifications/useInterruptToasts', () => ({ useInterruptToasts: () => {} }));

@@ -5,7 +5,8 @@
  * "In starting summary" tag. The API is faked at axios.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { focusManager } from '@tanstack/react-query';
 import { Outlet, Route, Routes, useLocation } from 'react-router-dom';
 import api from '@/lib/axios';
 import { exportCsvFile } from '@/lib/csv';
@@ -17,6 +18,9 @@ import { spiderV2Routes } from '../../routes/spider.routes';
 import SpiderPage from '../SpiderPage';
 import SpiderSummaryPage from '../SpiderSummaryPage';
 import { SpiderHistory } from '../SpiderHistory';
+import { useSpiderLiveUpdates } from '@/lib/api/spider';
+import { closeLiveLine } from '@/lib/live/liveLine';
+import { fakeLiveLine } from '@/__tests__/harness/fakeLiveLine';
 
 vi.mock('@/lib/csv', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/csv')>();
@@ -149,6 +153,49 @@ describe('the Starting summary card on the Spider page', () => {
     await screen.findAllByRole('tablist');
     expect(screen.queryByText('Starting summary')).toBeNull();
     expect(callsTo(COMPANY)).toBe(0);
+  });
+
+  // #3472: the card follows a summary made while the page is open, without the page being reloaded.
+  it('reads the summary again when the window comes back into focus', async () => {
+    renderWithProviders(<SpiderPage />);
+    await screen.findByText('Starting summary');
+    expect(callsTo(COMPANY)).toBe(1);
+    try {
+      act(() => {
+        focusManager.setFocused(false);
+        focusManager.setFocused(true);
+      });
+      await waitFor(() => expect(callsTo(COMPANY)).toBe(2));
+    } finally {
+      focusManager.setFocused(undefined);
+    }
+  });
+
+  it('reads the summary again when the live line says one is ready', async () => {
+    const live = fakeLiveLine();
+    function LiveLine() {
+      useSpiderLiveUpdates();
+      return null;
+    }
+    try {
+      renderWithProviders(
+        <>
+          <SpiderPage />
+          <LiveLine />
+        </>,
+      );
+      await screen.findByText('Starting summary');
+      await waitFor(() => expect(live.fetchMock).toHaveBeenCalledTimes(1));
+      expect(callsTo(COMPANY)).toBe(1);
+      // The re-read waits a random 0-3 s; at its shortest here.
+      const random = vi.spyOn(Math, 'random').mockReturnValue(0);
+      live.send('spider.summary.ready', {});
+      await waitFor(() => expect(callsTo(COMPANY)).toBe(2));
+      random.mockRestore();
+    } finally {
+      closeLiveLine();
+      vi.unstubAllGlobals();
+    }
   });
 
   it('View opens the company-wide summary', async () => {

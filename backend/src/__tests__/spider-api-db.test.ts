@@ -60,7 +60,9 @@ function body(overrides: Record<string, unknown> = {}, limits: Record<string, Li
       ...limits,
     },
     channels: { in_app: true, red_frame: true, email: false, text: false },
-    recipients: { roles: [], user_ids: [], lead_owner: true },
+    // Everyone the contractor's defaults choose (config.ts DEFAULT_RECIPIENTS): the people these cases seed alerts for are
+    // recipients, as #3462 requires of anyone who keeps a card.
+    recipients: { roles: ['ADMIN', 'SALES', 'DISPATCHER', 'TECHNICIAN'], user_ids: [], lead_owner: true },
     ...overrides,
   };
 }
@@ -1161,7 +1163,7 @@ suite('Spider API (real database)', () => {
       await db.spiderSettings.update({ where: { organization_id: org }, data: { is_active: false } });
       const res = await api.get(UNREAD);
       expect(res.status).toBe(200);
-      expect(res.body).toEqual({ alerts: [], in_app: true, red_frame: true, frame: false });
+      expect(res.body).toEqual({ alerts: [], in_app: true, red_frame: true, frame: false, frame_ids: [] });
       for (const r of [alert, frame]) {
         expect((await db.notificationRecipient.findUniqueOrThrow({ where: { id: r.id } })).read_at).toBeNull();
       }
@@ -1200,7 +1202,8 @@ suite('Spider API (real database)', () => {
 
   // #3450 (Ran, 11 Nov): an open alert follows the settings saved now. Excluding its lead, switching its stage's limit
   // off, or lengthening the limit past where the lead is clears its card and red frame on the next read. A shorter limit
-  // or more recipients clears nothing.
+  // or more recipients clears nothing. Since #3456 (#3469) the save itself also ends those records, so reversing it
+  // cannot bring them back.
   describe('an open alert follows the saved settings (#3450)', () => {
     const NEW_2H: Limit = { enabled: true, value: 2, unit: 'HOUR' };
     const CONTACTED_ON: Limit = { enabled: true, value: 1, unit: 'DAY' };
@@ -1238,10 +1241,17 @@ suite('Spider API (real database)', () => {
       expect(ids(await listed(sales))).toEqual([a.alert.id, b.alert.id].sort());
 
       expect((await api.patch(EXCLUSIONS, { exclude: [a.lead.id], include: [] })).status).toBe(200);
+      // #3456: the save ended the excluded lead's records itself; the other lead's stay open.
+      const readAt = async (id: string) => (await db.notificationRecipient.findUniqueOrThrow({ where: { id } })).read_at;
+      const endedAt = await readAt(a.alert.id);
+      expect(endedAt).not.toBeNull();
+      expect(await readAt(b.alert.id)).toBeNull();
       const after = await listed(sales);
       expect(ids(after)).toEqual([b.alert.id]);
       expect(after.frame).toBe(true);
-      expect((await db.notificationRecipient.findUniqueOrThrow({ where: { id: a.alert.id } })).read_at).toBeNull();
+      // The read writes nothing.
+      expect(await readAt(a.alert.id)).toEqual(endedAt);
+      expect(await readAt(b.alert.id)).toBeNull();
 
       // Excluding the other one too: nothing open, so no card and no frame - the red-frame-only records included.
       expect((await api.patch(EXCLUSIONS, { exclude: [b.lead.id], include: [] })).status).toBe(200);
@@ -1548,7 +1558,10 @@ suite('Spider API (real database)', () => {
         sms_message: 'the text',
         in_app_message: 'the sentence',
       });
-      expect(JSON.stringify(res.body)).not.toMatch(/555/);
+      // Never the person's phone number, in any digit form. (A bare /555/ also matches random ids, emails and ISO times.)
+      const body = JSON.stringify(res.body);
+      expect(body).not.toContain('+16175550123');
+      expect(body).not.toMatch(/617[^0-9a-f]{0,3}555[^0-9a-f]{0,3}0123|16175550123/);
     });
 
     it('an alert from before the copy shows its lead and people as they are now, its outcome read from our sentences, and no message text', async () => {

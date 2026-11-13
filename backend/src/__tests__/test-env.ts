@@ -33,4 +33,6 @@ export const testEnv = {
   MAILBOX_ADDRESS_HASH_KEY: 'test-mailbox-hash-key-0123456789abcdef',
   // PRD 10 (S10.11) - the domain a person's own address is built on, so a hand-written email has an address to go out from.
   MAILBOX_DOMAIN: 'mail.test.com',
+  // #3472 - the server-wide cap on open live lines, at its real default.
+  LIVE_LINES_MAX: 2000,
 };

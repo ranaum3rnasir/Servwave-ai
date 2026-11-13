@@ -20,7 +20,9 @@ import {
   type UpdateSpiderExclusionsBody,
 } from '../services/spider/picker';
 import { settingsTriggerKind } from '../services/spider/summary';
-import { triggerData } from './spider.controller';
+import { endAlertsAfterNarrowingSave, triggerData } from './spider.controller';
+import { rearmIncludedLeads, wakeSpiderTick } from '../services/spider/tick';
+import { publishSpiderLive } from '../services/spider/liveMessages';
 
 export { updateSpiderExclusionsSchema } from '../services/spider/picker';
 
@@ -90,6 +92,18 @@ export async function getSpiderExcludedLeads(req: Request, res: Response) {
   }
 }
 
+/**
+ * After a Save that included leads again while Spider is on: their stays are watched again by the check (tick.ts
+ * rearmIncludedLeads). A failure never fails the save: the 2-minute sweep alerts by the same rules meanwhile.
+ */
+async function rearmAfterInclude(orgId: string, leadIds: readonly string[]): Promise<void> {
+  try {
+    await rearmIncludedLeads(orgId, leadIds);
+  } catch (err) {
+    logger.error(`[spider] could not watch the included leads again for org ${orgId}: ${err instanceof Error ? err.name : 'unknown error'}`);
+  }
+}
+
 interface LockedSettings {
   is_active: boolean;
   status_limits: Prisma.JsonValue;
@@ -120,7 +134,7 @@ export async function updateSpiderExclusions(req: Request, res: Response) {
   try {
     const known = await openLeadIdsAmong(orgId, [...body.exclude, ...body.include]);
     const change = { exclude: body.exclude.filter((id) => known.has(id)), include: body.include.filter((id) => known.has(id)) };
-    const excludedLeadIds = await prisma.$transaction(async (tx) => {
+    const { excludedLeadIds, narrowed, included, active } = await prisma.$transaction(async (tx) => {
       await tx.spiderSettings.createMany({ data: [{ organization_id: orgId }], skipDuplicates: true });
       const [row] = await tx.$queryRaw<LockedSettings[]>`
         SELECT is_active, status_limits, excluded_lead_ids::text[] AS excluded_lead_ids,
@@ -147,8 +161,24 @@ export async function updateSpiderExclusions(req: Request, res: Response) {
         where: { organization_id: orgId },
         data: { excluded_lead_ids: after, ...(trigger ? triggerData(row!, trigger, new Date()) : {}) },
       });
-      return after;
+      const wasExcluded = new Set(before);
+      const stillExcluded = new Set(after);
+      return {
+        excludedLeadIds: after,
+        narrowed: after.some((id) => !wasExcluded.has(id)),
+        included: before.filter((id) => !stillExcluded.has(id)),
+        active: row!.is_active,
+      };
     });
+    if (active) {
+      // A lead excluded: its open alerts end now (#3456), so including it again cannot bring them back. A lead included
+      // again is watched again, and may be past its limit already: the check runs now (#3469).
+      if (narrowed) await endAlertsAfterNarrowingSave(orgId);
+      if (included.length > 0) await rearmAfterInclude(orgId, included);
+      wakeSpiderTick();
+    }
+    // Committed: every screen in the company re-reads its alerts (an excluded lead's card goes at once, #3472).
+    publishSpiderLive(orgId, { type: 'settings_changed' });
     res.json(await pickerOverview(orgId, excludedLeadIds));
   } catch (err) {
     logger.error(`[spider] exclusions save failed for org ${orgId}`, err);

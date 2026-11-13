@@ -20,7 +20,8 @@ import {
  */
 export function SpiderStartingSummaryCard() {
   const navigate = useNavigate();
-  const query = useSpiderSummary('company');
+  // Read again when the window comes back into focus, and when the live line says a summary is ready (#3472).
+  const query = useSpiderSummary('company', { refetchOnFocus: true });
   const summary = query.data;
   const [downloading, setDownloading] = useState(false);
   if (!summary) return null;

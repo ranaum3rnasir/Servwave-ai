@@ -193,7 +193,8 @@ const ALLOWED: AllowedGroup[] = [
   },
   {
     reason: 'The signed-in person\'s own account and screens: their sign-in, two-step setting, profile, password, photo, own switches, '
-      + 'saved table views, dashboard layout and own time punch. Each acts only on the person asking, never on an id from the request.',
+      + 'saved table views, dashboard layout, own time punch and own live line (it carries only the messages addressed to them, #3472). '
+      + 'Each acts only on the person asking, never on an id from the request.',
     signedIn: true,
     routes: [
       'POST /api/auth/logout', 'GET /api/auth/me', 'POST /api/auth/mfa/setup', 'POST /api/auth/mfa/enable',
@@ -202,6 +203,7 @@ const ALLOWED: AllowedGroup[] = [
       'DELETE /api/users/me/avatar', 'GET /api/permission-switches/me', 'GET /api/me/table-views/:tableKey',
       'PUT /api/me/table-views/:tableKey', 'GET /api/dashboard/layout', 'PUT /api/dashboard/layout',
       'POST /api/dashboard/layout/reset', 'POST /api/dashboard/layout/carry-over', 'POST /api/timeclock/punches',
+      'GET /api/live',
     ],
   },
   {

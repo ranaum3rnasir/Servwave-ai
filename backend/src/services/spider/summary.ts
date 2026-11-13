@@ -8,8 +8,10 @@
  *
  * - The trigger: the switch route and the settings save record the moment (and kind) on the settings
  *   row (`summaryTriggerOf`, `mergeTriggerKind`).
- * - The quiet period: the sweep acts on a trigger only once it is a sweep interval old, so several
- *   quick saves give one summary. Until then it alerts nothing for that company.
+ * - The quiet period (#3471): the check (tick.ts, summaryStart.ts) acts on a trigger within seconds of its being ready: at once for
+ *   Activate with "Send", 30 s after the last widening Save (at most 2 minutes after the first), so several quick Saves give one
+ *   summary. Until then no stay that crossed before the trigger's moment alerts on its own. While the check is off (the code
+ *   release before the backfill) the 2-minute sweep acts on triggers instead, after 2 minutes of quiet (10 at most), as before.
  * - The claims: every summarized lead stay gets its alert-log row (kind SUMMARIZED, linked to the
  *   summary) with the same unique claim key and recipient list as an alert (the list is stored once in a
  *   recipient set the row points at, recipientSets.ts), so the per-lead path skips it for the rest of the switched-on
@@ -27,17 +29,27 @@
  * Written in small saved pieces (#3108, summaryRuns.ts), with no interactive transaction anywhere:
  *   1. A run row is made with the summary (status BUILDING: nobody can read it, History leaves its claims out), and the
  *      attempt is counted and saved BEFORE anything is read or written for it, so a run killed while it plans still counts.
- *   2. The leads, their people and the company's time zone are read; a failure from here on is the attempt's, not the sweep's.
+ *   2. The leads, their people and the company's time zone are read; a failure from here on is the attempt's, not the caller's.
  *   3. The claims go in statements of at most SUMMARY_CLAIMS_PER_STATEMENT, each saved on its own and followed by the run's
  *      cursor (the last lead saved). A run that stops, or fails, resumes after the cursor: what was saved is not written
  *      again (the unique claim key skips it).
  *   4. After the last claim the delivery is read back from what is saved, the summary is made READY in ONE statement and that
  *      statement is the claim on the delivery: only the run that flipped it delivers (bell, email, text) and records the
- *      outcome once on the summary row. A READY summary is never superseded by a stop: the next run finishes the bell for
+ *      outcome once on the summary row. A READY summary is never superseded by a stop: the first call after the stop finishes the bell for
  *      whoever has not got it and starts no email or text channel that was already started (at most one of each per person).
  *   5. An attempt that fails, or is killed, waits 2, 8, then 30 minutes. After 3 attempts the run is ABANDONED: the claims it
  *      saved are released (so the per-lead path can reach those leads), the summary is SUPERSEDED, it is logged once, and the
  *      company falls back to the capped per-lead alerts (runCaps.ts).
+ *   6. Finishing a READY summary's interrupted delivery has its OWN counted tries (#3264), independent of the attempts that
+ *      built it: the same waits (2, 8, 30 minutes), the same limit of 3, the count kept on the summary's delivery record
+ *      (summaryRuns.ts startFinishTry). After the 3rd the run is ABANDONED and logged once; the summary people already saw
+ *      stays READY and keeps its claims, and the per-lead alerts resume. The FIRST try is made by the first call after the stop
+ *      (the wait the build attempt left is not honoured); only the tries after it wait. Where nothing is left to deliver (the
+ *      outcome is recorded, or the summary belongs to an earlier switched-on period) the run is simply closed, with no wait
+ *      (an earlier period's, even after a try; a recorded outcome's, until a failed close has been counted).
+ *   7. A write that keeps failing is held off in this process for a wait, and after 3 failed writes the process stops trying and
+ *      logs it once (holdOff): the caller then clears the trigger and the per-lead alerts resume. A release that was stuck leaves its
+ *      run RUNNING with its claims held and no trigger to resume it: the sweep closes it (reapOrphanedRuns), so a restart is not needed.
  *
  * Logs carry ids only.
  */
@@ -72,6 +84,7 @@ import {
   channelRecord,
   deliverSpiderEmailsTo,
   deliverSpiderTextsTo,
+  runTogether,
   type ChannelDelivery,
   type RecipientResult,
   type SpiderContact,
@@ -81,21 +94,27 @@ import {
   SUMMARY_CLAIMS_PER_STATEMENT,
   SUMMARY_MAX_ATTEMPTS,
   createRun,
+  SUMMARY_RETRY_WAITS_MS,
   deliveryProgress,
+  finishTriesOf,
   endEmptySummary,
   errorName,
   findOpenRun,
   finishRun,
+  abandonReadyRun,
   giveUp,
   logGaveUp,
+  logGaveUpFinishing,
   markChannelDone,
   markChannelStarted,
   markReady,
   readySummaryOfTrigger,
   recordDelivery,
   recordFailure,
+  statusOf,
   saveCursor,
   startAttempt,
+  startFinishTry,
   supersedeCurrentSummary,
   type DeliveryProgress,
   type OpenRun,
@@ -117,15 +136,9 @@ import {
   type SpiderTriggerKind,
   type SummaryLead,
 } from './summaryMessages';
+import { publishSpiderLive } from './liveMessages';
 
 export const SPIDER_SUMMARY_VERB = 'spider.starting_summary';
-/** The sweep's interval: a trigger is acted on once the settings have been quiet this long. */
-export const SUMMARY_QUIET_MS = 2 * 60_000;
-/**
- * The longest a trigger waits from when it first started waiting: the sweep acts then even if saves
- * keep coming, and stops retrying a summary that keeps failing (the per-lead path takes over).
- */
-export const SUMMARY_MAX_WAIT_MS = 10 * 60_000;
 /**
  * The most JSON text of claim rows one insert carries (#3107, #3108): under 1 MB, and no more than the largest statement
  * the sweep already sends (the delivery records' update, about 805 KB for 60 people), so no statement of a summary for
@@ -183,7 +196,7 @@ export function mergeTriggerKind(pending: string | null | undefined, next: Spide
 
 // ─── The sweep step ──────────────────────────────────────────────────────────
 
-/** A lead stay past its limit and not yet claimed, as the sweep found it. */
+/** A lead stay past its limit and not yet claimed, as the caller found it (the check from the watch list, the sweep from the leads). */
 export interface OverdueVisit {
   id: string;
   status: SpiderStatus;
@@ -225,9 +238,15 @@ export interface StartingSummaryResult {
   /**
    * How the run stands: `done` (finished - or nothing to report), `waiting` (an earlier attempt failed or was stopped and
    * its next try is not due yet), `retry` (this attempt failed; the next is due after its wait) or `abandoned` (every
-   * attempt is used: the claims saved were released and the company alerts per lead from the next run).
+   * attempt is used, or the process stopped trying after 3 failed writes: a summary that never became READY had its saved claims released and was superseded; a READY one stays,
+   * with its claims. Either way the company alerts per lead from the next run).
    */
   state: 'done' | 'waiting' | 'retry' | 'abandoned';
+  /**
+   * With `waiting` and `retry`: when the next call may do anything (the run's saved next attempt, or the in-process hold-off).
+   * The check (tick.ts) asks again then and never sooner, so a 5-second check never retries on every pass (#3471).
+   */
+  retryAt?: Date;
 }
 
 const NONE: StartingSummaryResult = { summaryId: null, leads: 0, recipients: 0, state: 'done' };
@@ -245,15 +264,15 @@ interface Plan {
  *
  * A summary is a run (summaryRuns.ts): its claims go in small saved pieces and the run resumes after the last lead
  * saved. A failure BEFORE the run exists (the reads that plan it, the writes that start it) throws and writes nothing the
- * sweep cannot repeat; from the run's first attempt on, a failure never throws: it is recorded on the run and the sweep
- * retries when the attempt's wait is up (summaryRuns.ts), up to three attempts.
+ * caller cannot repeat; from the run's first attempt on, a failure never throws: it is recorded on the run and the caller
+ * retries when the attempt's wait is up (summaryRuns.ts, `retryAt` says when), up to three attempts.
  */
 export async function runStartingSummary(a: {
   orgId: string;
   now: Date;
   triggeredAt: Date;
   triggerKind: SpiderTriggerKind;
-  /** The switched-on period the sweep read: a run from an earlier period is replaced, not resumed. */
+  /** The switched-on period the caller read: a run from an earlier period is replaced, not resumed. */
   activatedAt: Date;
   overdue: readonly OverdueVisit[];
   channels: SpiderChannels;
@@ -265,10 +284,19 @@ export async function runStartingSummary(a: {
   // closed; the trigger that made this summary is then spent. A different, newer trigger goes on to its own summary below.
   if (run?.summary.status === 'READY') {
     const sameTrigger = run.summary.triggered_at.getTime() === a.triggeredAt.getTime();
-    // A summary of an earlier switched-on period is not finished any more: Spider was switched off and on since.
-    const finished = run.summary.triggered_at < a.activatedAt ? await closeReadyRun(run, a.now) : await finishDelivery(run, a);
-    if (!finished) return { summaryId: run.summary_id, leads: 0, recipients: 0, state: 'retry' };
-    if (sameTrigger) return { summaryId: run.summary_id, leads: run.summary.lead_count, recipients: 0, state: 'done' };
+    // Finishing a delivery that was really interrupted is counted (#3264): it has its own 3 tries, the first at once and then
+    // waits of 2, 8, 30 minutes, and after the last one the run is closed and the company alerts per lead again. Nothing left
+    // to deliver is just closed (see finishReadyRun for when that waits).
+    const stuck = await finishReadyRun(run, a);
+    // A run given up on for an OLDER trigger is closed; a newer trigger goes on to its own summary below, not cleared unserved.
+    if (stuck && !(stuck.state === 'abandoned' && !sameTrigger)) return stuck;
+    // ...but only once that run IS closed. A process that stopped trying (3 failed writes) leaves it RUNNING, and the company
+    // may have no second RUNNING run: a newer trigger then makes no summary (it would be an orphan, one more per call), keeps
+    // its trigger and is asked again after the longest wait; a restart tries the old run again (#3471, #3264's L2).
+    if (stuck && (await hasOpenSummaryRun(a.orgId).catch(() => true))) {
+      return { summaryId: run.summary_id, leads: 0, recipients: 0, state: 'waiting', retryAt: waitAfter(a.now, SUMMARY_RETRY_WAITS_MS.length) };
+    }
+    if (!stuck && sameTrigger) return { summaryId: run.summary_id, leads: run.summary.lead_count, recipients: 0, state: 'done' };
     run = null;
   }
   // A run whose summary was replaced meanwhile (only two sweeps at once can do that) has nothing left to do.
@@ -300,9 +328,62 @@ export async function runStartingSummary(a: {
   return attemptRun(created, a, replaced);
 }
 
-/** Whether the company has a summary run in progress (the sweep asks before it drops a trigger). */
+/** Whether the company has a summary run in progress (the caller asks before it drops a trigger). */
 export async function hasOpenSummaryRun(orgId: string): Promise<boolean> {
   return (await findOpenRun(orgId)) !== null;
+}
+
+/** A RUNNING run nothing has touched for this long, with no starting trigger waiting, is nobody's: reapOrphanedRuns closes it. */
+export const ORPHANED_RUN_AFTER_MS = 10 * 60_000;
+/** Most runs one reaping closes (the rest wait for the next sweep). */
+const ORPHANED_RUNS_PER_REAPING = 20;
+
+/**
+ * Closes the runs nothing will ever resume (#3471, #3264's L1): a RUNNING run whose company has no starting trigger left. A run
+ * only lives while its trigger waits (the trigger is cleared once the run is done or given up on), so with none the run was
+ * left behind - the case is a release that kept failing in one process, which stops trying and lets the trigger go, leaving the
+ * run RUNNING with its claims held, and a restart alone retries nothing because the only caller is the trigger's path. This is
+ * the retry that needs no trigger and survives a restart: it reads the database, not the process.
+ *
+ * - A summary never made READY (BUILDING, or replaced): the claims it saved are released and the run is given up on, as the
+ *   run would have done itself, so the per-lead alerts reach those leads.
+ * - A READY summary whose delivery has ended: its run is only closed (the summary and its claims stay).
+ * - A READY summary whose delivery is still marked as going is left alone: finishing it is the trigger's own path.
+ * Only runs untouched for ORPHANED_RUN_AFTER_MS, so a run being written right now is never reaped. One read for every company,
+ * then one company at a time; a failure is logged and the run is tried again by the next sweep. Never throws.
+ */
+export async function reapOrphanedRuns(now: Date): Promise<number> {
+  let reaped = 0;
+  try {
+    const before = new Date(now.getTime() - ORPHANED_RUN_AFTER_MS).toISOString();
+    const rows = await prisma.$queryRaw<{ id: string; org: string; summary: string; status: string | null; sending: boolean }[]>`
+      SELECT r.id::text AS id, r.organization_id::text AS org, r.summary_id::text AS summary, su.status,
+             COALESCE(su.delivery->>'state' = 'SENDING', false) AS sending
+        FROM spider_summary_runs r
+        JOIN spider_summaries su ON su.id = r.summary_id
+        JOIN spider_settings s ON s.organization_id = r.organization_id
+       WHERE r.status = 'RUNNING' AND s.summary_trigger_at IS NULL
+         AND r.updated_at < (${before}::timestamptz AT TIME ZONE 'UTC')
+       ORDER BY r.updated_at
+       LIMIT ${ORPHANED_RUNS_PER_REAPING}`;
+    for (const row of rows) {
+      try {
+        if (statusOf(row.status) === 'READY') {
+          if (row.sending) continue;
+          await finishRun(row.id, now);
+        } else {
+          const released = await giveUp({ id: row.id, organization_id: row.org, summary_id: row.summary }, now, 'left behind without a trigger');
+          logger.warn('[spider] a starting summary run left behind was closed and its claims released', { orgId: row.org, summaryId: row.summary, released });
+        }
+        reaped += 1;
+      } catch (err) {
+        logger.error(`[spider] could not close the left-behind run of starting summary ${row.summary} for org ${row.org}: ${errorName(err)}`);
+      }
+    }
+  } catch (err) {
+    logger.error(`[spider] could not look for left-behind starting summary runs: ${errorName(err)}`);
+  }
+  return reaped;
 }
 
 type RunArgs = Parameters<typeof runStartingSummary>[0];
@@ -314,8 +395,10 @@ type RunArgs = Parameters<typeof runStartingSummary>[0];
  */
 async function attemptRun(run: OpenRun, a: RunArgs, replaced: readonly string[]): Promise<StartingSummaryResult> {
   if (run.next_attempt_at && run.next_attempt_at.getTime() > a.now.getTime()) {
-    return { summaryId: run.summary_id, leads: 0, recipients: 0, state: 'waiting' };
+    return noResult(run, 'waiting', run.next_attempt_at);
   }
+  const held = heldState(run, a.now);
+  if (held) return noResult(run, held, heldUntil(run));
   // Every attempt the run was allowed has been used (a killed attempt counts): no further one starts.
   if (run.attempts >= SUMMARY_MAX_ATTEMPTS) return abandon(run, a, run.attempts);
 
@@ -324,8 +407,9 @@ async function attemptRun(run: OpenRun, a: RunArgs, replaced: readonly string[])
     attempt = await startAttempt(run, a.now);
   } catch (err) {
     logger.error(`[spider] could not start an attempt of the starting summary for org ${a.orgId}: ${errorName(err)}`);
-    return { summaryId: run.summary_id, leads: 0, recipients: 0, state: 'retry' };
+    return noResult(run, holdOff(run, a) ? 'abandoned' : 'retry', waitAfter(a.now, 1));
   }
+  writeFailures.delete(run.id);
 
   // Past the point of no return: once the summary is READY its delivery has begun, and nothing below may fail the run.
   let ready = false;
@@ -353,6 +437,8 @@ async function attemptRun(run: OpenRun, a: RunArgs, replaced: readonly string[])
       return { summaryId: run.summary_id, leads: claimed, recipients: 0, state: 'done' };
     }
 
+    // READY is committed: the summary card and page of the people it tells, and of the company's Admins, re-read now (#3472).
+    publishSpiderLive(a.orgId, { type: 'summary_ready', recipientIds: data.recipients.map((r) => r.id) });
     const told = await deliver(a, run, data, deliveryProgress({ state: 'SENDING' }));
     await closeReadyRun(run, a.now);
     logger.info('[spider] starting summary sent', { orgId: a.orgId, summaryId: run.summary_id, leads: claimed, recipients: told });
@@ -369,7 +455,99 @@ async function attemptRun(run: OpenRun, a: RunArgs, replaced: readonly string[])
       // The run keeps the time its next attempt was given when this one began.
     }
     if (attempt >= SUMMARY_MAX_ATTEMPTS) return abandon(run, a, attempt, errorName(err));
-    return { summaryId: run.summary_id, leads: 0, recipients: 0, state: 'retry' };
+    return noResult(run, 'retry', waitAfter(a.now, attempt));
+  }
+}
+
+/**
+ * A write that keeps failing cannot be counted on the run row (the count IS that write), so the call that saw it fail holds
+ * the run off in this process for the first wait: calls inside it do nothing. After 3 failed writes the process stops trying
+ * for that run and logs it once (the caller then answers 'abandoned', so the trigger is cleared and the per-lead alerts for the stays
+ * the run does not hold resume). A restart forgets all of it, which costs three more tries per restart, never a loop. The claims a
+ * stuck release left behind are freed by the sweep (reapOrphanedRuns), whatever this process remembers.
+ */
+const writeFailures = new Map<string, { until: number; count: number }>();
+/** Notes a failed write; true when this was the last one the process allows (logged once). */
+function holdOff(run: OpenRun, a: RunArgs): boolean {
+  const entry = writeFailures.get(run.id) ?? { until: 0, count: 0 };
+  entry.count += 1;
+  entry.until = a.now.getTime() + SUMMARY_RETRY_WAITS_MS[0];
+  writeFailures.set(run.id, entry);
+  if (entry.count < SUMMARY_MAX_ATTEMPTS) return false;
+  logger.error(`[spider] stopped trying to close starting summary ${run.summary_id} for org ${a.orgId} in this process after ${entry.count} failed writes`);
+  return true;
+}
+/** 'waiting' inside the hold-off, 'abandoned' once the process has stopped trying, else null. */
+function heldState(run: OpenRun, now: Date): 'waiting' | 'abandoned' | null {
+  const entry = writeFailures.get(run.id);
+  if (!entry) return null;
+  if (entry.count >= SUMMARY_MAX_ATTEMPTS) return 'abandoned';
+  return entry.until > now.getTime() ? 'waiting' : null;
+}
+/** Until when the process holds this run off (set by holdOff; the start of time when it does not). */
+function heldUntil(run: OpenRun): Date | undefined {
+  const entry = writeFailures.get(run.id);
+  return entry ? new Date(entry.until) : undefined;
+}
+const noResult = (run: OpenRun, state: StartingSummaryResult['state'], retryAt?: Date): StartingSummaryResult => ({
+  summaryId: run.summary_id,
+  leads: 0,
+  recipients: 0,
+  state,
+  ...(retryAt ? { retryAt } : {}),
+});
+/** When the wait after an attempt or try that began at `now` is over: 2, then 8, then 30 minutes (`done` is how many were made). */
+const waitAfter = (now: Date, done: number) => new Date(now.getTime() + SUMMARY_RETRY_WAITS_MS[Math.min(Math.max(done, 1) - 1, SUMMARY_RETRY_WAITS_MS.length - 1)]!);
+
+/**
+ * Finishing a READY summary's run (#3264). A delivery that was really interrupted is finished in counted tries of its own,
+ * independent of the attempts that built the summary: the FIRST try is made by the first call after the stop (the wait the
+ * build attempt left is not honoured), each try is saved BEFORE it starts, and the tries after the first wait 2, then 8, then
+ * 30 minutes (a call inside a wait does nothing and spends nothing), at most 3 tries; after the last failed one the run is
+ * closed and the trigger is cleared by the caller. Where nothing is left to deliver (the outcome is recorded, or the summary
+ * belongs to an earlier switched-on period) the run is closed at once; only if that close fails does it become a counted
+ * try (a recorded outcome whose close already failed waits like any try; an earlier period's never waits). The summary
+ * people already saw stays READY and its claims stay. Returns null when the run is finished and closed, else the result.
+ */
+async function finishReadyRun(run: OpenRun, a: RunArgs): Promise<StartingSummaryResult | null> {
+  const tries = finishTriesOf(run.summary.delivery);
+  const older = run.summary.triggered_at < a.activatedAt;
+  const unfinished = deliveryProgress(run.summary.delivery).unfinished;
+  const finish = () => (older ? closeReadyRun(run, a.now) : finishDelivery(run, a));
+  const held = heldState(run, a.now);
+  if (held) return noResult(run, held, heldUntil(run));
+  const promptClose = tries < SUMMARY_MAX_ATTEMPTS && (older || !unfinished) && (tries === 0 || (older && unfinished));
+  if (promptClose) {
+    if (await finish()) return null;
+  } else {
+    if (tries > 0 && run.next_attempt_at && run.next_attempt_at.getTime() > a.now.getTime()) return noResult(run, 'waiting', run.next_attempt_at);
+    if (tries >= SUMMARY_MAX_ATTEMPTS) return abandonReady(run, a, tries);
+  }
+
+  let attempt: number;
+  try {
+    attempt = await startFinishTry(run, tries, a.now);
+    writeFailures.delete(run.id);
+  } catch (err) {
+    logger.error(`[spider] could not count a try to finish starting summary ${run.summary_id}: ${errorName(err)}`);
+    return noResult(run, holdOff(run, a) ? 'abandoned' : 'retry', waitAfter(a.now, 1));
+  }
+  // A failed prompt close is this try; any other try does its work now.
+  if (!promptClose && (await finish())) return null;
+  return attempt >= SUMMARY_MAX_ATTEMPTS ? abandonReady(run, a, attempt) : noResult(run, 'retry', waitAfter(a.now, attempt));
+}
+
+/** Every try to finish a READY summary is used: the run is closed, the summary and its claims stay; logged once. */
+async function abandonReady(run: OpenRun, a: RunArgs, attempts: number): Promise<StartingSummaryResult> {
+  try {
+    await abandonReadyRun(run.id, a.now, 'could not finish the delivery');
+    logGaveUpFinishing(a.orgId, run.summary_id, attempts);
+    return noResult(run, 'abandoned');
+  } catch (err) {
+    // The run stays open and is held off for 2 minutes; the first call that is due after that closes it (after a 3rd try the run's own
+    // 30-minute wait comes first, and a 3rd failed write makes the process stop trying: the sweep's reapOrphanedRuns or a restart goes on).
+    logger.error(`[spider] could not close the run of starting summary ${run.summary_id}: ${errorName(err)}`);
+    return noResult(run, holdOff(run, a) ? 'abandoned' : 'retry', waitAfter(a.now, 1));
   }
 }
 
@@ -380,16 +558,18 @@ async function abandon(run: OpenRun, a: RunArgs, attempts: number, lastError?: s
     logGaveUp(a.orgId, run.summary_id, attempts, released);
     return { summaryId: null, leads: 0, recipients: 0, state: 'abandoned' };
   } catch (err) {
-    // The release stopped part way: the run stays RUNNING, and the next sweep after its wait finishes the release.
+    // The release stopped part way: the run stays RUNNING and is held off for 2 minutes; the first call that is due after that carries on (after
+    // a 3rd attempt the run's own 30-minute wait comes first). A 3rd failed write makes the process stop trying and the trigger goes; the claims
+    // the run still holds are then released by the sweep (reapOrphanedRuns, #3471), which reads the database, so a restart is not needed.
     logger.error(`[spider] could not give up on the starting summary for org ${a.orgId}: ${errorName(err)}`);
-    return { summaryId: run.summary_id, leads: 0, recipients: 0, state: 'retry' };
+    return noResult(run, holdOff(run, a) ? 'abandoned' : 'retry', waitAfter(a.now, 1));
   }
 }
 
 /**
  * Finishes what a stop left of a READY summary's delivery: the bell for everyone it has not reached, and each channel that
  * was never started (a channel that was started is not started again: no second email or text). Records the outcome once on
- * the summary row, then closes the run. False when it could not (the run stays open; the next sweep tries again).
+ * the summary row, then closes the run. False when it could not (the run stays open; finishReadyRun counts it and the next try waits).
  */
 async function finishDelivery(run: OpenRun, a: RunArgs): Promise<boolean> {
   const progress = deliveryProgress(run.summary.delivery);
@@ -658,91 +838,127 @@ async function deliver(a: RunArgs, run: OpenRun, data: DeliveryData, progress: D
     delivery.in_app = { outcome: 'In-app alerts are switched off' };
   }
 
-  if (!a.channels.email) {
-    delivery.email = { outcome: EMAIL_OUTCOME.channelOff };
-  } else if (progress.email.done) {
-    // The emails finished before a stop: their outcome was saved, and is the one recorded.
-    results.email = progress.email.done.results;
-    delivery.email = { outcome: progress.email.done.outcome, recipients: progress.email.done.recipients };
-  } else if (progress.email.started) {
-    // A stop cut the emails short: whoever got one is not emailed again, and who did not is not told which.
-    results.email = recipients.map((r) => ({ user_id: r.id, result: 'skipped' as const, reason: EMAIL_REASON.interrupted }));
-    delivery.email = { outcome: EMAIL_OUTCOME.interrupted, recipients: recipients.map((r) => ({ user_id: r.id, outcome: EMAIL_OUTCOME.interrupted })) };
-  } else {
+  // The email and the text start at the same moment (#3470). The summary's text says whether the email reached its person, so
+  // each person's text waits for the email batch's answer (one request), then goes at once.
+  const emailedSet = () => new Set(results.email.filter((e) => e.result === 'sent').map((e) => e.user_id));
+  let emailKnown!: (emailed: Set<string>) => void;
+  const emailed = new Promise<Set<string>>((resolve) => (emailKnown = resolve));
+  const emailBegan = Date.now();
+  const timing: { emailMs?: number; textMs?: number } = {};
+  const emailStep = async () => {
     try {
-      await markChannelStarted(summary.id, 'email');
-      const sent = await deliverSpiderEmailsTo({
-        orgId: a.orgId,
-        logKey: { summaryId: summary.id },
-        recipients,
-        messageFor: (r) => {
-          const own = leadsOf(r.id);
-          const input = {
-            recipientFirstName: r.first_name?.trim() || 'Team Member',
-            leads: own,
-            showOwner: showOwnerFor(r.id),
-            triggerKind: isTriggerKind(run.summary.trigger_kind) ? run.summary.trigger_kind : 'SETTINGS_CHANGED',
-            when,
-            summaryUrl: spiderSummaryUrl(),
-            leadUrl,
-          };
-          return { subject: summaryEmailSubject(own.length), text: summaryEmailText(input), html: summaryEmailHtml(input) };
-        },
-      });
-      results.email = sent.results;
-      delivery.email = { outcome: sent.outcome, recipients: sent.recipients };
-    } catch (err) {
-      channelFailed('email', err);
-      results.email = recipients.map((r) => ({ user_id: r.id, result: 'failed' as const, reason: EMAIL_REASON.failed }));
-      delivery.email = { outcome: EMAIL_OUTCOME.failed, recipients: recipients.map((r) => ({ user_id: r.id, outcome: EMAIL_OUTCOME.failed })) };
+    if (!a.channels.email) {
+      delivery.email = { outcome: EMAIL_OUTCOME.channelOff };
+    } else if (progress.email.done) {
+      // The emails finished before a stop: their outcome was saved, and is the one recorded.
+      results.email = progress.email.done.results;
+      delivery.email = { outcome: progress.email.done.outcome, recipients: progress.email.done.recipients };
+    } else if (progress.email.started) {
+      // A stop cut the emails short: whoever got one is not emailed again, and who did not is not told which.
+      results.email = recipients.map((r) => ({ user_id: r.id, result: 'skipped' as const, reason: EMAIL_REASON.interrupted }));
+      delivery.email = { outcome: EMAIL_OUTCOME.interrupted, recipients: recipients.map((r) => ({ user_id: r.id, outcome: EMAIL_OUTCOME.interrupted })) };
+    } else {
+      try {
+        await markChannelStarted(summary.id, 'email');
+        const sent = await deliverSpiderEmailsTo({
+          orgId: a.orgId,
+          logKey: { summaryId: summary.id },
+          recipients,
+          messageFor: (r) => {
+            const own = leadsOf(r.id);
+            const input = {
+              recipientFirstName: r.first_name?.trim() || 'Team Member',
+              leads: own,
+              showOwner: showOwnerFor(r.id),
+              triggerKind: isTriggerKind(run.summary.trigger_kind) ? run.summary.trigger_kind : 'SETTINGS_CHANGED',
+              when,
+              summaryUrl: spiderSummaryUrl(),
+              leadUrl,
+            };
+            return { subject: summaryEmailSubject(own.length), text: summaryEmailText(input), html: summaryEmailHtml(input) };
+          },
+        });
+        results.email = sent.results;
+        delivery.email = { outcome: sent.outcome, recipients: sent.recipients };
+      } catch (err) {
+        channelFailed('email', err);
+        results.email = recipients.map((r) => ({ user_id: r.id, result: 'failed' as const, reason: EMAIL_REASON.failed }));
+        delivery.email = { outcome: EMAIL_OUTCOME.failed, recipients: recipients.map((r) => ({ user_id: r.id, outcome: EMAIL_OUTCOME.failed })) };
+      }
+      // The email outcome is saved BEFORE the texts are released: a stop can then never leave `text_started` saved without
+      // `email_done` (the restart would call the emails interrupted though they went out), #3470's L1. saveChannel never throws.
+      await saveChannel(summary.id, 'email', delivery.email, results.email);
     }
-    await saveChannel(summary.id, 'email', delivery.email, results.email);
-  }
-
-  if (!a.channels.text) {
-    delivery.text = { outcome: TEXT_OUTCOME.channelOff };
-  } else if (progress.text.done) {
-    results.text = progress.text.done.results;
-    delivery.text = { outcome: progress.text.done.outcome, recipients: progress.text.done.recipients };
-  } else if (progress.text.started) {
-    results.text = recipients.map((r) => ({ user_id: r.id, result: 'skipped' as const, reason: TEXT_REASON.interrupted }));
-    delivery.text = { outcome: TEXT_OUTCOME.interrupted, recipients: recipients.map((r) => ({ user_id: r.id, outcome: TEXT_OUTCOME.interrupted })) };
-  } else {
-    const emailed = new Set(results.email.filter((e) => e.result === 'sent').map((e) => e.user_id));
-    // A summary text counts toward texting usage like any Spider text: on the alert-log row of the
-    // person's most overdue lead in it (comm-usage.ts sums that column), which is kept for good.
-    const claimOf = new Map(data.claims.map((c) => [c.lead_id, c.id]));
-    const textsSent = new Map<string, number>();
+    } finally {
+      // Whatever happened, the text is never left waiting on the email (also when the save above could not run).
+      emailKnown(emailedSet());
+      timing.emailMs = Date.now() - emailBegan;
+    }
+  };
+  const textStep = async () => {
+    const textBegan = Date.now();
     try {
-      await markChannelStarted(summary.id, 'text');
-      const sent = await deliverSpiderTextsTo({
-        orgId: a.orgId,
-        sendKey: `summary:${summary.id}`,
-        logKey: { summaryId: summary.id },
-        recipients,
-        bodyFor: (r) => {
-          const n = leadsOf(r.id).length;
-          // It only mentions an email that actually went out to this person.
-          return emailed.has(r.id) ? summaryTextEmailed(n) : summaryTextWithLink(n, spiderSummaryUrl());
-        },
-        // Counted the moment it goes out, toward the summary's one usage write below (#2990).
-        onSent: async (r) => {
-          const first = leadsOf(r.id)[0];
-          const claimId = first ? claimOf.get(first.leadId) : undefined;
-          if (claimId) textsSent.set(claimId, (textsSent.get(claimId) ?? 0) + 1);
-        },
-      });
-      results.text = sent.results;
-      delivery.text = { outcome: sent.outcome, recipients: sent.recipients };
-    } catch (err) {
-      channelFailed('text', err);
-      results.text = recipients.map((r) => ({ user_id: r.id, result: 'failed' as const, reason: TEXT_REASON.failed }));
-      delivery.text = { outcome: TEXT_OUTCOME.failed, recipients: recipients.map((r) => ({ user_id: r.id, outcome: TEXT_OUTCOME.failed })) };
+    if (!a.channels.text) {
+      delivery.text = { outcome: TEXT_OUTCOME.channelOff };
+    } else if (progress.text.done) {
+      results.text = progress.text.done.results;
+      delivery.text = { outcome: progress.text.done.outcome, recipients: progress.text.done.recipients };
+    } else if (progress.text.started) {
+      results.text = recipients.map((r) => ({ user_id: r.id, result: 'skipped' as const, reason: TEXT_REASON.interrupted }));
+      delivery.text = { outcome: TEXT_OUTCOME.interrupted, recipients: recipients.map((r) => ({ user_id: r.id, outcome: TEXT_OUTCOME.interrupted })) };
+    } else {
+      // A summary text counts toward texting usage like any Spider text: on the alert-log row of the
+      // person's most overdue lead in it (comm-usage.ts sums that column), which is kept for good.
+      const claimOf = new Map(data.claims.map((c) => [c.lead_id, c.id]));
+      const textsSent = new Map<string, number>();
+      try {
+        // Saved only once the email answer is in: a stop while the email batch is still out must leave the texts unstarted, so
+        // the restart sends them (a started channel is never started again).
+        await emailed;
+        await markChannelStarted(summary.id, 'text');
+        const sent = await deliverSpiderTextsTo({
+          orgId: a.orgId,
+          sendKey: `summary:${summary.id}`,
+          logKey: { summaryId: summary.id },
+          recipients,
+          bodyFor: async (r) => {
+            const n = leadsOf(r.id).length;
+            // It only mentions an email that actually went out to this person.
+            return (await emailed).has(r.id) ? summaryTextEmailed(n) : summaryTextWithLink(n, spiderSummaryUrl());
+          },
+          // Counted the moment it goes out, toward the summary's one usage write below (#2990).
+          onSent: async (r) => {
+            const first = leadsOf(r.id)[0];
+            const claimId = first ? claimOf.get(first.leadId) : undefined;
+            if (claimId) textsSent.set(claimId, (textsSent.get(claimId) ?? 0) + 1);
+          },
+        });
+        results.text = sent.results;
+        delivery.text = { outcome: sent.outcome, recipients: sent.recipients };
+      } catch (err) {
+        channelFailed('text', err);
+        results.text = recipients.map((r) => ({ user_id: r.id, result: 'failed' as const, reason: TEXT_REASON.failed }));
+        delivery.text = { outcome: TEXT_OUTCOME.failed, recipients: recipients.map((r) => ({ user_id: r.id, outcome: TEXT_OUTCOME.failed })) };
+      }
+      // Every text that went out, even if the channel failed after it, in one write (never throws).
+      await countSentTexts(a.orgId, textsSent);
+      await saveChannel(summary.id, 'text', delivery.text, results.text);
     }
-    // Every text that went out, even if the channel failed after it, in one write (never throws).
-    await countSentTexts(a.orgId, textsSent);
-    await saveChannel(summary.id, 'text', delivery.text, results.text);
-  }
+    } finally {
+      timing.textMs = Date.now() - textBegan;
+    }
+  };
+  const channelsBegan = Date.now();
+  await runTogether(emailStep, textStep);
+  // How long each channel took (ids and numbers only): the one line that shows a slow provider on a big summary (#3470, #3471).
+  logger.info('[spider] starting summary channels done', {
+    orgId: a.orgId,
+    summaryId: summary.id,
+    recipients: recipients.length,
+    emailMs: timing.emailMs ?? 0,
+    textMs: timing.textMs ?? 0,
+    channelsMs: Date.now() - channelsBegan,
+  });
 
   // Each summarized lead's History row: how its people were told, through the summary. All of them in
   // one write (#2990, alertLog.ts), which never throws.

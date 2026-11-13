@@ -16,6 +16,10 @@ import { LazySpiderAlerts } from '../LazySpiderAlerts';
 import SpiderAlertsHost from '../SpiderAlertsHost';
 import { RETIRED_SPIDER_STORAGE_KEYS } from '@/lib/spider/gate';
 import { PANEL_EXIT_MS } from '../SpiderNotificationPopup';
+import { closeLiveLine, liveBackoffMs } from '@/lib/live/liveLine';
+import { resetAccountScopedStores } from '@/lib/storeReset';
+import { SPIDER_UNREAD_KEY } from '@/lib/api/shared/queryKeys';
+import { fakeLiveLine } from '@/__tests__/harness/fakeLiveLine';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -66,7 +70,9 @@ function signIn(user: Record<string, unknown>) {
 }
 const SPIDER_USER = { id: 'u1', role: 'SALES', organization_id: 'o1', org_is_demo: true, org_features: ['leads', 'spider'] };
 
-let unread: { alerts: unknown[]; in_app?: boolean; red_frame: boolean };
+let unread: { alerts: unknown[]; in_app?: boolean; red_frame: boolean; frame?: boolean; frame_ids?: string[] };
+/** The live line's server end (#3472). Down by default, so every test that is not about it sees the 30-second checks. */
+let live: ReturnType<typeof fakeLiveLine>;
 
 function LocationProbe() {
   const loc = useLocation();
@@ -106,9 +112,15 @@ beforeEach(() => {
   });
   mockApi.patch.mockResolvedValue({ data: { ok: true } });
   signIn(SPIDER_USER);
+  live = fakeLiveLine();
+  live.answerWith('fail');
 });
 
 afterEach(() => {
+  // The host is still mounted here: its line closing re-renders it.
+  act(() => closeLiveLine());
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   focusManager.setFocused(undefined);
   vi.useRealTimers();
 });
@@ -129,12 +141,15 @@ describe('the gate', () => {
     expect(screen.queryByTestId('spider-red-frame')).toBeNull();
     expect(screen.queryByRole('button', { name: /unread Spider notification/ })).toBeNull();
     expect(spiderCalls()).toBe(0);
+    // Nor a live line (#3472).
+    expect(live.fetchMock).not.toHaveBeenCalled();
   });
 
   it('a company with Spider loads the alerts and shows them', async () => {
     mount(<LazySpiderAlerts />);
     expect(await screen.findByRole('button', { name: '1 unread Spider notification — click to view' })).toBeInTheDocument();
     expect(screen.getByTestId('spider-red-frame')).toBeInTheDocument();
+    expect(live.fetchMock.mock.calls[0]?.[0]).toBe('/api/live');
   });
 
   // SPEC-5: a real (non-demo) company on the server's Spider pilot list.
@@ -525,5 +540,355 @@ describe('polling', () => {
       await vi.advanceTimersByTimeAsync(95_000);
     });
     expect(unreadCalls()).toBe(2);
+  });
+});
+
+describe('the live line (#3472)', () => {
+  const tick = (ms: number) => act(async () => {
+    await vi.advanceTimersByTimeAsync(ms);
+  });
+  const fetches = () => live.fetchMock.mock.calls.length;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    focusManager.setFocused(true);
+    // Every random wait at its middle: a reconnect 6.5 s after a drop, then 15 s, 30 s, 45 s; a re-read after 1.5 s.
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    live.answerWith('open');
+  });
+
+  it("opens one line with the sign-in token in a header, never in the URL; while it is open and the server says Spider's check runs (#3469), nothing is asked for 4 minutes, then the 5-minute safety check", async () => {
+    mount(<SpiderAlertsHost />);
+    await tick(10);
+    expect(unreadCalls()).toBe(1);
+    expect(fetches()).toBe(1);
+    const [url, init] = live.fetchMock.mock.calls[0]!;
+    expect(url).toBe('/api/live');
+    expect(String(url)).not.toContain('test-access-token');
+    expect((init!.headers as Record<string, string>).Authorization).toBe('Bearer test-access-token');
+
+    await tick(4 * 60_000);
+    expect(unreadCalls()).toBe(1);
+    // A window focus asks nothing while the line is open either.
+    act(() => {
+      focusManager.setFocused(false);
+      focusManager.setFocused(true);
+    });
+    await tick(10);
+    expect(unreadCalls()).toBe(1);
+    await tick(61_000);
+    expect(unreadCalls()).toBe(2);
+    expect(fetches()).toBe(1);
+  });
+
+  it("with the line open but Spider's check not running on the server (#3469), it keeps asking every 30 s, and a window focus still asks", async () => {
+    unread = { alerts: [NEW_CARD], in_app: true, red_frame: true, frame: true, frame_ids: [] };
+    live.helloWith({ spider_tick: false });
+    mount(<SpiderAlertsHost />);
+    await tick(10);
+    expect(unreadCalls()).toBe(1);
+    expect(fetches()).toBe(1);
+    expect(live.last.aborted()).toBe(false);
+    await tick(29_000);
+    expect(unreadCalls()).toBe(1);
+    await tick(1_500);
+    expect(unreadCalls()).toBe(2);
+    await tick(30_000);
+    expect(unreadCalls()).toBe(3);
+    // The line still carries its messages: a new alert shows at once, with no read.
+    live.send('spider.alert.added', { alerts: [CONTACTED_CARD], frame_ids: [] });
+    await tick(10);
+    expect(screen.getByRole('button', { name: '2 unread Spider notifications — click to view' })).toBeInTheDocument();
+    expect(unreadCalls()).toBe(3);
+    // And a window focus still asks (staleTime is 15 s).
+    await tick(16_000);
+    act(() => {
+      focusManager.setFocused(false);
+      focusManager.setFocused(true);
+    });
+    await tick(10);
+    expect(unreadCalls()).toBe(4);
+    expect(fetches()).toBe(1);
+  });
+
+  it('a server that sends no hello (older than #3469) keeps the 30-second check too', async () => {
+    live.helloWith(null);
+    mount(<SpiderAlertsHost />);
+    await tick(10);
+    expect(unreadCalls()).toBe(1);
+    await tick(30_500);
+    expect(unreadCalls()).toBe(2);
+    expect(fetches()).toBe(1);
+    expect(live.last.aborted()).toBe(false);
+  });
+
+  it("the check's hello holds for one line only: a line that reopens on a server without the check is back to 30 s", async () => {
+    mount(<SpiderAlertsHost />);
+    await tick(10);
+    await tick(60_000);
+    expect(unreadCalls()).toBe(1);
+    live.helloWith({ spider_tick: false });
+    live.last.end();
+    // Reconnects after 6.5 s, re-reads once after 1.5 s, then every 30 s.
+    await tick(8_100);
+    expect(fetches()).toBe(2);
+    const before = unreadCalls();
+    await tick(30_500);
+    expect(unreadCalls()).toBeGreaterThan(before);
+  });
+
+  it('a new alert shows its card and the frame at once, and its end takes them away, with no read; a red-frame-only record the same', async () => {
+    unread = { alerts: [], in_app: true, red_frame: true, frame: false, frame_ids: [] };
+    mount(<SpiderAlertsHost />);
+    await tick(10);
+    expect(unreadCalls()).toBe(1);
+    expect(screen.queryByTestId('spider-red-frame')).toBeNull();
+
+    live.send('spider.alert.added', { alerts: [NEW_CARD], frame_ids: [] });
+    await tick(10);
+    expect(screen.getByRole('button', { name: '1 unread Spider notification — click to view' })).toBeInTheDocument();
+    expect(screen.getByTestId('spider-red-frame')).toBeInTheDocument();
+    live.send('spider.alert.added', { alerts: [CONTACTED_CARD], frame_ids: [] });
+    await tick(10);
+    expect(screen.getByRole('button', { name: '2 unread Spider notifications — click to view' })).toBeInTheDocument();
+
+    live.send('spider.alert.ended', { ids: [NEW_CARD.id, CONTACTED_CARD.id] });
+    await tick(10);
+    expect(screen.queryByRole('button', { name: /unread Spider notification/ })).toBeNull();
+    expect(screen.queryByTestId('spider-red-frame')).toBeNull();
+
+    // In-app alerts off: a red-frame-only record shows the frame with no button, and goes with its end.
+    live.send('spider.alert.added', { alerts: [], frame_ids: ['nr-frame'] });
+    await tick(10);
+    expect(screen.getByTestId('spider-red-frame')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /unread Spider notification/ })).toBeNull();
+    live.send('spider.alert.ended', { ids: ['nr-frame'] });
+    await tick(10);
+    expect(screen.queryByTestId('spider-red-frame')).toBeNull();
+    expect(unreadCalls()).toBe(1);
+  });
+
+  it('a settings change re-reads once, after a random wait of at most 3 s, however many arrive together', async () => {
+    mount(<SpiderAlertsHost />);
+    await tick(10);
+    live.send('spider.settings.changed', {});
+    live.send('spider.settings.changed', {});
+    await tick(1_400);
+    expect(unreadCalls()).toBe(1);
+    await tick(200);
+    expect(unreadCalls()).toBe(2);
+    await tick(5_000);
+    expect(unreadCalls()).toBe(2);
+  });
+
+  it('reconnects first after a random 1-12 s (so a deploy\'s returns spread over at least 10 s), then waits up to twice as long each time, never past 60 s', () => {
+    expect(liveBackoffMs(1, () => 0)).toBe(1_000);
+    expect(liveBackoffMs(1, () => 0.5)).toBe(6_500);
+    expect(liveBackoffMs(1, () => 1)).toBe(12_000);
+    expect([liveBackoffMs(2, () => 0), liveBackoffMs(2, () => 1)]).toEqual([10_000, 20_000]);
+    expect([liveBackoffMs(3, () => 0), liveBackoffMs(3, () => 1)]).toEqual([20_000, 40_000]);
+    expect([liveBackoffMs(4, () => 0), liveBackoffMs(4, () => 1)]).toEqual([30_000, 60_000]);
+    expect(liveBackoffMs(12, () => 1)).toBe(60_000);
+  });
+
+  it('when the line drops: 30-second checks at once, a reconnect after 1-12 s, and one re-read once it is back', async () => {
+    mount(<SpiderAlertsHost />);
+    await tick(10);
+    expect(unreadCalls()).toBe(1);
+    live.last.end();
+    await tick(6_400);
+    expect(fetches()).toBe(1);
+    await tick(200);
+    expect(fetches()).toBe(2);
+    // Back: one re-read after its random wait, then the 5-minute safety check again.
+    await tick(1_300);
+    expect(unreadCalls()).toBe(1);
+    await tick(200);
+    expect(unreadCalls()).toBe(2);
+    await tick(4 * 60_000);
+    expect(unreadCalls()).toBe(2);
+  });
+
+  it('a network cut: the 30-second checks carry on, and it keeps trying with growing random waits (up to 60 s) until it is back', async () => {
+    mount(<SpiderAlertsHost />);
+    await tick(10);
+    live.answerWith('fail');
+    live.last.drop();
+    await tick(10);
+    // The checks carry on every 30 s from the drop.
+    await tick(30_500);
+    expect(unreadCalls()).toBe(2);
+    // Tries at 6.5 s, then 15 s, 30 s and 45 s after each failure (the middle of 1-12 s, 10-20 s, 20-40 s, 30-60 s).
+    expect(fetches()).toBe(3);
+    await tick(21_500);
+    expect(fetches()).toBe(4);
+    await tick(45_000);
+    expect(fetches()).toBe(5);
+    await tick(45_000);
+    expect(fetches()).toBe(6);
+    expect(unreadCalls()).toBe(5);
+
+    live.answerWith('open');
+    await tick(45_000);
+    expect(fetches()).toBe(7);
+    // Open again: one re-read, then nothing more for minutes.
+    const before = unreadCalls();
+    await tick(2_000);
+    expect(unreadCalls()).toBe(before + 1);
+    await tick(4 * 60_000);
+    expect(unreadCalls()).toBe(before + 1);
+  });
+
+  it('refused by a full server: keeps the 30-second checks and waits as long as it is told before trying again', async () => {
+    live.answerWith({ status: 503, retryAfter: '60' });
+    mount(<SpiderAlertsHost />);
+    await tick(10);
+    expect(fetches()).toBe(1);
+    await tick(30_000);
+    expect(unreadCalls()).toBe(2);
+    await tick(29_000);
+    expect(fetches()).toBe(1);
+    await tick(1_100);
+    expect(fetches()).toBe(2);
+  });
+
+  it('a hidden tab keeps its line for 30 minutes, then closes it; shown again, it reopens and re-reads', async () => {
+    let state: DocumentVisibilityState = 'visible';
+    vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => state);
+    const setVisibility = (next: DocumentVisibilityState) => {
+      state = next;
+      document.dispatchEvent(new Event('visibilitychange'));
+    };
+    mount(<SpiderAlertsHost />);
+    await tick(10);
+    act(() => setVisibility('hidden'));
+    await tick(29 * 60_000);
+    expect(live.last.aborted()).toBe(false);
+    await tick(61_000);
+    expect(live.last.aborted()).toBe(true);
+    expect(fetches()).toBe(1);
+    const before = unreadCalls();
+
+    act(() => setVisibility('visible'));
+    await tick(10);
+    expect(fetches()).toBe(2);
+    await tick(2_000);
+    expect(unreadCalls()).toBeGreaterThan(before);
+  });
+
+  it('a line that goes silent is taken to have dropped: the server\'s 25-second keep-alive holds it, 60 s of nothing does not (30-second checks at once, then a reconnect)', async () => {
+    mount(<SpiderAlertsHost />);
+    await tick(10);
+    // Keep-alives every 25 s (the fake server sends them): five minutes pass, the line stays, the checks stay at 5 minutes.
+    await tick(5 * 60_000 - 10);
+    expect(fetches()).toBe(1);
+    expect(live.last.aborted()).toBe(false);
+    expect(unreadCalls()).toBe(2);
+
+    // The connection dies without a word (a laptop that slept): nothing arrives for 60 s.
+    live.keepAlives(false);
+    live.answerWith('fail');
+    await tick(59_000);
+    expect(live.lines[0]!.aborted()).toBe(false);
+    const before = unreadCalls();
+    await tick(2_000);
+    expect(live.lines[0]!.aborted(), 'the idle watchdog dropped it').toBe(true);
+    // Dropped: back to the 30-second checks at once, and it tries to come back after its random wait.
+    await tick(30_500);
+    expect(unreadCalls()).toBeGreaterThan(before);
+    expect(fetches()).toBeGreaterThanOrEqual(2);
+
+    // It comes back: open again, one re-read, safety check again.
+    live.answerWith('open');
+    live.keepAlives(true);
+    await tick(60_000);
+    const opened = fetches();
+    const reads = unreadCalls();
+    await tick(4 * 60_000);
+    expect(fetches()).toBe(opened);
+    expect(unreadCalls()).toBe(reads);
+  });
+
+  describe("applying a message when the copy on screen cannot be patched safely (it reads again instead)", () => {
+    it('an older server\'s copy (no frame ids) is read again, not patched', async () => {
+      unread = { alerts: [NEW_CARD], in_app: true, red_frame: true };
+      mount(<SpiderAlertsHost />);
+      await tick(10);
+      expect(unreadCalls()).toBe(1);
+      unread = { alerts: [NEW_CARD, CONTACTED_CARD], in_app: true, red_frame: true, frame: true, frame_ids: [] };
+      live.send('spider.alert.added', { alerts: [CONTACTED_CARD], frame_ids: [] });
+      await tick(10);
+      expect(unreadCalls()).toBe(2);
+      live.send('spider.alert.ended', { ids: [NEW_CARD.id] });
+      await tick(10);
+      // Now the copy has frame ids (the second read brought them): an end is patched in with no read.
+      expect(unreadCalls()).toBe(2);
+      expect(screen.getByRole('button', { name: '1 unread Spider notification — click to view' })).toBeInTheDocument();
+      live.send('spider.alert.ended', { ids: [CONTACTED_CARD.id] });
+      await tick(10);
+      expect(unreadCalls()).toBe(2);
+      expect(screen.queryByRole('button', { name: /unread Spider notification/ })).toBeNull();
+    });
+
+    it('while a read is already on its way a message is not patched in (the read may have started before it and would replace it): the screen shows what the read brings', async () => {
+      unread = { alerts: [NEW_CARD], in_app: true, red_frame: true, frame: true, frame_ids: [] };
+      const { qc } = mount(<SpiderAlertsHost />);
+      await tick(10);
+      expect(unreadCalls()).toBe(1);
+
+      // The next read is held, as a slow server would.
+      const release: Array<() => void> = [];
+      mockApi.get.mockImplementation((url: string) =>
+        url === UNREAD ? new Promise((r) => release.push(() => r({ data: unread }))) : Promise.resolve({ data: {} }),
+      );
+      act(() => {
+        void qc.refetchQueries({ queryKey: SPIDER_UNREAD_KEY });
+      });
+      await tick(10);
+      expect(release).toHaveLength(1);
+
+      // A card arrives meanwhile: patching it in would be wiped by the held read. It asks again instead.
+      live.send('spider.alert.added', { alerts: [CONTACTED_CARD], frame_ids: [] });
+      await tick(10);
+      expect(screen.getByRole('button', { name: '1 unread Spider notification — click to view' })).toBeInTheDocument();
+      expect(release.length).toBeGreaterThanOrEqual(1);
+      // The server's answer (which includes the card) is what ends up on screen, after every held read is let go.
+      unread = { alerts: [NEW_CARD, CONTACTED_CARD], in_app: true, red_frame: true, frame: true, frame_ids: [] };
+      for (let i = 0; i < 4; i++) {
+        release.splice(0).forEach((r) => r());
+        await tick(10);
+      }
+      expect(screen.getByRole('button', { name: '2 unread Spider notifications — click to view' })).toBeInTheDocument();
+    });
+
+    it('a list at its limit of 100 reads again when one ends (an alert past the limit may now belong in it)', async () => {
+      const hundred = Array.from({ length: 100 }, (_, i) => card({ id: `nr-${i}`, lead_id: `lead-${i}`, lead_number: `L${i}`, created_at: ago(i * 60_000) }));
+      unread = { alerts: hundred, in_app: true, red_frame: true, frame: true, frame_ids: [] };
+      mount(<SpiderAlertsHost />);
+      await tick(10);
+      expect(unreadCalls()).toBe(1);
+      live.send('spider.alert.ended', { ids: ['nr-0'] });
+      await tick(10);
+      expect(unreadCalls(), 'one read for the alert that may have come into the list').toBe(2);
+
+      // Below the limit an end is applied with no read.
+      unread = { alerts: hundred.slice(1, 10), in_app: true, red_frame: true, frame: true, frame_ids: [] };
+      live.send('spider.settings.changed', {});
+      await tick(3_100);
+      expect(unreadCalls()).toBe(3);
+      live.send('spider.alert.ended', { ids: ['nr-1'] });
+      await tick(10);
+      expect(unreadCalls()).toBe(3);
+    });
+  });
+
+  it('sign-out closes the line, and it does not come back', async () => {
+    mount(<SpiderAlertsHost />);
+    await tick(10);
+    expect(live.last.aborted()).toBe(false);
+    act(() => resetAccountScopedStores());
+    expect(live.last.aborted()).toBe(true);
+    await tick(120_000);
+    expect(fetches()).toBe(1);
   });
 });

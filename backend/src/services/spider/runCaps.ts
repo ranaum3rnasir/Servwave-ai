@@ -17,6 +17,13 @@ import { performance } from 'perf_hooks';
 /** Per-lead alerts one run sends for one company, at most. */
 export const SPIDER_ALERTS_PER_COMPANY_RUN = 100;
 
+/**
+ * The flood guard's window (#2991): at most SPIDER_ALERTS_PER_COMPANY_RUN per-lead alerts per company in any window this long,
+ * counted across the check (tick.ts) and the sweep (sweep.ts) together, whoever sent them. Both count the company's ALERTED
+ * rows in the window, so the guard is one rule, never one budget each (#3471).
+ */
+export const FLOOD_WINDOW_MS = 2 * 60_000;
+
 /** How long one run spends on one company before it stops between alerts. */
 export const SPIDER_COMPANY_RUN_MS = 45_000;
 

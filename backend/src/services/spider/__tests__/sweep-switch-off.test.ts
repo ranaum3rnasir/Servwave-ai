@@ -113,9 +113,10 @@ vi.mock('../../../lib/prisma', () => ({
     },
     notificationRecipient: {
       findMany: vi.fn(async () => []),
-      updateMany: vi.fn(async () => {
+      // Ending reads back each person's row it ended, for the live line (#3472).
+      updateManyAndReturn: vi.fn(async () => {
         h.at('end');
-        return { count: 1 };
+        return [{ id: 'nr-1', recipient_id: 'user-1' }];
       }),
       createMany: vi.fn(async () => ({ count: 1 })),
     },
@@ -134,7 +135,7 @@ vi.mock('../../notifications/notificationService', () => ({
   // The run's in-app alerts, written in one step at its end (#2990): every one reaches the one person.
   emitMany: vi.fn(async (list: unknown[]) => {
     h.at('emit');
-    return list.map(() => ['user-1']);
+    return { told: list.map(() => ['user-1']), written: list.map(() => null) };
   }),
 }));
 
@@ -200,8 +201,8 @@ describe('Spider switched off during a sweep', () => {
 
   /** The run's bell records were ended for exactly these alerts, by the end step's one write. */
   const expectEnded = (alertIds: string[]) => {
-    expect(prisma.notificationRecipient.updateMany).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(prisma.notificationRecipient.updateMany).mock.calls[0]![0]).toMatchObject({
+    expect(prisma.notificationRecipient.updateManyAndReturn).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(prisma.notificationRecipient.updateManyAndReturn).mock.calls[0]![0]).toMatchObject({
       where: {
         organization_id: ORG,
         read_at: null,
@@ -214,7 +215,33 @@ describe('Spider switched off during a sweep', () => {
     const result = await runSpiderSweep(NOW);
     expect(result.alertsSent).toBe(1);
     expect(state.steps).toEqual(['settings', 'check', 'claim', 'email', 'text', 'emit', 'check']);
-    expect(prisma.notificationRecipient.updateMany).not.toHaveBeenCalled();
+    expect(prisma.notificationRecipient.updateManyAndReturn).not.toHaveBeenCalled();
+  });
+
+  it('an alert\'s email and text start together (#3470), and the alert logs how long each took (ids and counts only)', async () => {
+    const one = (outcome: string) => ({ outcome, recipients: [{ user_id: 'user-1', outcome }], results: [{ user_id: 'user-1', result: 'sent' as const, reason: null }] });
+    let emailFinished = false;
+    let emailStillRunningWhenTextStarted: boolean | null = null;
+    vi.mocked(deliverSpiderEmails).mockImplementationOnce((async () => {
+      h.at('email');
+      await new Promise((r) => setTimeout(r, 25));
+      emailFinished = true;
+      return one('Email sent');
+    }) as never);
+    vi.mocked(deliverSpiderTexts).mockImplementationOnce((async () => {
+      h.at('text');
+      emailStillRunningWhenTextStarted = !emailFinished;
+      return one('Text message sent');
+    }) as never);
+    const info = vi.spyOn(logger, 'info').mockImplementation(() => logger) as unknown as { mock: { calls: unknown[][] } };
+
+    await runSpiderSweep(NOW);
+
+    expect(emailStillRunningWhenTextStarted).toBe(true);
+    const line = info.mock.calls.find((c) => c[0] === '[spider] alert sent');
+    expect(line?.[1]).toMatchObject({ orgId: ORG, alertId: 'alert-lead-a', recipients: 1, emailMs: expect.any(Number), textMs: expect.any(Number) });
+    expect(Object.keys(line![1] as object).sort()).toEqual(['alertId', 'emailMs', 'leadId', 'orgId', 'recipients', 'textMs']);
+    expect((line![1] as { emailMs: number }).emailMs).toBeGreaterThanOrEqual(20);
   });
 
   it('the switch is read twice for the per-lead alerts however many there are: before the claims and after the records', async () => {
@@ -327,7 +354,7 @@ describe('Spider switched off during a sweep', () => {
 
       expect(result.alertsSent).toBe(1);
       expect(state.steps).toEqual(['settings', 'check', 'claim', 'email', 'text', 'emit', 'check']);
-      expect(prisma.notificationRecipient.updateMany).not.toHaveBeenCalled();
+      expect(prisma.notificationRecipient.updateManyAndReturn).not.toHaveBeenCalled();
       const { delivery } = recordedDelivery();
       expect(delivery.in_app!.outcome).toBe('Shown in the app');
       expect(delivery.email!.outcome).toBe('Email sent');

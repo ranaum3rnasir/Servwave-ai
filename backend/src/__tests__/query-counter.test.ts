@@ -64,7 +64,7 @@ describe('countQueries when events arrive after their queries resolve', () => {
     const counts: number[] = [];
     for (let i = 0; i < 40; i++) {
       const r = await countQueries(
-        () => Promise.all(Array.from({ length: 24 }, (_, n) => client.query(`SELECT ${n}`))),
+        () => Promise.all(Array.from({ length: 24 }, (_, n) => client.query(`SELECT ${n + 10}`))),
         as(client),
       );
       counts.push(r.count);
@@ -79,11 +79,26 @@ describe('countQueries when events arrive after their queries resolve', () => {
     expect(sqls(r)).toEqual(['SELECT inside']);
   });
 
+  it("never counts the engine's own connection check (a bare SELECT 1), wherever it falls in the count", async () => {
+    const { client, as } = fakeClient();
+    const r = await countQueries(async () => {
+      await client.query('SELECT 1');
+      await client.query('SELECT 2');
+      await client.query('SELECT 1');
+      await client.query('SELECT 3');
+      await client.query('  SELECT 1  ');
+    }, as(client));
+    expect(sqls(r)).toEqual(['SELECT 2', 'SELECT 3']);
+    // A statement that merely starts like it is the code's own and is counted.
+    const own = await countQueries(() => client.query('SELECT 1 FROM leads'), as(client));
+    expect(sqls(own)).toEqual(['SELECT 1 FROM leads']);
+  });
+
   it('never counts its own marker queries', async () => {
     const { client, as } = fakeClient();
     expect((await countQueries(async () => undefined, as(client))).count).toBe(0);
-    const r = await countQueries(() => client.query('SELECT 1'), as(client));
-    expect(sqls(r)).toEqual(['SELECT 1']);
+    const r = await countQueries(() => client.query('SELECT 7'), as(client));
+    expect(sqls(r)).toEqual(['SELECT 7']);
   });
 
   it('refuses a count inside another count, and the outer count keeps every query before and after it', async () => {

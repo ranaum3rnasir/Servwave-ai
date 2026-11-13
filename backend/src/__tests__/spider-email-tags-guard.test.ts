@@ -17,19 +17,28 @@ const sources = readdirSync(SPIDER_DIR)
   .map((f) => ({ file: f, text: readFileSync(join(SPIDER_DIR, f), 'utf8') }));
 
 /** What a Spider file may take from the shared email module: the client for the one send, and pure formatters. */
-const ALLOWED_FROM_EMAIL_MODULE = new Set(['esc', 'formatSenderIdentity', 'resend', 'wrapHtml']);
+const ALLOWED_FROM_EMAIL_MODULE = new Set(['esc', 'formatSenderIdentity', 'isRateLimited', 'RATE_LIMIT_BACKOFF_MS', 'resend', 'wrapHtml']);
 
 describe('every Spider email is sent tagged with its record', () => {
   it('reads the Spider source (the guard is not looking at an empty folder)', () => {
     expect(sources.map((s) => s.file)).toEqual(expect.arrayContaining(['delivery.ts', 'sweep.ts', 'summary.ts', 'emailEvents.ts']));
   });
 
-  it('has exactly one provider send, in delivery.ts, and it carries the record tags', () => {
-    const sends = sources.flatMap((s) => [...s.text.matchAll(/emails\.send\s*\(/g)].map((m) => ({ file: s.file, at: m.index! })));
+  it('has no one-by-one provider send, and exactly one batch send, in delivery.ts; every email in it carries the record tags (#3470)', () => {
+    const single = sources.flatMap((s) => [...s.text.matchAll(/emails\.send\s*\(/g)].map((m) => s.file));
+    expect(single).toEqual([]);
+    const sends = sources.flatMap((s) => [...s.text.matchAll(/batch\.send\s*\(/g)].map((m) => ({ file: s.file, at: m.index! })));
     expect(sends.map((s) => s.file)).toEqual(['delivery.ts']);
     const delivery = sources.find((s) => s.file === 'delivery.ts')!.text;
-    const call = delivery.slice(sends[0].at, delivery.indexOf('});', sends[0].at));
-    expect(call).toMatch(/tags:\s*spiderEmailTags\(record\)/);
+    // The batch's emails are built in one place, and each carries the tags: the provider documents tags as supported in batch.
+    // Every place that builds an email for the batch (every `toSend.push(`) puts the tags inside the message it builds.
+    const builds = [...delivery.matchAll(/toSend\.push\(/g)].map((m) => m.index!);
+    expect(builds.length).toBeGreaterThan(0);
+    for (const at of builds) {
+      const message = delivery.slice(at, delivery.indexOf('\n          });', at));
+      expect(message).toMatch(/tags:\s*spiderEmailTags\(args\.logKey\)/);
+    }
+    expect(delivery.match(/tags:\s*spiderEmailTags\(/g)).toHaveLength(builds.length);
   });
 
   it('takes nothing else from the shared email module, so no other email helper can send a Spider email untagged', () => {

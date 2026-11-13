@@ -17,6 +17,10 @@
  * number is in the 555-0100..0199 range kept for fiction. Each overdue lead's stage entry time (its
  * creation for New, its contacted time for Contacted, as `spiderStageOf` reads them) lies between a
  * little and about two months past its limit, so a starting summary would cover every one of them.
+ * The seed itself starts nothing: switching Spider on (Activate, "Send") records the starting trigger, and with the check
+ * running (SPIDER_WATCH_LIST=check) the first check after it builds the summary at once (#3471; no quiet period). The leads'
+ * watch rows (spider_lead_watch) are written by the database's own triggers as the leads are inserted, and go with the
+ * leads on delete.
  *
  * No passwords: staff rows are active and marked able to sign in (what Spider's recipient rule reads),
  * but no sign-in account is created for any of them and no password is ever made.

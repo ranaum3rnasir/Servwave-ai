@@ -315,9 +315,9 @@ export function senderDomainOf(): string {
 }
 
 /** Waits before each retry of a send the mail service refused for going over its rate limit. */
-const RATE_LIMIT_BACKOFF_MS = [300, 700, 1500, 3000];
+export const RATE_LIMIT_BACKOFF_MS = [300, 700, 1500, 3000];
 
-function isRateLimited(error: { name?: string; statusCode?: number | null } | null | undefined): boolean {
+export function isRateLimited(error: { name?: string; statusCode?: number | null } | null | undefined): boolean {
   return !!error && (error.statusCode === 429 || error.name === 'rate_limit_exceeded');
 }
 

@@ -61,6 +61,8 @@ vi.mock('../config/env', () => ({
 vi.mock('resend', () => ({
   Resend: class {
     emails = { send: resendSend };
+    // One alert's emails go out as one batch request (#3470); this answers it from the per-email fake above.
+    batch = { send: async (...a: [never, never?]) => (await import('./spider-batch-test-helpers.js')).batchOverSingleSends(resendSend as never)(...(a as [never, never])) };
   },
 }));
 vi.mock('../lib/email', async () => vi.importActual('../lib/email'));

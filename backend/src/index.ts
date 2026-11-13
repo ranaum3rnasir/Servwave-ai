@@ -11,10 +11,13 @@ import { runUnscoped } from './lib/tenant-context';
 import { refreshAllAccountStatuses } from './lib/account-status';
 import { sweepUncapturedFees } from './lib/reconcile-stripe-fees';
 import { runNightlyReconcile } from './services/payment-reconcile';
-import { runSpiderSweep, whenSpiderSweepIdle } from './services/spider/sweep';
+import { runSpiderSweep, spiderSweepCron, whenSpiderSweepIdle } from './services/spider/sweep';
+import { startSpiderTick, whenSpiderTickIdle } from './services/spider/tick';
 import { installStopSignals } from './lib/graceful-stop';
+import { endAllLiveLines } from './services/live/liveLines';
 import { spiderPilotListBootLine } from './services/spider/gate';
 import { sweepReceivedAttachments } from './lib/inbound-attachments';
+import { runWatchListBackfill, runWatchListCheck } from './services/spider/watchList';
 
 const server = app.listen(env.PORT, '0.0.0.0', () => {
   logger.info(`ServWave API running on port ${env.PORT}`);
@@ -41,6 +44,8 @@ const server = app.listen(env.PORT, '0.0.0.0', () => {
 // (defense-in-depth for the F-16/F-17 amplification surfaces on the free plan).
 server.headersTimeout = 20_000; // 20s to send all headers
 server.requestTimeout = 30_000; // 30s for the whole request
+// Both bound only RECEIVING a request. A live line (GET /api/live, #3472) has no body, so it is received at once and its
+// answer then streams for up to 55 minutes past them (spider-live-line-db.test.ts holds a line open past both).
 
 // D16 (2026-07-21) — the internal estimate expiration cron is retired (release plan §R1);
 // SENT estimates no longer auto-archive on a lapsed valid_until. See cron/estimate-expiration.ts
@@ -69,18 +74,50 @@ scheduleJob('automations', '* * * * *', () => {
 
 logger.info('Automation Center poller scheduled (every minute)');
 
-// Spider lead watcher sweep (#2619) — every 2 minutes. Unscoped at the top, then scoped per
+// Spider lead watcher sweep (#2619) — every 2 minutes while it is the only alerter, every 10 minutes once the check below runs
+// beside it and it is the safety net (#3471: SPIDER_WATCH_LIST=check and the check not paused; services/spider/sweep.ts
+// spiderSweepCron). The interval is chosen at boot, with the check's own switch. Unscoped at the top, then scoped per
 // company inside; one instance across servers (a lease row, services/spider/sweepLease.ts) and never two overlapping runs.
 // runSpiderSweep never throws; the catch is belt-and-braces.
-scheduleJob('spider', '*/2 * * * *', () => {
+scheduleJob('spider', spiderSweepCron(), () => {
   runSpiderSweep().catch((err) => logger.error('spider sweep failed', err));
 });
+logger.info(`[spider] the sweep runs ${spiderSweepCron() === '*/10 * * * *' ? 'every 10 minutes, as the safety net beside the check' : 'every 2 minutes, as the only alerter (the check is off)'}`);
 logger.info(spiderPilotListBootLine());
+
+// Spider's watch list (#3468). The database keeps it on every lead save; these two jobs run only when SPIDER_WATCH_LIST
+// chooses them (services/spider/watchList.ts), one after the other: `backfill` writes the rows of the leads that have none,
+// once at every boot (a stopped run starts again at the next boot and writes only what is still missing); `check` compares
+// the list with the leads every night at 09:23 UTC, repairs it and logs the count (0 expected; anything else is an error).
+// Unset, each logs one line and reads nothing. Neither ever throws past its own catch.
+void runJobAtBoot('spider-watch-backfill', () => runWatchListBackfill())
+  .catch((err) => logger.error('[spider-watch] backfill failed', err));
+scheduleJob('spider-watch-check', '23 9 * * *', () => {
+  runWatchListCheck().catch((err) => logger.error('[spider-watch] check failed', err));
+}, { timezone: 'UTC' });
+
+// Spider's check (#3469): a lead alerts within about a second of crossing its limit, and its alert ends within seconds.
+// It reads the watch list, so it starts only when SPIDER_WATCH_LIST=check says the list is complete; otherwise it logs
+// one line, reads nothing, and the 2-minute sweep above alerts exactly as before. One loop per process, on the jobs'
+// lines; JOBS_PAUSED=spider-tick keeps it from starting. startSpiderTick never throws; the catch is belt-and-braces.
+void runJobAtBoot('spider-tick', () => startSpiderTick())
+  .catch((err) => logger.error('[spider-tick] start failed', err));
 
 // Stopping the server (a deploy or restart sends SIGTERM; a terminal sends SIGINT): a Spider sweep in progress stops
 // between two per-lead alerts and finishes its end step (unsent claims released, records written) before the process
-// ends by the same signal, as it always did. At most 25 s (lib/graceful-stop.ts); nothing else about shutdown changes.
-installStopSignals({ finishing: whenSpiderSweepIdle });
+// ends by the same signal, as it always did; the Spider check claims nothing more and still sends the emails and texts of
+// the alerts it already shows while the wait has room, recording what cannot fit as interrupted (a send still on its way
+// just before the wait ends is not waited for), then writes its records. At most 25 s (lib/graceful-stop.ts); nothing
+// else about shutdown changes.
+// Every live line (#3472) is ended at the signal, cleanly, so each screen reconnects after its own random wait instead of
+// all of them finding a dead connection together; new lines are refused while stopping.
+installStopSignals({
+  finishing: () => {
+    const ended = endAllLiveLines();
+    if (ended > 0) logger.info('[shutdown] live lines ended', { lines: ended });
+    return Promise.all([whenSpiderSweepIdle(), whenSpiderTickIdle()]).then(() => undefined);
+  },
+});
 
 // Received-mail attachments (PRD 10, S10.17) — every 10 minutes: received messages whose files were still on their way after the
 // first try (the provider was unreachable, the process stopped mid-way) are tried again, a fixed number of times each. Cross-company,

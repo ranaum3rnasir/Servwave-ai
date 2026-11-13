@@ -3,8 +3,10 @@
  * in the browser beyond react-query's cache, which sign-out and an identity change clear.
  */
 import { SPIDER_UNREAD_KEY } from '@/lib/api/shared/queryKeys';
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
+import { useEffect } from 'react';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData, type QueryClient } from '@tanstack/react-query';
 import api from '@/lib/axios';
+import { LIVE_REOPENED, subscribeLiveMessages, useLiveLine, useLiveLineSays, type LiveMessage } from '@/lib/live/liveLine';
 import { useSpiderAvailable } from '@/lib/spider/gate';
 import { spiderErrorText } from '@/lib/spider/errorText';
 import { toast } from '@/ui-kit/components/ui/sonner';
@@ -198,6 +200,8 @@ export interface SpiderUnreadResponse {
    * (in-app alerts off) is open for this person. Absent from an older server.
    */
   frame?: boolean;
+  /** The open red-frame-only records' ids, so a live "ended" message can drop one (#3472). Absent from an older server. */
+  frame_ids?: string[];
 }
 
 /**
@@ -216,6 +220,15 @@ export const SPIDER_HISTORY_KEY = ['spider', 'history'] as const;
 
 /** The bell's own cadence (NOTIFICATIONS_POLL_MS), kept equal on purpose. */
 export const SPIDER_POLL_MS = 30_000;
+/**
+ * While the live line is open (#3472) and its server says Spider's check runs there (#3469), the line's messages carry
+ * every change within seconds; this check is only a safety net.
+ */
+export const SPIDER_SAFETY_POLL_MS = 5 * 60_000;
+/** The most alerts the unread read lists (the server's UNREAD_ALERTS_LIMIT). */
+const SPIDER_UNREAD_LIMIT = 100;
+/** A message that asks every screen of a company to re-read spreads the re-reads over this long. */
+const SPIDER_REREAD_SPREAD_MS = 3_000;
 
 /** `enabled: false` keeps the copy already read but asks the server for nothing more. */
 export function useSpiderSettings({ enabled = true }: { enabled?: boolean } = {}) {
@@ -821,8 +834,14 @@ function toAlertCard(a: Record<string, unknown>): SpiderAlertCard {
  * The signed-in person's own unread Spider alerts. Polls on the bell's 30-second cadence and,
  * like the bell, not while the tab is hidden (react-query pauses interval refetches in the
  * background). Only ever mounted behind the Spider gate.
+ *
+ * While the live line is open (#3472, useSpiderLiveUpdates) AND its server says Spider's check runs there (#3469: alerts
+ * and their ends reach the line within seconds), the line keeps this copy current, so the check drops to a 5-minute
+ * safety net and a window focus asks nothing. Otherwise (the line closed, or the check not running on the server) it
+ * asks every 30 s, line or not; the moment the line drops it is back to every 30 s.
  */
 export function useSpiderUnreadAlerts() {
+  const live = useLiveLineSays('spider_tick');
   return useQuery<SpiderUnreadResponse>({
     queryKey: SPIDER_UNREAD_KEY,
     queryFn: () =>
@@ -834,12 +853,103 @@ export function useSpiderUnreadAlerts() {
           in_app: r.data?.in_app !== false,
           red_frame: r.data?.red_frame === true,
           ...(typeof r.data?.frame === 'boolean' ? { frame: r.data.frame } : {}),
+          ...(Array.isArray(r.data?.frame_ids) ? { frame_ids: (r.data.frame_ids as unknown[]).map(String) } : {}),
         })),
     staleTime: 15_000,
-    refetchOnWindowFocus: true,
-    refetchInterval: SPIDER_POLL_MS,
+    refetchOnWindowFocus: !live,
+    refetchInterval: live ? SPIDER_SAFETY_POLL_MS : SPIDER_POLL_MS,
     refetchIntervalInBackground: false,
   });
+}
+
+/** The newest first, as the server lists them; at most its limit. */
+function newestFirst(alerts: SpiderAlertCard[]): SpiderAlertCard[] {
+  return [...alerts].sort((x, y) => (x.created_at < y.created_at ? 1 : x.created_at > y.created_at ? -1 : 0)).slice(0, SPIDER_UNREAD_LIMIT);
+}
+
+/** The frame by the server's own rule: its switch on, and an alert or a red-frame-only record open. */
+function withFrame(prev: SpiderUnreadResponse, alerts: SpiderAlertCard[], frameIds: string[]): SpiderUnreadResponse {
+  return { ...prev, alerts, frame_ids: frameIds, frame: prev.red_frame && (alerts.length > 0 || frameIds.length > 0) };
+}
+
+/**
+ * Re-reads one pending at a time per key, after a random wait so a company's screens do not all ask at once. Keyed by
+ * when each is due, so one whose timer never ran (a page torn down) does not hold the next back.
+ */
+const pendingRereads = new Map<string, number>();
+function rereadSoon(qc: QueryClient, key: readonly unknown[]): void {
+  const id = JSON.stringify(key);
+  const due = pendingRereads.get(id);
+  if (due !== undefined && Date.now() <= due) return;
+  const wait = Math.random() * SPIDER_REREAD_SPREAD_MS;
+  pendingRereads.set(id, Date.now() + wait);
+  setTimeout(() => {
+    pendingRereads.delete(id);
+    void qc.invalidateQueries({ queryKey: key });
+  }, wait);
+}
+
+/**
+ * Applies one live-line message to the copies on screen (#3472). A new card or an ended one is applied to the unread
+ * copy at once, with no read; when it cannot be applied safely (no copy yet, an older server's copy, a read already on
+ * its way, a list at its limit) the copy is read again instead. Settings changes, a reconnect and a ready summary re-read,
+ * after a random wait of up to 3 s.
+ */
+export function applySpiderLiveMessage(qc: QueryClient, message: LiveMessage): void {
+  const unread = qc.getQueryData<SpiderUnreadResponse>(SPIDER_UNREAD_KEY);
+  // A read under way may have started before the change: read again rather than patch what it is about to replace.
+  const canPatch = !!unread && Array.isArray(unread.frame_ids) && qc.isFetching({ queryKey: SPIDER_UNREAD_KEY }) === 0;
+  switch (message.type) {
+    case 'spider.alert.added': {
+      if (!canPatch) {
+        void qc.invalidateQueries({ queryKey: SPIDER_UNREAD_KEY });
+        return;
+      }
+      const added = (Array.isArray(message.data.alerts) ? message.data.alerts : []) as Record<string, unknown>[];
+      const frames = (Array.isArray(message.data.frame_ids) ? message.data.frame_ids : []).map(String);
+      const known = new Set(unread.alerts.map((a) => a.id));
+      const alerts = newestFirst([...unread.alerts, ...added.map(toAlertCard).filter((a) => !known.has(a.id))]);
+      qc.setQueryData<SpiderUnreadResponse>(SPIDER_UNREAD_KEY, withFrame(unread, alerts, [...new Set([...unread.frame_ids!, ...frames])]));
+      return;
+    }
+    case 'spider.alert.ended': {
+      if (!canPatch) {
+        void qc.invalidateQueries({ queryKey: SPIDER_UNREAD_KEY });
+        return;
+      }
+      const ended = new Set((Array.isArray(message.data.ids) ? message.data.ids : []).map(String));
+      const alerts = unread.alerts.filter((a) => !ended.has(a.id));
+      qc.setQueryData<SpiderUnreadResponse>(SPIDER_UNREAD_KEY, withFrame(unread, alerts, unread.frame_ids!.filter((id) => !ended.has(id))));
+      // At the limit, an alert past it may now be among the newest the read lists.
+      if (unread.alerts.length >= SPIDER_UNREAD_LIMIT && alerts.length < unread.alerts.length) {
+        void qc.invalidateQueries({ queryKey: SPIDER_UNREAD_KEY });
+      }
+      return;
+    }
+    case 'spider.settings.changed':
+      rereadSoon(qc, SPIDER_UNREAD_KEY);
+      rereadSoon(qc, SPIDER_STATUS_KEY);
+      return;
+    case 'spider.summary.ready':
+      rereadSoon(qc, SPIDER_SUMMARY_KEY);
+      return;
+    case LIVE_REOPENED:
+      rereadSoon(qc, SPIDER_UNREAD_KEY);
+      rereadSoon(qc, SPIDER_SUMMARY_KEY);
+      return;
+    default:
+      return;
+  }
+}
+
+/**
+ * Keeps the live line open while Spider's alert surfaces are mounted (the staff shell, behind the Spider gate) and
+ * applies its messages to the pop-up, the red frame and the summary (#3472).
+ */
+export function useSpiderLiveUpdates(): void {
+  const qc = useQueryClient();
+  useLiveLine();
+  useEffect(() => subscribeLiveMessages((m) => applySpiderLiveMessage(qc, m)), [qc]);
 }
 
 const ENABLE_IN_APP_FAILED = 'Could not turn on in-app notifications.';
@@ -970,15 +1080,21 @@ export async function fetchSpiderSummary(scope: 'mine' | 'company'): Promise<Spi
   }
 }
 
-/** The starting summary for a screen. Read when the screen opens; never polled. */
-export function useSpiderSummary(scope: 'mine' | 'company', { enabled = true }: { enabled?: boolean } = {}) {
+/**
+ * The starting summary for a screen. Read when the screen opens; never polled. The live line re-reads it when a summary
+ * is ready (#3472); `refetchOnFocus` also re-reads it when the window comes back into focus (the Spider page's card).
+ */
+export function useSpiderSummary(
+  scope: 'mine' | 'company',
+  { enabled = true, refetchOnFocus = false }: { enabled?: boolean; refetchOnFocus?: boolean } = {},
+) {
   const available = useSpiderAvailable();
   return useQuery<SpiderSummary | null>({
     queryKey: [...SPIDER_SUMMARY_KEY, scope],
     queryFn: () => fetchSpiderSummary(scope),
     enabled: available && enabled,
     staleTime: 0,
-    refetchOnWindowFocus: false,
+    refetchOnWindowFocus: refetchOnFocus,
     retry: false,
   });
 }

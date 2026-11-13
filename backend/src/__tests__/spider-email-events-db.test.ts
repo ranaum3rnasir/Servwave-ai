@@ -87,6 +87,15 @@ suite('Spider emails and their delivery events (real app, real database, real we
       const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
       if (!url.startsWith('https://api.resend.com/emails')) return realFetch(input, init);
       const body = JSON.parse(String(init?.body ?? '{}'));
+      // One alert's emails are one batch request (#3470): an array of emails, answered with one id each, in order.
+      if (Array.isArray(body)) {
+        const data = body.map((m: { to: string | string[]; tags?: { name: string; value: string }[] }) => {
+          const id = randomUUID();
+          sends.push({ id, to: Array.isArray(m.to) ? m.to[0]! : m.to, tags: m.tags ?? [] });
+          return { id };
+        });
+        return new Response(JSON.stringify({ data }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
       const id = randomUUID();
       sends.push({ id, to: Array.isArray(body.to) ? body.to[0] : body.to, tags: body.tags ?? [] });
       return new Response(JSON.stringify({ id }), { status: 200, headers: { 'content-type': 'application/json' } });

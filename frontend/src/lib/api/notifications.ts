@@ -1,5 +1,7 @@
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient, type InfiniteData } from '@tanstack/react-query';
+import { useEffect } from 'react';
 import api from '@/lib/axios';
+import { subscribeLiveMessages, useLiveLine, useLiveLineSays, LIVE_REOPENED } from '@/lib/live/liveLine';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -53,8 +55,22 @@ export const NOTIFICATIONS_UNREAD_COUNT_KEY = ['notifications', 'unread-count'] 
  * when the window regains focus (useNotificationRefresh).
  */
 export const NOTIFICATIONS_POLL_MS = 30_000;
+/**
+ * While the live line is open and its server says it sends the bell's messages (#3473), the line tells the bell the moment
+ * a notification is written, so the 30-second check is only a safety net. The moment the line drops it is 30 s again.
+ */
+export const NOTIFICATIONS_SAFETY_POLL_MS = 5 * 60_000;
+/** The live message that says the bell changed, and the longest a screen waits before it reads again (so a company's screens do not all ask at once). */
+export const BELL_CHANGED = 'bell.changed';
+export const BELL_REREAD_SPREAD_MS = 2_000;
+
+/** The bell's check interval: the safety net while the line carries the bell's messages, else every 30 s. */
+function useBellPollMs(): number {
+  return useLiveLineSays('bell') ? NOTIFICATIONS_SAFETY_POLL_MS : NOTIFICATIONS_POLL_MS;
+}
 
 export function useNotifications({ needsAction }: { needsAction?: boolean } = {}) {
+  const pollMs = useBellPollMs();
   return useInfiniteQuery<NotificationListResponse, Error, InfiniteData<NotificationListResponse>, readonly ['notifications', { needsAction: boolean }], string | undefined>({
     queryKey: [...NOTIFICATIONS_KEY, { needsAction: needsAction ?? false }] as const,
     queryFn: ({ pageParam }) =>
@@ -70,20 +86,47 @@ export function useNotifications({ needsAction }: { needsAction?: boolean } = {}
     initialPageParam: undefined,
     staleTime: 15_000,
     refetchOnWindowFocus: true,
-    refetchInterval: NOTIFICATIONS_POLL_MS,
+    refetchInterval: pollMs,
     refetchIntervalInBackground: false,
   });
 }
 
 export function useUnreadCount() {
+  const pollMs = useBellPollMs();
   return useQuery<UnreadCountResponse>({
     queryKey: NOTIFICATIONS_UNREAD_COUNT_KEY,
     queryFn: () => api.get('/api/notifications/unread-count').then((r) => r.data),
     staleTime: 15_000,
     refetchOnWindowFocus: true,
-    refetchInterval: NOTIFICATIONS_POLL_MS,
+    refetchInterval: pollMs,
     refetchIntervalInBackground: false,
   });
+}
+
+/**
+ * Keeps the live line open while the bell is mounted and, when the line says the bell changed (or it opens again after a
+ * drop, when a message may have been missed), reads the bell again after a random 0-2 s: the count, the list when the bell
+ * is open, and the list the urgent pop-up toasts (useInterruptToasts) watch, which is the same list. One read per wait,
+ * however many messages arrive together. The message carries no content; what is shown comes from the API.
+ */
+export function useBellLiveUpdates(): void {
+  const qc = useQueryClient();
+  useLiveLine();
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const off = subscribeLiveMessages((m) => {
+      if (m.type !== BELL_CHANGED && m.type !== LIVE_REOPENED) return;
+      if (timer) return;
+      timer = setTimeout(() => {
+        timer = null;
+        void qc.invalidateQueries({ queryKey: NOTIFICATIONS_KEY });
+      }, Math.random() * BELL_REREAD_SPREAD_MS);
+    });
+    return () => {
+      off();
+      if (timer) clearTimeout(timer);
+    };
+  }, [qc]);
 }
 
 // ---------------------------------------------------------------------------

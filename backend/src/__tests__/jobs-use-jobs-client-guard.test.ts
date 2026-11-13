@@ -26,33 +26,41 @@ const code = (file: string) => read(file).replace(/\/\*[\s\S]*?\*\//g, '').repla
 /** Top-level statements of index.ts: a new one starts on every line that does not begin with whitespace, `}` or `)`. */
 const statements = code('index.ts').split(/\n(?=[^\s})])/);
 
+/** A schedule written as a call (`spiderSweepCron()`), not as a literal cron string. */
+const isCall = (expression: string) => expression.endsWith('()');
+
 const JOBS: { job: string; name: string; entry: string; expression?: string }[] = [
   { job: 'invoice due checks', name: 'invoice-due', entry: 'runInvoiceDueChecks', expression: '0 6 * * *' },
   { job: 'Automation Center poller', name: 'automations', entry: 'runAutomationTick', expression: '* * * * *' },
-  { job: 'Spider sweep', name: 'spider', entry: 'runSpiderSweep', expression: '*/2 * * * *' },
+  // The sweep's interval follows the check's own switch (#3471): every 2 minutes while it is the only alerter, every 10 once the
+  // check runs beside it. The expression is chosen at boot by this one function, so the schedule names it instead of a string.
+  { job: 'Spider sweep', name: 'spider', entry: 'runSpiderSweep', expression: 'spiderSweepCron()' },
   { job: 'received-attachments sweep', name: 'attachments', entry: 'sweepReceivedAttachments', expression: '*/10 * * * *' },
   { job: 'Stripe fee sweep', name: 'stripe-fees', entry: 'sweepUncapturedFees', expression: '0 7 * * *' },
   { job: 'Stripe fee sweep at boot', name: 'stripe-fees', entry: 'sweepUncapturedFees' },
   { job: 'nightly payment reconcile', name: 'payment-reconcile', entry: 'runNightlyReconcile', expression: '7 8 * * *' },
   { job: 'account status refresh', name: 'account-status', entry: 'refreshAllAccountStatuses', expression: '30 7 * * *' },
+  { job: 'Spider watch-list backfill at boot', name: 'spider-watch-backfill', entry: 'runWatchListBackfill' },
+  { job: 'Spider watch-list nightly check', name: 'spider-watch-check', entry: 'runWatchListCheck', expression: '23 9 * * *' },
+  { job: 'Spider check (its loop, started at boot)', name: 'spider-tick', entry: 'startSpiderTick' },
 ];
 
 describe('every background job runs on the jobs client', () => {
   it.each(JOBS)('$job ($entry) is started under the name "$name", through scheduleJob or runJobAtBoot', ({ name, entry, expression }) => {
     const started = statements.filter((s) => new RegExp(`\\b${entry}\\(`).test(s));
     const own = expression
-      ? started.filter((s) => s.startsWith(`scheduleJob('${name}', '${expression}'`))
+      ? started.filter((s) => s.startsWith(isCall(expression) ? `scheduleJob('${name}', ${expression}` : `scheduleJob('${name}', '${expression}'`))
       : started.filter((s) => s.startsWith(`void runJobAtBoot('${name}'`));
     expect(own).toHaveLength(1);
   });
 
   it('index.ts starts no job that is not in the table', () => {
-    const scheduled = [...code('index.ts').matchAll(/\bscheduleJob\('[^']+', '([^']+)'/g)].map((m) => m[1]).sort();
+    const scheduled = [...code('index.ts').matchAll(/\bscheduleJob\('[^']+', (?:'([^']+)'|(\w+\(\)))/g)].map((m) => (m[1] ?? m[2])!).sort();
     const listed = JOBS.flatMap((j) => (j.expression ? [j.expression] : [])).sort();
     expect(scheduled).toEqual(listed);
-    // The only bare run at boot is the listed one.
+    // The only bare runs at boot are the listed ones.
     const bareRuns = statements.filter((s) => /^void\b/.test(s));
-    expect(bareRuns).toHaveLength(1);
+    expect(bareRuns).toHaveLength(JOBS.filter((j) => !j.expression).length);
   });
 
   it('index.ts never starts a job on the scheduler directly', () => {

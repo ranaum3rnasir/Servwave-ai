@@ -41,6 +41,16 @@ export async function startFakeProviders(): Promise<FakeProviders> {
           rs.end(JSON.stringify(obj));
         }, delay);
       const url = rq.url ?? '';
+      if (rq.method === 'POST' && url.startsWith('/emails/batch')) {
+        // One alert's or summary's emails come as one batch request (#3470): every message in it is recorded, in order.
+        const batch = JSON.parse(body) as { to: string | string[] }[];
+        const data = batch.map((m) => {
+          const id = `em_${providers.emails.length + 1}`;
+          providers.emails.push({ to: Array.isArray(m.to) ? m.to[0]! : m.to, id });
+          return { id };
+        });
+        return reply(200, { data });
+      }
       if (rq.method === 'POST' && url.startsWith('/emails')) {
         const m = JSON.parse(body) as { to: string | string[] };
         const id = `em_${providers.emails.length + 1}`;

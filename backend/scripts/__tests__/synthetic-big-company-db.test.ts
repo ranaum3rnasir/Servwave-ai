@@ -2,8 +2,9 @@
    The synthetic big company (#2984) on a real migrated database (TEST_DATABASE_URL; skips when unset).
 
    The journey: seed the company (small sizes here; the defaults are 15,000 / 5,000 / 60), see it as
-   its Admin through the Spider API (off, set up), switch Spider on through the API, let the sweep run
-   the starting summary, and see the summary cover every overdue lead. Then the one delete command
+   its Admin through the Spider API (off, set up), switch Spider on through the API, let the check
+   (the staging rehearsal's mode, SPIDER_WATCH_LIST=check) start the summary at once (#3471), and see
+   the summary cover every overdue lead. Then the one delete command
    removes the company and everything Spider wrote for it, and nothing of any other company.
 
    Also: a second seed refuses and doubles nothing; delete refuses a company that only shares the id;
@@ -32,8 +33,9 @@ vi.mock('../../src/config/env', async () => {
 
 import { supabaseAdmin } from '../../src/lib/supabase';
 import { switchFixture } from '../../src/__tests__/permission-switches-fixture';
+import { env } from '../../src/config/env';
 import { runSpiderSweep } from '../../src/services/spider/sweep';
-import { SUMMARY_QUIET_MS } from '../../src/services/spider/summary';
+import { _resetSpiderTick, runSpiderTick } from '../../src/services/spider/tick';
 import {
   SYNTHETIC_COMPANY_ID,
   SYNTHETIC_EMAIL_DOMAIN,
@@ -42,6 +44,7 @@ import {
   seedSyntheticCompany,
 } from '../synthetic-big-company';
 
+const originalMode = env.SPIDER_WATCH_LIST;
 const suite = realClient ? describe : describe.skip;
 const SIZES = { customers: 40, overdueLeads: 24, staff: 7 };
 const STATUS = '/api/ai-farm/spider/status';
@@ -53,7 +56,8 @@ suite('synthetic big company (real database)', () => {
 
   /** Every row the company or Spider holds for it, by table. */
   async function everything(org: string) {
-    const [orgs, customers, leads, users, settings, alerts, summaries, notifications, mailboxes] = await Promise.all([
+    const [watch, orgs, customers, leads, users, settings, alerts, summaries, notifications, mailboxes] = await Promise.all([
+      db.spiderLeadWatch.count({ where: { organization_id: org } }),
       db.organization.count({ where: { id: org } }),
       db.customer.count({ where: { organization_id: org } }),
       db.lead.count({ where: { organization_id: org } }),
@@ -64,7 +68,7 @@ suite('synthetic big company (real database)', () => {
       db.notification.count({ where: { organization_id: org } }),
       db.mailbox.count({ where: { organization_id: org } }),
     ]);
-    return { orgs, customers, leads, users, settings, alerts, summaries, notifications, mailboxes };
+    return { watch, orgs, customers, leads, users, settings, alerts, summaries, notifications, mailboxes };
   }
 
   /** Another demo company with Spider settings, a customer and a lead, whose name even starts the same way. */
@@ -100,6 +104,9 @@ suite('synthetic big company (real database)', () => {
     await import('../../src/app.js');
   }, 120_000);
   afterAll(async () => {
+    if (originalMode === undefined) delete env.SPIDER_WATCH_LIST;
+    else env.SPIDER_WATCH_LIST = originalMode;
+    await _resetSpiderTick();
     await deleteSyntheticCompany(db);
     await fx.cleanup();
   }, 120_000);
@@ -133,15 +140,26 @@ suite('synthetic big company (real database)', () => {
       const api = await fx.signedInAs({ id: admin.id, email: admin.email });
       expect((await api.get(STATUS)).body).toEqual({ isActive: false, isSetUp: true });
 
-      // Switch it on through the API; the settings it was seeded with are the ones in force.
+      // The database's own triggers wrote the watch list as the leads went in: one row per overdue lead.
+      expect((await everything(SYNTHETIC_COMPANY_ID)).watch).toBe(24);
+      expect(await db.spiderLeadWatch.count({ where: { organization_id: SYNTHETIC_COMPANY_ID, stage: { not: null } } })).toBe(24);
+
+      // Switch it on through the API (Send is the default); the settings it was seeded with are the ones in force.
+      env.SPIDER_WATCH_LIST = 'check';
+      await _resetSpiderTick();
       expect((await api.put(STATUS, { isActive: true })).status).toBe(200);
       const settings = (await api.get(SETTINGS)).body.settings;
       expect(settings.status_limits.NEW).toEqual({ enabled: true, value: 4, unit: 'HOUR' });
       expect(settings.status_limits.CONTACTED).toEqual({ enabled: true, value: 2, unit: 'DAY' });
+      const waiting = await db.spiderSettings.findUniqueOrThrow({ where: { organization_id: SYNTHETIC_COMPANY_ID } });
+      expect(waiting.summary_trigger_kind).toBe('SWITCHED_ON');
 
-      // Once the quiet period is over, the sweep sends the starting summary: every overdue lead, once.
-      const result = await runSpiderSweep(new Date(Date.now() + SUMMARY_QUIET_MS + 5_000));
-      expect(result.ran).toBe(true);
+      // The sweep (a safety net while the check runs) never acts on a trigger; the first check after Activate starts the
+      // summary at once, with no quiet period: every overdue lead, once.
+      expect((await runSpiderSweep(new Date(Date.now() + 5_000))).leadsSummarized).toBe(0);
+      expect(await db.spiderAlert.count({ where: { organization_id: SYNTHETIC_COMPANY_ID } })).toBe(0);
+      const tick = await runSpiderTick(new Date(Date.now() + 5_000));
+      expect(tick).toMatchObject({ summaries: 1, summarized: 24 });
       const claims = await db.spiderAlert.findMany({ where: { organization_id: SYNTHETIC_COMPANY_ID }, select: { kind: true, lead_id: true } });
       expect(claims).toHaveLength(24);
       expect(claims.every((c) => c.kind === 'SUMMARIZED')).toBe(true);
@@ -156,7 +174,7 @@ suite('synthetic big company (real database)', () => {
       // One delete: the company and everything Spider wrote for it are gone; the other company is whole.
       expect(await deleteSyntheticCompany(db)).toMatchObject({ ok: true, deleted: true, path: 'fast' });
       expect(await everything(SYNTHETIC_COMPANY_ID)).toEqual({
-        orgs: 0, customers: 0, leads: 0, users: 0, settings: 0, alerts: 0, summaries: 0, notifications: 0, mailboxes: 0,
+        watch: 0, orgs: 0, customers: 0, leads: 0, users: 0, settings: 0, alerts: 0, summaries: 0, notifications: 0, mailboxes: 0,
       });
       expect(await db.user.count({ where: { email: { endsWith: `@${SYNTHETIC_EMAIL_DOMAIN}` } } })).toBe(0);
       expect(await everything(other)).toEqual(otherBefore);

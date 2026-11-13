@@ -4,12 +4,14 @@
 
    The ways in, from a sweep of the source (names pinned are the files and the public names - the function, the column - never
    a local variable; what a writer actually stores, and what the Role filter finds, is proven against a real database):
-   - WRITERS of alert-log rows (spider_alerts): alertLog.ts claimVisits (the per-lead alerts, called once, from sweep.ts)
-     and summary.ts (the starting summary). Each stores the list through recipientSetIds (recipientSets.ts) BEFORE the
-     insert that points at it; a new writer must be added here, with the same step, or this test fails.
+   - WRITERS of alert-log rows (spider_alerts): alertLog.ts claimVisits (the sweep's per-lead alerts, called once, from
+     sweep.ts), alertLog.ts claimWatchedStays (the check's per-lead alerts, #3469, called once, from tick.ts) and
+     summary.ts (the starting summary). Each stores the list through recipientSetIds (recipientSets.ts) BEFORE the insert
+     that points at it; a new writer must be added here, with the same step, or this test fails.
    - READERS of a row's stored list: history.ts storedRecipients is the only code that reads `recipients` off an alert
      row (own copy for older rows, else the recipient set); History's select asks for both. The controller reads through
-     it. The Role filter in historyWhere asks both places.
+     it. The Role filter in historyWhere asks both places. (A select of spider_settings' own `recipients`, who Spider
+     tells, is the configuration, not an alert row's list.)
    The behaviour is proven against a real database in spider-recipient-sets-db.test.ts and
    spider-recipient-sets-history-db.test.ts.
    ========================================================================== */
@@ -42,17 +44,19 @@ describe('Spider recipient sets: every writer and every reader of an alert row\'
       'src/services/spider/summary.ts',
     ]);
     expect(filesMatching(/\bclaimVisits\(/).filter((f) => f !== 'src/services/spider/alertLog.ts')).toEqual(['src/services/spider/sweep.ts']);
+    expect(filesMatching(/\bclaimWatchedStays\(/).filter((f) => f !== 'src/services/spider/alertLog.ts')).toEqual(['src/services/spider/tick.ts']);
   });
 
   it.each([
     ['the per-lead alerts', 'sweep.ts'],
+    ["the check's per-lead alerts", 'tick.ts'],
     ['the starting summary', 'summary.ts'],
   ])('%s store the list through a recipient set, before any alert-log insert, and point the row at it', (_name, file) => {
     const src = code(join(SPIDER, file));
     const store = src.search(/\brecipientSetIds\(/);
     expect(store, 'recipientSetIds( in the writer').toBeGreaterThanOrEqual(0);
-    // The first thing in the writer that inserts alert-log rows (claimVisits, or the starting summary's createMany).
-    const insert = src.search(/\bclaimVisits\(|spiderAlert\.createMany\(/);
+    // The first thing in the writer that inserts alert-log rows (claimVisits, claimWatchedStays, or the summary's createMany).
+    const insert = src.search(/\bclaimVisits\(|\bclaimWatchedStays\(|spiderAlert\.createMany\(/);
     expect(insert, 'the insert').toBeGreaterThanOrEqual(0);
     expect(store, 'stored before it is pointed at').toBeLessThan(insert);
     // The column the row points at the set with (a column name is the writer's contract, not a local name).
@@ -60,8 +64,21 @@ describe('Spider recipient sets: every writer and every reader of an alert row\'
   });
 
   it('only History reads the stored list, from the row\'s set and its own column', () => {
-    // `recipients: true` in a select is a read of the column; only History's row select has one.
-    expect(filesMatching(/\brecipients:\s*true\b/)).toEqual(['src/services/spider/history.ts']);
+    // `recipients: true` in a select is a read of the column; only History's row select has one. A select inside a
+    // spider_settings read is that row's own `recipients` (who Spider tells), not an alert row's list.
+    const modelReadBefore = (src: string, at: number) =>
+      [...src.slice(0, at).matchAll(/\.(\w+)\.(?:findMany|findFirst|findUnique)(?:OrThrow)?\(/g)].pop()?.[1];
+    const readers = sourceFiles(SRC)
+      .filter((f) => [...code(f).matchAll(/\brecipients:\s*true\b/g)].some((m) => modelReadBefore(code(f), m.index!) !== 'spiderSettings'))
+      .map(rel)
+      .sort();
+    expect(readers).toEqual(['src/services/spider/history.ts']);
+    expect(filesMatching(/\brecipients:\s*true\b/)).toEqual([
+      'src/controllers/spider.controller.ts', // the settings row's own recipients (the unread read, the recipients save: #3462)
+      'src/services/spider/history.ts',
+      'src/services/spider/sweep.ts', // the settings row's recipients, for the save-time ending (#3462)
+      'src/services/spider/tick.ts',
+    ]);
     expect(code(join(SPIDER, 'history.ts'))).toMatch(/\brecipient_set\s*:/);
     // The controller names the people of older rows through History's reader, not by looking at the column itself.
     expect(code(join(SRC, 'controllers', 'spider.controller.ts'))).toMatch(/\bstoredRecipients\b/);

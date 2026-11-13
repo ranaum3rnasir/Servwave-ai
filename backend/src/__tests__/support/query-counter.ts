@@ -104,6 +104,8 @@ async function defaultClient(): Promise<PrismaClient> {
 }
 
 const MARK = 'countQueries-marker-';
+/** The statement Prisma's engine sends on its own to check a pooled connection (never counted, see the sink). */
+const ENGINE_CONNECTION_CHECK = 'SELECT 1';
 let markSeq = 0;
 /** How long a marker's event may take. Real lag is milliseconds; no event at all means the client emits none. */
 const MARKER_WAIT_MS = 2_000;
@@ -132,7 +134,10 @@ function recorder() {
       else if (phase === 'counting' && q.sql.includes(endTag)) { phase = 'done'; markEnded(); }
       return;
     }
-    if (phase === 'counting') queries.push(q);
+    // Never the engine's own connection check: before it reuses a pooled connection that sat idle, Prisma sends a bare
+    // `SELECT 1` of its own, at moments no test controls (a count of the same request came out one higher now and then:
+    // spider-picker-endpoints-db's "expected 6 to be 5"). No code under test sends it; nothing here sends one either.
+    if (phase === 'counting' && q.sql.trim() !== ENGINE_CONNECTION_CHECK) queries.push(q);
   };
 
   async function send(client: Countable, tag: string, arrived: Promise<void>, failure: string): Promise<void> {

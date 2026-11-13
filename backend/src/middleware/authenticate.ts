@@ -6,6 +6,7 @@ import { logger } from '../lib/logger';
 import { SWITCHES_STAMP_HEADER } from '../lib/permissions/switches/stamp';
 import { readAccessStamp, signInStampOf, type AccessStamp } from '../lib/permissions/accessStamp';
 import { runWithSwitchesStamp } from '../lib/permissions/switches/cache';
+import { closeLiveLinesOf } from '../services/live/liveLines';
 
 interface CachedAuth {
   user: {
@@ -121,6 +122,9 @@ export function clearTokenCache(userId?: string): void {
   // revoke.
   inFlight.clear();
   clearSeq += 1;
+  // A live line was signed in once, when it opened (#3472): it closes with the sign-in, so the person's next line is
+  // checked again (a deactivation or revoke ends their messages now, a new role or Admin flag takes effect).
+  closeLiveLinesOf(userId);
   if (userId === undefined) {
     everyoneClearedAt = clearSeq;
     tokenCache.clear();

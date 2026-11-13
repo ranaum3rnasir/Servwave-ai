@@ -54,6 +54,16 @@
 - **Supabase Storage RLS:** Policies must use `TO public` with `auth.role() = 'service_role'` JWT-claim check, NOT `TO service_role` Postgres role binding. Storage runs Postgres queries as `authenticator`, not `service_role`, so role-bound policies never match. Vault `Learnings/Supabase-Storage-Service-Role-RLS.md`.
 - **Key rotation cadence:** prod Supabase JWT secret + service_role + anon + Resend keys rotated 2026-05-20 (§3.4 Phase 2). Stripe in sandbox; live-mode rotation tracked in GitHub issue #41.
 
+## Live line (one server only)
+
+`GET /api/live` (#3472, `backend/src/services/live/liveLines.ts`) keeps one long-lived event stream per open staff
+screen; Spider pushes its pop-up, red-frame and summary changes down it (`services/spider/liveMessages.ts`), and the
+screen keeps a 5-minute safety check while it is open (30 s when it is not). Sign-in is checked once when a line opens;
+an open line holds no database connection. Caps: 5 lines per person, `LIVE_LINES_MAX` (default 2,000) per server.
+
+**Before a second backend server, these messages must go through Redis** (or another shared channel): the lines live in
+one process's memory, so today a message reaches only the screens connected to the server that sends it.
+
 ## Obsidian Knowledge Base
 
 **Vault path:** `../Vault/ALPHA_CRM_VAULT` (a sibling of the repo root — its own git repo, outside the app repo). Resolve from `git rev-parse --show-toplevel` + `/../Vault/ALPHA_CRM_VAULT`.

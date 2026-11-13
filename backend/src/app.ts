@@ -61,6 +61,7 @@ import timeclockRoutes from './routes/timeclock.routes';
 import notificationRoutes from './routes/notification.routes';
 import workflowRoutes from './routes/workflow.routes';
 import aiFarmRoutes from './routes/aiFarm.routes';
+import liveRoutes from './routes/live.routes';
 // ─── Inventory module (mounted at /api/inventory) ───
 import invCatalogRoutes from './routes/inv-catalog.routes';
 import invVendorsRoutes from './routes/inv-vendors.routes';
@@ -215,6 +216,8 @@ app.use('/api/timeclock', timeclockRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/workflows', workflowRoutes);
 app.use('/api/ai-farm', aiFarmRoutes);
+// The signed-in person's live line (#3472): long-lived, holds no database connection (services/live/liveLines.ts).
+app.use('/api/live', liveRoutes);
 
 // ─── Inventory module (multiple routers share the /api/inventory base;
 // each defines only its own sub-paths, so there are no collisions) ───

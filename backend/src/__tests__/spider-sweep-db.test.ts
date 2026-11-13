@@ -45,6 +45,8 @@ vi.mock('../config/env', () => ({
 vi.mock('resend', () => ({
   Resend: class {
     emails = { send: resendSend };
+    // One alert's emails go out as one batch request (#3470); this answers it from the per-email fake above.
+    batch = { send: async (...a: [never, never?]) => (await import('./spider-batch-test-helpers.js')).batchOverSingleSends(resendSend as never)(...(a as [never, never])) };
   },
 }));
 vi.mock('../lib/email', async () => vi.importActual('../lib/email'));
@@ -1367,9 +1369,10 @@ suite('Spider sweep (real database)', () => {
       await runSpiderSweep(T0);
       await offThenOn(c, at(10 * MIN));
 
-      const realUpdate = db.notificationRecipient.updateMany.bind(db.notificationRecipient);
-      // A run ends every re-alerted lead's earlier card in one write (#2990): fail the one that names this lead.
-      const spy = vi.spyOn(db.notificationRecipient, 'updateMany').mockImplementation(((args: { where?: { notification?: { object_id?: { in?: string[] } } } }) =>
+      const realUpdate = db.notificationRecipient.updateManyAndReturn.bind(db.notificationRecipient);
+      // A run ends every re-alerted lead's earlier card in one write (#2990), which reads back the rows it ended for the
+      // live line (#3472): fail the one that names this lead.
+      const spy = vi.spyOn(db.notificationRecipient, 'updateManyAndReturn').mockImplementation(((args: { where?: { notification?: { object_id?: { in?: string[] } } } }) =>
         args?.where?.notification?.object_id?.in?.includes(id) ? Promise.reject(new Error('connection lost')) : realUpdate(args as never)) as never);
       try {
         await runSpiderSweep(at(10 * MIN + 2 * HOUR));
@@ -1388,7 +1391,8 @@ suite('Spider sweep (real database)', () => {
       const c = await company();
       await configure(c);
       const id = await lead(c, { createdAt: at(-3 * HOUR) });
-      const spy = vi.spyOn(db.notificationRecipient, 'updateMany');
+      // The ending write reads back the rows it ended, for the live line (#3472).
+      const spy = vi.spyOn(db.notificationRecipient, 'updateManyAndReturn');
       try {
         await runSpiderSweep(T0);
         // A lead's cards are ended by naming it, alone or in the run's one list of re-alerted leads (#2990).
@@ -1797,7 +1801,12 @@ suite('Spider sweep (real database)', () => {
         { id: dispatcher.id, name: await name(dispatcher.id), email: dispatcher.email, role: 'DISPATCHER', type: 'admin' },
       ]));
       expect(alert.recipients).toHaveLength(3);
-      expect(JSON.stringify(alert.recipients)).not.toMatch(/555|phone/);
+      // Exactly these people's numbers, and no phone field: a bare /555/ would also match a random id or email.
+      const stored = JSON.stringify(alert.recipients);
+      for (const phone of ['+16175550111', '+16175550122', '+16175550133', '6175550111', '6175550122', '6175550133']) {
+        expect(stored).not.toContain(phone);
+      }
+      for (const r of alert.recipients as Record<string, unknown>[]) expect(Object.keys(r).sort()).toEqual(['email', 'id', 'name', 'role', 'type']);
     });
 
     it("marks the Admins Spider fell back to as chosen by role ('admin')", async () => {

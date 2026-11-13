@@ -52,7 +52,8 @@ const PATTERNS: Record<Skip, RegExp> = {
   readersChecked: /\breadersChecked\b/g,
   // As a key (`personal: true`, `personal?: boolean`) or read off the arguments (`args.personal`).
   personal: /\bpersonal\s*\??\s*:|\.personal\b/g,
-  directRecipientWrite: /\bnotificationRecipient\.create(Many)?\b/g,
+  // `createManyAndReturn` too (#3472: emitMany reads its rows back from the insert).
+  directRecipientWrite: /\bnotificationRecipient\.create(Many)?(AndReturn)?\b/g,
 };
 
 const sourceFilesUnder = (dir: string): string[] =>
@@ -91,6 +92,7 @@ describe("emit's access check is skipped only where the caller checked access it
     expect(skipsIn([{ path: 'a.ts', text: 'await emit({ verb, object, entity, readersChecked: true });' }])).toEqual({ 'a.ts': { readersChecked: 1 } });
     expect(skipsIn([{ path: 'b.ts', text: 'await emit({ verb, personal: true });\nif (args.personal) go();' }])).toEqual({ 'b.ts': { personal: 2 } });
     expect(skipsIn([{ path: 'c.ts', text: 'await prisma.notificationRecipient.createMany({ data });' }])).toEqual({ 'c.ts': { directRecipientWrite: 1 } });
+    expect(skipsIn([{ path: 'c2.ts', text: 'await prisma.notificationRecipient.createManyAndReturn({ data });' }])).toEqual({ 'c2.ts': { directRecipientWrite: 1 } });
     expect(skipsIn([{ path: 'd.ts', text: "// readersChecked: true\n/* personal: true */\nconst s = 'erase personal: data';" }])).toEqual({});
   });
 

@@ -296,6 +296,8 @@ const ALLOWED: Record<string, string | [string, number]> = {
   'services/spider/recipients.ts › resolveSpiderRecipientsForLeads: email,is_admin,phone': CHECK_THEN_MAIL,
   // #3108: a starting summary is delivered from what is saved, so the people it already named (Spider's rule, recipients.ts) are read back by id to be emailed and texted.
   'services/spider/summary.ts › readDelivery: email,phone': MAIL,
+  // #3462: the ending reads each unread Spider row's person's role and Admin flag to decide whether the saved recipients still choose them; nothing is answered.
+  'services/spider/sweep.ts › endUncoveredRecipientRows: raw SQL is_admin': CHECK,
   'services/walkthrough.service.ts › validatePerformers: email,is_admin,phone': CHECK_THEN_MAIL,
 };
 

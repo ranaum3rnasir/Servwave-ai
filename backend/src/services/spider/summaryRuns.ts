@@ -6,12 +6,15 @@
  *   given up on (ABANDONED). At most one RUNNING run per company (a partial unique index).
  * - Every attempt is counted and saved BEFORE it does any work (`startAttempt`), so an attempt that is killed halfway
  *   still counts: a restart cannot try for ever. The same statement writes when the next attempt may start: 2, 8, then
- *   30 minutes after this one began. The next-attempt time is data on the run row, judged against the clock the sweep
- *   was given (`runSpiderSweep(now)`), so a restart soon after a kill waits out the rest of the time too.
- * - After SUMMARY_MAX_ATTEMPTS attempts that did not finish, the run is given up on (`giveUp`): the claims it saved are
- *   released (a claim is the lead's place in the unique claim key, so left alone it would stop the per-lead alerts from ever
- *   reaching that lead), the summary is marked SUPERSEDED, the run ABANDONED, and the sweep alerts per lead from then on
- *   (capped per run, runCaps.ts). Nothing here sends a message; the summary's delivery is summary.ts.
+ *   30 minutes after this one began. The next-attempt time is data on the run row, judged against the clock the caller
+ *   was given (the check's or the sweep's `now`), so a restart soon after a kill waits out the rest of the time too.
+ * - After SUMMARY_MAX_ATTEMPTS attempts that did not make the summary READY, the run is given up on (`giveUp`): the claims it
+ *   saved are released (a claim is the lead's place in the unique claim key, so left alone it would stop the per-lead alerts
+ *   from ever reaching that lead), the summary is marked SUPERSEDED, the run ABANDONED, and the per-lead alerts take over from then
+ *   on (capped, runCaps.ts). Nothing here sends a message; the summary's delivery is summary.ts.
+ * - A READY summary whose delivery was interrupted is finished in tries of its own (#3264), counted by `startFinishTry` on the
+ *   summary's `delivery` record (`finish_attempts`), with the same 2, 8, 30 minute waits (written to the run's next_attempt_at)
+ *   and the same limit. After the last, `abandonReadyRun` closes the run: the summary stays READY and keeps its claims.
  * - The summary row has a status: BUILDING while its claims are being written (nobody can read it), READY once complete,
  *   SUPERSEDED when replaced. An older summary is marked SUPERSEDED and never deleted, so no row of its claims is rewritten
  *   (spider_alerts.summary_id is ON DELETE SET NULL; a delete would have rewritten every one).
@@ -19,13 +22,16 @@
  * Who owns what in a summary's `delivery` record:
  *   - `state: 'SENDING'`, `email_started`, `text_started`, `email_done`, `text_done`: the delivery run (this module's markReady /
  *     markChannel*), while the delivery is going; they are gone from the final record.
+ *   - `finish_attempts`: the tries made to finish an interrupted delivery (startFinishTry); it survives the final record, so a
+ *     close that keeps failing after the outcome is recorded is still counted.
  *   - `in_app`, `email`, `text`: written ONCE by recordDelivery when the delivery ends. From then on `email` belongs to the
  *     provider's delivery events (emailEvents.ts), which correct a person's outcome to "could not be delivered"; the final
  *     record merges with it and never overwrites it. An event that arrives before `email` exists is answered "not recorded
  *     yet" (the provider tries again), so no event is ever answered and then lost.
  *
  * This module is the ONE owner of the summary row's writes: its status (BUILDING, READY, SUPERSEDED), the mark that its
- * delivery has begun and each channel's start, and the record of the outcome. summary.ts only reads it.
+ * delivery has begun and each channel's start, the count of tries to finish an interrupted delivery (`finish_attempts`), and the
+ * record of the outcome. summary.ts only reads it.
  *
  * Every statement here is its own single statement on the shared client (and, run by the sweep, the jobs' client): no
  * interactive transaction, so no line is held for the length of the summary.
@@ -56,7 +62,7 @@ const RELEASE_PER_STATEMENT = 500;
 export type SummaryStatus = 'BUILDING' | 'READY' | 'SUPERSEDED';
 
 /** A summary row with no status (the column is nullable) is a READY one: that is what every row from before #3108 is. */
-const statusOf = (raw: string | null): SummaryStatus => (raw === 'BUILDING' || raw === 'SUPERSEDED' ? raw : 'READY');
+export const statusOf = (raw: string | null): SummaryStatus => (raw === 'BUILDING' || raw === 'SUPERSEDED' ? raw : 'READY');
 
 /** The summary that is current for a company: any that is not SUPERSEDED (at most one, by the partial unique index). */
 const CURRENT: Prisma.SpiderSummaryWhereInput = { OR: [{ status: null }, { status: { not: 'SUPERSEDED' } }] };
@@ -79,6 +85,12 @@ export interface DeliveryProgress {
   text: { started: boolean; done: ChannelDone | null };
 }
 
+/** How many tries have been made to finish this summary's interrupted delivery (0 when none). */
+export function finishTriesOf(delivery: Prisma.JsonValue): number {
+  const n = delivery && typeof delivery === 'object' && !Array.isArray(delivery) ? delivery.finish_attempts : undefined;
+  return typeof n === 'number' && Number.isInteger(n) && n > 0 ? n : 0;
+}
+
 export function deliveryProgress(delivery: Prisma.JsonValue): DeliveryProgress {
   const d: Record<string, Prisma.JsonValue | undefined> = delivery && typeof delivery === 'object' && !Array.isArray(delivery) ? delivery : {};
   const channel = (name: 'email' | 'text') => {
@@ -90,7 +102,7 @@ export function deliveryProgress(delivery: Prisma.JsonValue): DeliveryProgress {
   return { unfinished: d.state === 'SENDING', email: channel('email'), text: channel('text') };
 }
 
-/** A run in progress, with the parts of its summary the sweep decides on. */
+/** A run in progress, with the parts of its summary the caller decides on. */
 export interface OpenRun {
   id: string;
   organization_id: string;
@@ -155,10 +167,21 @@ export async function createRun(a: { orgId: string; now: Date; triggeredAt: Date
     },
     select: { id: true },
   });
-  const created = await prisma.spiderSummaryRun.create({
-    data: { id: randomUUID(), organization_id: a.orgId, summary_id: summaryId },
-    select: { id: true },
-  });
+  let created: { id: string };
+  try {
+    created = await prisma.spiderSummaryRun.create({
+      data: { id: randomUUID(), organization_id: a.orgId, summary_id: summaryId },
+      select: { id: true },
+    });
+  } catch (err) {
+    // No run (the company already has a RUNNING one, or the write failed): the BUILDING summary just made would be an orphan
+    // for every call that fails the same way, so it is taken back at once and the summary it replaced is given back (#3471).
+    await prisma.spiderSummary.updateMany({ where: { id: summaryId }, data: { status: 'SUPERSEDED' } }).catch(() => undefined);
+    if (replaced.length > 0) {
+      await prisma.spiderSummary.updateMany({ where: { id: { in: replaced }, organization_id: a.orgId }, data: { status: 'READY' } }).catch(() => undefined);
+    }
+    throw err;
+  }
   const run: OpenRun = {
     id: created.id,
     organization_id: a.orgId,
@@ -216,6 +239,7 @@ export async function recordDelivery(summaryId: string, record: { leadCount: num
            recipient_count = ${record.recipientCount}::int,
            delivery = ${JSON.stringify(record.delivery)}::jsonb
                       || CASE WHEN delivery ? 'email' THEN jsonb_build_object('email', delivery->'email') ELSE '{}'::jsonb END
+                      || CASE WHEN delivery ? 'finish_attempts' THEN jsonb_build_object('finish_attempts', delivery->'finish_attempts') ELSE '{}'::jsonb END
      WHERE id = ${summaryId}::uuid`;
 }
 
@@ -233,6 +257,25 @@ export async function startAttempt(run: Pick<OpenRun, 'id' | 'attempts'>, now: D
   return saved.attempts;
 }
 
+/**
+ * Counts a try to finish a READY summary's interrupted delivery (#3264) and saves when the next may start (2, 8, then 30
+ * minutes from now), in ONE statement, BEFORE the try does any work. `tries` is what the summary's record held. The count lives
+ * on the record's `finish_attempts`, apart from the run's `attempts` that built the summary. Returns the try's number.
+ * (The column has no time zone, and Prisma writes it as UTC: the instant is converted the same way here.)
+ */
+export async function startFinishTry(run: Pick<OpenRun, 'id' | 'summary_id'>, tries: number, now: Date): Promise<number> {
+  const number = tries + 1;
+  const next = new Date(now.getTime() + SUMMARY_RETRY_WAITS_MS[Math.min(tries, SUMMARY_RETRY_WAITS_MS.length - 1)]!);
+  await prisma.$executeRaw`
+    WITH counted AS (
+      UPDATE spider_summaries
+         SET delivery = COALESCE(delivery, '{}'::jsonb) || jsonb_build_object('finish_attempts', ${number}::int)
+       WHERE id = ${run.summary_id}::uuid
+      RETURNING 1)
+    UPDATE spider_summary_runs SET next_attempt_at = (${next}::timestamptz AT TIME ZONE 'UTC') WHERE id = ${run.id}::uuid`;
+  return number;
+}
+
 /** Saves the last lead whose claim is now saved: a resumed run starts after it. */
 export async function saveCursor(runId: string, leadId: string): Promise<void> {
   await prisma.spiderSummaryRun.update({ where: { id: runId }, data: { cursor: leadId } });
@@ -246,6 +289,14 @@ export async function recordFailure(runId: string, err: unknown): Promise<void> 
 /** The run is complete. */
 export async function finishRun(runId: string, now: Date): Promise<void> {
   await prisma.spiderSummaryRun.update({ where: { id: runId }, data: { status: 'DONE', finished_at: now } });
+}
+
+/**
+ * Closes the run of a READY summary whose delivery could not be finished in time (#3264): the run is ABANDONED, nothing
+ * else is touched. The summary people already saw stays READY and its claims stay, so those leads are not alerted again.
+ */
+export async function abandonReadyRun(runId: string, now: Date, lastError: string): Promise<void> {
+  await prisma.spiderSummaryRun.update({ where: { id: runId }, data: { status: 'ABANDONED', finished_at: now, last_error: lastError } });
 }
 
 /**
@@ -291,5 +342,12 @@ export function errorName(err: unknown): string {
 export function logGaveUp(orgId: string, summaryId: string, attempts: number, released: number): void {
   logger.error(
     `[spider] starting summary gave up for org ${orgId} (summary ${summaryId}) after ${attempts} attempts; ${released} saved claims released: alerting per lead from the next run`,
+  );
+}
+
+/** Logged once, when the run of a READY summary is given up on (its summary and claims stay). */
+export function logGaveUpFinishing(orgId: string, summaryId: string, attempts: number): void {
+  logger.error(
+    `[spider] could not finish the delivery of starting summary ${summaryId} for org ${orgId} after ${attempts} attempts; the summary stays and its run is closed`,
   );
 }

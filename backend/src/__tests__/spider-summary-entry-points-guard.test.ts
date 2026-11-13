@@ -69,12 +69,15 @@ describe('a starting summary: who reads it and who writes it and its claims (sou
     expect(filesMatching(/DELETE\s+FROM\s+spider_alerts/i)).toEqual(['src/services/spider/summaryRuns.ts']);
   });
 
-  it("claims are written only by the summary's writer and by claimVisits", () => {
+  it("claims are written only by the summary's writer, by claimVisits and by the check's claim", () => {
     expect(filesMatching(/\.spiderAlert\.(create|createMany|createManyAndReturn|upsert)\(/)).toEqual([
       'src/services/spider/alertLog.ts',
       'src/services/spider/summary.ts',
     ]);
-    expect(filesMatching(/INSERT\s+INTO\s+"?(public"\."?)?spider_alerts/i)).toEqual([]);
+    // Spider's check (#3469, tick.ts) claims through alertLog.ts claimWatchedStays: one statement that claims the stays and
+    // settles their watch rows. It is the only raw insert.
+    expect(filesMatching(/INSERT\s+INTO\s+"?(public"\."?)?spider_alerts/i)).toEqual(['src/services/spider/alertLog.ts']);
+    expect(code(join(SPIDER, 'alertLog.ts')).match(/INSERT\s+INTO\s+spider_alerts/gi)).toHaveLength(1);
   });
 
   it('the summary and its run use no interactive transaction', () => {

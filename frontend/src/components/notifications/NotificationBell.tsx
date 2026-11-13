@@ -3,7 +3,7 @@ import { Bell, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
-import { useUnreadCount, useMarkSeen } from '@/lib/api/notifications';
+import { useUnreadCount, useMarkSeen, useBellLiveUpdates } from '@/lib/api/notifications';
 import { useNotificationRefresh } from '@/lib/notifications/useNotificationRefresh';
 import { useInterruptToasts } from '@/lib/notifications/useInterruptToasts';
 import { useIsMobile, useIsShortHeight } from '@/hooks/useIsMobile';
@@ -35,6 +35,8 @@ export function NotificationBell() {
 
   // Fresh count: the queries poll every 30 s while the tab shows; this refetches on window focus.
   useNotificationRefresh();
+  // The live line tells the bell when a notification is written (and slows its own check to a safety net while it is open).
+  useBellLiveUpdates();
   // Fire a shadcn toast for each new unseen INTERRUPT-priority notification.
   useInterruptToasts();
 

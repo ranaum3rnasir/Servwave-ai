@@ -15,6 +15,7 @@ import { withoutMoneyFields } from '../../lib/permissions/prices';
 import { isKnownVerb, renderTemplate } from './templates';
 import { resolveRecipients } from './resolveRecipients';
 import { publishNotificationsChanged } from './realtimePublish';
+import { publishBellChanged } from './bellLive';
 import { filterRecipientsByAccess } from './filterByAccess';
 import { conversationAlertAudience, type ConversationAlert, type ConversationSubject } from './conversationAlertRecipients';
 import { conversationAlertKeys, isFallbackPeople, nobodyFallbackRows, type FallbackPeople } from './conversationAlertFallback';
@@ -216,6 +217,9 @@ export async function emit(args: EmitArgs): Promise<string[]> {
     // a person finds in the bell, and the ping is only a hint to refetch (see realtimePublish.ts).
     const recipientIds = finalSpecs.map((s) => s.userId);
     void publishNotificationsChanged(recipientIds, args.organizationId);
+    // The bell on the live line (#3473): after the rows are written. A caller's own transaction has not committed yet, so it
+    // sends nothing here (no caller passes one; notification-live-publish-guard.test.ts).
+    if (!args.tx) publishBellChanged([{ organizationId: args.organizationId, verb: args.verb, recipientIds }]);
     return recipientIds;
   } catch (e) {
     logger.warn('[notificationService] emit failed — swallowing to protect caller', {
@@ -235,10 +239,13 @@ export async function emit(args: EmitArgs): Promise<string[]> {
  *
  * Not for call or text alerts (their people come from a lookup per alert), the never-silent fallback, or a caller's transaction:
  * those go through `emit`. Unlike `emit` it throws when a read or a write fails, so the caller can record that the alerts were not
- * shown; nothing is then pinged. Returns, per alert in order, the recipient ids notified ([] for a skipped or duplicate alert).
+ * shown; nothing is then pinged. Returns, per alert in order, the recipient ids notified ([] for a skipped or duplicate alert)
+ * and what was written (null for a skipped or duplicate alert): the record's id, object and stored data, and each person's
+ * row, read back from the same insert (#3472: Spider's live line sends a person their new card from these, with no read).
  */
-export async function emitMany(list: readonly EmitArgs[]): Promise<string[][]> {
+export async function emitMany(list: readonly EmitArgs[]): Promise<EmitManyResult> {
   const told: string[][] = list.map(() => []);
+  const written: (EmittedAlert | null)[] = list.map(() => null);
   for (const args of list) {
     if (args.tx || args.fallbackPeople || conversationAlertOf(args)) {
       throw new Error(`emitMany does not take ${args.verb} alerts with a transaction, the fallback or a conversation lookup; use emit`);
@@ -259,7 +266,7 @@ export async function emitMany(list: readonly EmitArgs[]): Promise<string[][]> {
 
   const events: Prisma.NotificationCreateManyInput[] = [];
   const recipients: Prisma.NotificationRecipientCreateManyInput[] = [];
-  const pings: { recipientIds: string[]; organizationId: string }[] = [];
+  const pings: { recipientIds: string[]; organizationId: string; verb: string }[] = [];
   for (const { i, args } of known) {
     if (args.dedupKey && taken.has(`${args.organizationId}|${args.dedupKey}`)) continue;
     const data = { ...withoutMoneyFields(args.data ?? {}), object_label: args.object.label };
@@ -292,11 +299,35 @@ export async function emitMany(list: readonly EmitArgs[]): Promise<string[][]> {
       recipients.push({ notification_id: id, organization_id: args.organizationId, recipient_id: s.userId, priority: s.priority, needs_action: s.needs_action });
     }
     told[i] = finalSpecs.map((s) => s.userId);
-    pings.push({ recipientIds: told[i]!, organizationId: args.organizationId });
+    written[i] = { notificationId: id, objectId: args.object.id, data, rows: [] };
+    pings.push({ recipientIds: told[i]!, organizationId: args.organizationId, verb: args.verb });
   }
-  if (events.length === 0) return told;
+  if (events.length === 0) return { told, written };
   await prisma.notification.createMany({ data: events });
-  await prisma.notificationRecipient.createMany({ data: recipients });
+  const rows = await prisma.notificationRecipient.createManyAndReturn({
+    data: recipients,
+    select: { id: true, notification_id: true, recipient_id: true, created_at: true },
+  });
+  const byNotification = new Map(written.flatMap((w) => (w ? [[w.notificationId, w] as const] : [])));
+  for (const r of rows) byNotification.get(r.notification_id)?.rows.push({ id: r.id, recipient_id: r.recipient_id, created_at: r.created_at });
   for (const p of pings) void publishNotificationsChanged(p.recipientIds, p.organizationId);
-  return told;
+  // The bell on the live line (#3473): after both inserts, one message per person for the whole write.
+  publishBellChanged(pings);
+  return { told, written };
+}
+
+/** One alert emitMany wrote: its record and each person's row of it. */
+export interface EmittedAlert {
+  notificationId: string;
+  objectId: string;
+  /** The data as stored on the record. */
+  data: Record<string, unknown>;
+  rows: { id: string; recipient_id: string; created_at: Date }[];
+}
+
+export interface EmitManyResult {
+  /** Per alert in order, the recipient ids notified ([] for a skipped or duplicate alert). */
+  told: string[][];
+  /** Per alert in order, what was written (null for a skipped or duplicate alert). */
+  written: (EmittedAlert | null)[];
 }

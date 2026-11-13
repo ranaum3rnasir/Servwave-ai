@@ -3081,6 +3081,7 @@ model Organization {
   spider_summaries            SpiderSummary[]
   spider_summary_runs         SpiderSummaryRun[]
   spider_recipient_sets       SpiderRecipientSet[]
+  spider_lead_watch           SpiderLeadWatch[]
   record_contact_entries      RecordContactEntry[]
   credits                     Credit[]
   deposit_credit_applications DepositCreditApplication[]
@@ -6775,6 +6776,29 @@ model SpiderRecipientSet {
 
   @@unique([organization_id, hash])
   @@map("spider_recipient_sets")
+}
+
+// Spider's watch list (#3468): one row per lead, kept by the database in the same save as the lead (triggers on leads,
+// migration 20261112090000). `stage` is NEW | CONTACTED | WALKTHROUGH_COMPLETED, or null when the lead is in no Spider
+// stage (plain text with a CHECK, not an enum); `entered_at` is when it entered it, by spiderStageOf's rules
+// (services/spider/config.ts), which the SQL function spider_stage_of repeats. `pending`: no alert or summary claim yet for
+// this stay in the current switched-on period (set by every new stay; cleared by the claim). `changed_at`: when stage or
+// entered_at last changed. The due time is computed by the check, never stored. The partial due index
+// (organization_id, stage, entered_at) WHERE pending AND stage IS NOT NULL lives only in the migration: Prisma cannot express it.
+// lead_id has its foreign key (ON DELETE CASCADE) in the migration only: a relation here would add a field to Lead, whose
+// generated types every file of the backend carries. The organization relation is declared for the company purge.
+model SpiderLeadWatch {
+  lead_id         String    @id @db.Uuid
+  organization_id String    @db.Uuid
+  stage           String?
+  entered_at      DateTime?
+  pending         Boolean   @default(true)
+  changed_at      DateTime  @default(now())
+
+  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@index([organization_id, changed_at])
+  @@map("spider_lead_watch")
 }
 
 // The Spider sweep's lease (#2993): at most one run at a time across servers, with no transaction held for the run.

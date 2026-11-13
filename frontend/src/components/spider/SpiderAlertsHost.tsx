@@ -1,4 +1,4 @@
-import { useSpiderUnreadAlerts } from '@/lib/api/spider';
+import { useSpiderLiveUpdates, useSpiderUnreadAlerts } from '@/lib/api/spider';
 import { BrowserAutomationIndicator } from './BrowserAutomationIndicator';
 import { SpiderNotificationPopup } from './SpiderNotificationPopup';
 
@@ -15,8 +15,11 @@ import { SpiderNotificationPopup } from './SpiderNotificationPopup';
  *   it at once and its sweep marks it read), or the alert is read.
  * - The popup shows while there is at least one unread in-app alert, as his did: with in-app alerts
  *   off there is none to list, so the frame shows without the button.
+ * - Both follow the live line (#3472): a new or ended alert shows or goes within seconds, with the 30-second check as
+ *   the fallback whenever the line is not open.
  */
 export default function SpiderAlertsHost() {
+  useSpiderLiveUpdates();
   const { data } = useSpiderUnreadAlerts();
   if (!data) return null;
   // The server says when the frame shows (Red Frame on, with an open in-app alert or, in-app off, a

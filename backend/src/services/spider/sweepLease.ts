@@ -24,6 +24,9 @@ import { logger } from '../../lib/logger';
 /** The sweep's row in spider_sweep_leases. */
 export const SPIDER_SWEEP_LEASE = 'spider.sweep';
 
+/** One company's starting summary's row in the same table (#3471): one server at a time builds it, whoever's check asks. */
+export const summaryLeaseName = (orgId: string): string => `spider.summary:${orgId}`;
+
 interface LeaseTiming {
   /** How long a claim or a renewal holds the lease. */
   ttlMs: number;
@@ -32,15 +35,20 @@ interface LeaseTiming {
 }
 
 /**
- * The sweep runs every 2 minutes. A lease of 2 minutes renewed every 30 s survives three missed renewals; a killed
- * run's lease frees up at most 2 minutes after its last renewal.
+ * The lease follows the sweep's interval (#3471): it lasts one interval and is renewed four times in it, so it survives three
+ * missed renewals, and a killed run's lease frees up at most one interval after its last renewal. The sweep runs every 2
+ * minutes (2-minute lease, renewed every 30 s) until the check runs beside it, then every 10 minutes (10-minute lease,
+ * renewed every 2.5 minutes).
  */
-const DEFAULT_TIMING: LeaseTiming = { ttlMs: 2 * 60_000, renewEveryMs: 30_000 };
-let timing: LeaseTiming = { ...DEFAULT_TIMING };
+export function leaseTimingFor(intervalMs: number): LeaseTiming {
+  return { ttlMs: intervalMs, renewEveryMs: intervalMs / 4 };
+}
+const DEFAULT_INTERVAL_MS = 2 * 60_000;
+let timingOverride: Partial<LeaseTiming> | undefined;
 
 /** Test-only: shorter lease times, so a case can outlast a lease in a second or two. No argument restores them. */
 export function _setSweepLeaseTiming(t?: Partial<LeaseTiming>): void {
-  timing = { ...DEFAULT_TIMING, ...t };
+  timingOverride = t;
 }
 
 export interface SweepLease {
@@ -52,16 +60,19 @@ export interface SweepLease {
   release(): Promise<void>;
 }
 
-/** The lease for this run, or null while a live run (on any server) holds it. Throws only when the database does. */
-export async function claimSweepLease(): Promise<SweepLease | null> {
+/**
+ * The lease for this run, or null while a live run (on any server) holds it. `intervalMs` is how often the sweep runs (its
+ * lease timing follows it, leaseTimingFor). Throws only when the database does.
+ */
+export async function claimSweepLease(intervalMs: number = DEFAULT_INTERVAL_MS, name: string = SPIDER_SWEEP_LEASE): Promise<SweepLease | null> {
   const holder = randomUUID();
-  const { ttlMs, renewEveryMs } = timing;
+  const { ttlMs, renewEveryMs } = { ...leaseTimingFor(intervalMs), ...timingOverride };
   // Each confirmed expiry is counted from just BEFORE its statement was sent: the database set it later than that, so
   // this run's idea of its expiry is never later than the database's.
   const sentAt = performance.now();
   const rows = await prisma.$queryRaw<{ claimed: boolean }[]>`
     INSERT INTO spider_sweep_leases (name, holder, claimed_at, expires_at)
-    VALUES (${SPIDER_SWEEP_LEASE}, ${holder}, now(), now() + ${interval(ttlMs)})
+    VALUES (${name}, ${holder}, now(), now() + ${interval(ttlMs)})
     ON CONFLICT (name) DO UPDATE
       SET holder = EXCLUDED.holder, claimed_at = EXCLUDED.claimed_at, expires_at = EXCLUDED.expires_at
       WHERE spider_sweep_leases.expires_at <= now()
@@ -87,7 +98,7 @@ export async function claimSweepLease(): Promise<SweepLease | null> {
     try {
       const n = await prisma.$executeRaw`
         UPDATE spider_sweep_leases SET expires_at = now() + ${interval(ttlMs)}
-        WHERE name = ${SPIDER_SWEEP_LEASE} AND holder = ${holder} AND expires_at > now()`;
+        WHERE name = ${name} AND holder = ${holder} AND expires_at > now()`;
       if (n === 0) markLost('it expired or another server took it over');
       else validUntil = sent + ttlMs;
     } catch (err) {
@@ -120,7 +131,7 @@ export async function claimSweepLease(): Promise<SweepLease | null> {
       await renewing;
       try {
         // Only this run's own row: a lease another server has taken over is left alone.
-        await prisma.$executeRaw`DELETE FROM spider_sweep_leases WHERE name = ${SPIDER_SWEEP_LEASE} AND holder = ${holder}`;
+        await prisma.$executeRaw`DELETE FROM spider_sweep_leases WHERE name = ${name} AND holder = ${holder}`;
       } catch (err) {
         // The row expires on its own.
         logger.error(`[spider] could not release the sweep lease: ${errorName(err)}`);
