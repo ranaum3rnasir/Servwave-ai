@@ -17,6 +17,7 @@ import {
   isWithinAllowedCallingWindow,
   formatScheduledTimeInCustomerTimezone,
 } from './timezoneService';
+import { JevCallClassifier, ClassifierInput, JevOutcomeClassification } from './classifier/jevClassifier';
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -2293,6 +2294,43 @@ export class BeeService {
    * Note: Bee phone system is completely separate from ServWave's internal CTM phone system.
    */
   static async getAvailablePhoneNumbers(orgId: string) {
+    // 1. Multitenancy isolation: resolve phone numbers owned by THIS organization
+    const [ownedDbNumbers, beeSettings] = await Promise.all([
+      prisma.phoneNumber.findMany({
+        where: {
+          organization_id: orgId,
+          source: { in: ['vapi', 'bee'] },
+          status: 'active',
+        },
+      }),
+      prisma.beeSetting.findUnique({
+        where: { organization_id: orgId },
+        select: { setup_config: true },
+      }),
+    ]);
+
+    const setupCfg = (beeSettings?.setup_config as any) || {};
+    const configuredCallerId = setupCfg.callerId ? String(setupCfg.callerId).trim() : null;
+    const configuredDefaultNumber = setupCfg.defaultPhoneNumber ? String(setupCfg.defaultPhoneNumber).trim() : null;
+
+    const allowedVapiIds = new Set<string>();
+    const allowedDigits = new Set<string>();
+
+    for (const row of ownedDbNumbers) {
+      if (row.ctm_number_id) allowedVapiIds.add(row.ctm_number_id);
+      if (row.e164) allowedDigits.add(row.e164.replace(/\D/g, ''));
+      if (row.formatted) allowedDigits.add(row.formatted.replace(/\D/g, ''));
+    }
+    if (configuredCallerId) {
+      allowedDigits.add(configuredCallerId.replace(/\D/g, ''));
+      allowedVapiIds.add(configuredCallerId);
+    }
+    if (configuredDefaultNumber) {
+      allowedDigits.add(configuredDefaultNumber.replace(/\D/g, ''));
+      allowedVapiIds.add(configuredDefaultNumber);
+    }
+
+    // 2. Fetch live Vapi numbers
     const engineNumbers = await BeeVoiceAdapter.listEnginePhoneNumbers(orgId).catch(() => []);
 
     const numbers: Array<{
@@ -2311,10 +2349,23 @@ export class BeeService {
 
     const seen = new Set<string>();
 
+    // 3. Filter Vapi numbers so that ONLY numbers owned by this tenant are included
     for (const vNum of engineNumbers) {
       const clean = (vNum.e164 || '').trim();
+      const digits = clean.replace(/\D/g, '');
       const key = clean || vNum.id;
       if (!key || seen.has(key)) continue;
+
+      const isOwned =
+        allowedVapiIds.has(vNum.id) ||
+        (digits && allowedDigits.has(digits)) ||
+        (vNum.formatted && allowedDigits.has(vNum.formatted.replace(/\D/g, '')));
+
+      if (!isOwned) {
+        // Skip numbers belonging to other tenants on the shared Vapi account
+        continue;
+      }
+
       seen.add(key);
       const rawFriendly = (vNum.friendlyName || vNum.label || 'ServWave Voice Line')
         .replace(/\s*\((?:vapi|telnyx|twilio)[^)]*\)/gi, '')
@@ -2332,6 +2383,27 @@ export class BeeService {
         source: 'servwave',
         status: vNum.status || 'active',
         createdAt: vNum.createdAt,
+      });
+    }
+
+    // Also surface any database-registered numbers for this org that might not be in the immediate engine response
+    for (const dbNum of ownedDbNumbers) {
+      const clean = (dbNum.e164 || '').trim();
+      const key = clean || dbNum.id;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      numbers.push({
+        id: dbNum.ctm_number_id || dbNum.id,
+        vapiPhoneNumberId: dbNum.ctm_number_id || dbNum.id,
+        phoneNumber: clean,
+        friendlyName: dbNum.label || 'Bee Outbound Line',
+        e164: clean,
+        formatted: dbNum.formatted || clean,
+        label: `${dbNum.formatted || clean} · ${dbNum.label || 'Bee Outbound Line'}`,
+        isDefault: numbers.length === 0,
+        source: 'servwave',
+        status: dbNum.status || 'active',
+        createdAt: dbNum.created_at.toISOString(),
       });
     }
 
@@ -3305,30 +3377,15 @@ export class BeeService {
     return Promise.all(
       queueItems.map(async (item, idx) => {
         const targetJobId = item.warranty_record?.job_id || item.job_id;
-      let job = targetJobId ? allJobsMap.get(targetJobId) : undefined;
+        let job = targetJobId ? allJobsMap.get(targetJobId) : undefined;
 
-      if (!job) {
-        job = allJobs.find(
-          (j) =>
-            j.customer_id === item.customer_id ||
-            (item.warranty_record?.customer_id && j.customer_id === item.warranty_record.customer_id)
-        );
-      }
-
-      if (!job && item.customer_name) {
-        const lowerName = String(item.customer_name).toLowerCase().trim();
-        job = allJobs.find((j) => {
-          const c = j.customer;
-          if (!c) return false;
-          const fullName = `${c.first_name || ''} ${c.last_name || ''}`.toLowerCase().trim();
-          const compName = (c.company_name || '').toLowerCase().trim();
-          return (fullName && fullName === lowerName) || (compName && compName === lowerName);
-        });
-      }
-
-      if (!job && allJobs.length > 0) {
-        job = allJobs[idx % allJobs.length];
-      }
+        if (!job && item.customer_id) {
+          job = allJobs.find(
+            (j) =>
+              j.customer_id === item.customer_id ||
+              (item.warranty_record?.customer_id && j.customer_id === item.warranty_record.customer_id)
+          );
+        }
 
       const cust =
         job?.customer ||
@@ -3577,6 +3634,7 @@ export class BeeService {
           warranty_end_date: warrantyEndDate,
           warranty_status: warrantyStatus,
           job_context_variables: jobContextVariables,
+          invoices: job?.invoices || [],
         },
         warranty_record: item.warranty_record
           ? {
@@ -3906,12 +3964,18 @@ export class BeeService {
       if (!inv.job) continue;
       const job = inv.job;
       const customer = job.customer;
-      const jobType =
+      const jobType = (
         job.job_type ||
         job.estimate?.job_type ||
         job.lead?.job_type ||
-        'General Service';
-      const rule: any = ruleMap.get(jobType) || { warranty_days: 365, call_threshold_days: 30, included_warranty: '12 months' };
+        ''
+      ).trim();
+
+      // Only allow jobs that have a valid configured job type in the system
+      if (!jobType || !ruleMap.has(jobType)) {
+        continue;
+      }
+      const rule: any = ruleMap.get(jobType);
 
       const custId = job.customer_id || customer?.id || '00000000-0000-0000-0000-000000000001';
       const custName = customer
@@ -4222,6 +4286,8 @@ export class BeeService {
         max_retries: 2,
         retry_interval_hours: 48,
         alert_email: null,
+        voice_provider: 'vapi',
+        voice_provider_api_key: process.env.VAPI_API_KEY?.trim() || null,
         job_type_warranties: defaultJobTypeRules,
       },
       update: {
@@ -4434,11 +4500,19 @@ export class BeeService {
         },
       });
 
+      let finalCallLog = updated;
+      try {
+        const stageTwo = await this.classifyCallStageTwo(updated.id, orgId);
+        if (stageTwo) finalCallLog = stageTwo;
+      } catch (err) {
+        logger.error(`[BeeService] Stage 2 classification error in processInboundCall for ${updated.id}:`, err);
+      }
+
       return {
-        callLog: updated,
+        callLog: finalCallLog,
         isNew: false,
         idempotent: true,
-        leadId: updated.lead_id,
+        leadId: finalCallLog.lead_id || updated.lead_id,
       };
     }
 
@@ -4550,6 +4624,8 @@ export class BeeService {
         queue_item_id: queueItemId,
         needs_human_alert: needsHumanAlert,
         cost_estimate: payload.cost_estimate ? new Prisma.Decimal(payload.cost_estimate) : null,
+        vapi_cost: payload.cost_estimate ? new Prisma.Decimal(payload.cost_estimate) : null,
+        total_cost: payload.cost_estimate ? new Prisma.Decimal(payload.cost_estimate) : null,
         called_at: new Date(),
       },
     });
@@ -4658,11 +4734,19 @@ export class BeeService {
 
     logger.info(`[BeeService] Successfully processed inbound call ${callLog.id} (outcome: ${outcome}, leadId: ${leadId})`);
 
+    let finalCallLog = callLog;
+    try {
+      const stageTwo = await this.classifyCallStageTwo(callLog.id, orgId);
+      if (stageTwo) finalCallLog = stageTwo;
+    } catch (err) {
+      logger.error(`[BeeService] Stage 2 classification error in processInboundCall for ${callLog.id}:`, err);
+    }
+
     return {
-      callLog,
+      callLog: finalCallLog,
       isNew: true,
       idempotent: false,
-      leadId,
+      leadId: finalCallLog.lead_id || leadId,
     };
   }
 
@@ -4937,6 +5021,74 @@ export class BeeService {
    *   - `ALREADY_COVERED`     : Has other coverage
    *   - `DNC_REQUESTED`       : Do not call
    */
+  /**
+   * Parses numeric monetary values from string representations like '$0.000420', '0.025', etc.
+   */
+  static parseCost(val: any): number {
+    if (val === null || val === undefined) return 0;
+    if (typeof val === 'number') return isNaN(val) ? 0 : val;
+    const str = String(val).replace(/[^0-9.]/g, '');
+    const num = parseFloat(str);
+    return isNaN(num) ? 0 : num;
+  }
+
+  /**
+   * Adds two monetary values using integer micro-dollars (1 dollar = 1,000,000 micro-dollars)
+   * to strictly prevent IEEE-754 binary floating point errors.
+   */
+  static addMonetaryValues(cost1: number, cost2: number): number {
+    const micro1 = Math.round((Number(cost1) || 0) * 1_000_000);
+    const micro2 = Math.round((Number(cost2) || 0) * 1_000_000);
+    return (micro1 + micro2) / 1_000_000;
+  }
+
+  /**
+   * Merges Jev applicableOutcomes into Stage 1 outcomes:
+   * - Preserves all valid Stage 1 outcomes in their original order.
+   * - Appends every applicable Jev outcome.
+   * - Deduplicates across both stages case-insensitively.
+   * - Preserves existing comma-separated token conventions.
+   * - Does NOT replace Stage 1 primary outcome with Jev primary outcome.
+   * - Idempotent so retries never create duplicate tokens.
+   */
+  static mergeStageOutcomes(
+    stageOneOutcome?: string | null,
+    jevApplicableOutcomes?: string[] | null
+  ): string {
+    const stage1Tokens = String(stageOneOutcome || '')
+      .split(',')
+      .map((t) => t.trim().toUpperCase())
+      .filter(Boolean);
+
+    if (stage1Tokens.length === 0) {
+      stage1Tokens.push('ANSWERED');
+    }
+
+    const seen = new Set<string>();
+    const result: string[] = [];
+
+    // 1. Preserve all valid Stage 1 outcomes in their original order
+    for (const token of stage1Tokens) {
+      if (!seen.has(token)) {
+        seen.add(token);
+        result.push(token);
+      }
+    }
+
+    // 2. Append every applicable Jev outcome, deduplicating across both stages
+    if (Array.isArray(jevApplicableOutcomes)) {
+      for (const jevOut of jevApplicableOutcomes) {
+        const normalized = String(jevOut || '').trim().toUpperCase();
+        if (normalized && !seen.has(normalized)) {
+          seen.add(normalized);
+          result.push(normalized);
+        }
+      }
+    }
+
+    return result.join(',');
+  }
+
   static parseOutcomeTags(
     rawOutcome?: string | null,
     leadFormat?: string | null,
@@ -5332,6 +5484,15 @@ export class BeeService {
         }
       }
 
+      const vapiCostNum = result.cost !== undefined ? Number(result.cost) : null;
+      let calculatedTotalCost: number | null = null;
+      if (vapiCostNum !== null) {
+        const jevPart = (existing as any).jev_cost !== null && (existing as any).jev_cost !== undefined
+          ? Number((existing as any).jev_cost)
+          : 0;
+        calculatedTotalCost = BeeService.addMonetaryValues(vapiCostNum, jevPart);
+      }
+
       const updated = await prisma.beeCallLog.update({
         where: { id: existing.id },
         data: {
@@ -5342,8 +5503,12 @@ export class BeeService {
             transcriptTurns.length > 0 ? (transcriptTurns as any) : (existing.transcript as any),
           audio_url: audioUrl || existing.audio_url,
           ai_summary: stageOneSummary || existing.ai_summary,
-          ...(result.cost !== undefined
-            ? { cost_estimate: new Prisma.Decimal(result.cost) }
+          ...(vapiCostNum !== null
+            ? {
+                vapi_cost: new Prisma.Decimal(vapiCostNum.toFixed(6)),
+                total_cost: new Prisma.Decimal(calculatedTotalCost!.toFixed(6)),
+                cost_estimate: new Prisma.Decimal(calculatedTotalCost!.toFixed(6)),
+              }
             : {}),
         },
       });
@@ -5415,12 +5580,22 @@ export class BeeService {
         });
       }
 
-      // TODO (Stage 2 Hook): Trigger separate Outcome Classifier LLM here once configured
+      // Stage 2 Hook: Run Jev AI outcome classification strictly after Stage 1 persistence
+      let finalCallLog = updated;
+      try {
+        const stageTwoLog = await this.classifyCallStageTwo(updated.id, orgId);
+        if (stageTwoLog) {
+          finalCallLog = stageTwoLog;
+        }
+      } catch (stageTwoErr) {
+        logger.error(`[BeeService] Stage 2 classification error on call ${updated.id}:`, stageTwoErr);
+      }
+
       return {
-        callLog: updated,
+        callLog: finalCallLog,
         isNew: false,
         idempotent: true,
-        leadId: updated.lead_id,
+        leadId: finalCallLog.lead_id || updated.lead_id,
       };
     }
 
@@ -5476,6 +5651,8 @@ export class BeeService {
 
     const calledAt = result.startedAt ? new Date(result.startedAt) : new Date();
 
+    const vapiCostNum = result.cost !== undefined ? Number(result.cost) : null;
+
     const created = await prisma.beeCallLog.create({
       data: {
         id: targetId,
@@ -5492,7 +5669,11 @@ export class BeeService {
         audio_url: audioUrl,
         ai_summary: stageOneSummary,
         cost_estimate:
-          result.cost !== undefined ? new Prisma.Decimal(result.cost) : null,
+          vapiCostNum !== null ? new Prisma.Decimal(vapiCostNum.toFixed(6)) : null,
+        vapi_cost:
+          vapiCostNum !== null ? new Prisma.Decimal(vapiCostNum.toFixed(6)) : null,
+        total_cost:
+          vapiCostNum !== null ? new Prisma.Decimal(vapiCostNum.toFixed(6)) : null,
         called_at: calledAt,
       },
     });
@@ -5519,12 +5700,197 @@ export class BeeService {
       });
     }
 
+    // Stage 2 Hook: Run Jev AI outcome classification strictly after Stage 1 persistence
+    let finalCreated = created;
+    try {
+      const stageTwoLog = await this.classifyCallStageTwo(created.id, orgId);
+      if (stageTwoLog) {
+        finalCreated = stageTwoLog;
+      }
+    } catch (stageTwoErr) {
+      logger.error(`[BeeService] Stage 2 classification error on call ${created.id}:`, stageTwoErr);
+    }
+
     return {
-      callLog: created,
+      callLog: finalCreated,
       isNew: true,
       idempotent: false,
-      leadId: null,
+      leadId: finalCreated.lead_id || null,
     };
+  }
+
+  /**
+   * Stage 2 AI Call Transcript & Summary Outcome Classifier (Jev System One).
+   * Runs strictly after Stage 1 persistence.
+   *
+   * Responsibilities:
+   * 1. Evaluates unstructured call transcripts and summaries against typed schema questions.
+   * 2. Merges Jev applicableOutcomes into Stage 1 outcomes (preserves Stage 1 tokens, appends Jev tokens, deduplicates).
+   * 3. Calculates accumulated total call cost = vapi_cost + jev_cost with micro-dollar precision.
+   * 4. Persists metadata: jev_primary_outcome, jev_applicable_outcomes, jev_sentiment, jev_confidence, jev_latency_ms, jev_status.
+   * 5. Safe & idempotent: failures do not alter Stage 1; retries do not duplicate outcomes or double-count Jev costs.
+   */
+  static async classifyCallStageTwo(
+    callLogId: string,
+    orgId: string,
+    options?: { forceRetry?: boolean }
+  ): Promise<any | null> {
+    const call = await prisma.beeCallLog.findFirst({
+      where: { id: callLogId, organization_id: orgId },
+    });
+
+    if (!call) {
+      logger.warn(`[BeeService] Stage 2 classification cannot find BeeCallLog ${callLogId} in org ${orgId}`);
+      return null;
+    }
+
+    // Idempotency: if already completed and not force-retrying, skip re-evaluating
+    if (call.jev_status === 'completed' && !options?.forceRetry) {
+      logger.info(`[BeeService] Call ${callLogId} already has completed Stage 2 classification — returning cached result`);
+      return call;
+    }
+
+    const transcriptTurns = Array.isArray(call.transcript) ? call.transcript : [];
+    const summaryText = (call.ai_summary || '').trim();
+
+    // If neither transcript turns nor summary text are available (e.g. fast failure before connection)
+    if (transcriptTurns.length === 0 && !summaryText) {
+      logger.info(`[BeeService] Call ${callLogId} has neither transcript nor summary — marking Stage 2 as skipped`);
+      const skipped = await prisma.beeCallLog.update({
+        where: { id: callLogId },
+        data: {
+          jev_status: 'skipped',
+          jev_error: 'No transcript turns or summary text available for classification',
+        },
+      });
+      return skipped;
+    }
+
+    let classification: JevOutcomeClassification;
+    try {
+      const classifier = new JevCallClassifier();
+      classification = await classifier.classify({
+        transcript: transcriptTurns.length > 0 ? (transcriptTurns as any) : undefined,
+        summary: summaryText || undefined,
+        callId: call.id,
+        tenantId: orgId,
+      });
+    } catch (err: any) {
+      logger.error(`[BeeService] Stage 2 Jev classification failed for call ${callLogId}:`, err);
+      // Resilience: Jev failure or timeout must NOT break Stage 1 or erase Stage 1 outcomes
+      const failed = await prisma.beeCallLog.update({
+        where: { id: callLogId },
+        data: {
+          jev_status: 'failed',
+          jev_error: err?.message || String(err),
+        },
+      }).catch((dbErr) => {
+        logger.error(`[BeeService] Failed to record Stage 2 failure for call ${callLogId}:`, dbErr);
+        return call;
+      });
+      return failed;
+    }
+
+    if (!classification || !classification.primaryOutcome || !Array.isArray(classification.applicableOutcomes)) {
+      logger.warn(`[BeeService] Stage 2 Jev returned invalid classification payload for call ${callLogId}`);
+      const failed = await prisma.beeCallLog.update({
+        where: { id: callLogId },
+        data: {
+          jev_status: 'failed',
+          jev_error: 'Invalid classification response structure from Jev',
+        },
+      });
+      return failed;
+    }
+
+    // Cost accumulation: Total cost = Vapi cost + Jev analysisCost
+    const jevCost = BeeService.parseCost(classification.analysisCost);
+    const vapiCost = call.vapi_cost !== null && call.vapi_cost !== undefined
+      ? Number(call.vapi_cost)
+      : (call.cost_estimate !== null && call.cost_estimate !== undefined ? Number(call.cost_estimate) : 0);
+    const totalCost = BeeService.addMonetaryValues(vapiCost, jevCost);
+
+    // Merge outcomes: preserve Stage 1 outcomes, append Jev applicable outcomes, deduplicate
+    const mergedOutcome = BeeService.mergeStageOutcomes(call.outcome, classification.applicableOutcomes);
+
+    const isHumanAlertNeeded =
+      call.needs_human_alert ||
+      classification.applicableOutcomes.includes('COMPLAINT') ||
+      classification.applicableOutcomes.includes('HANDOFF_HUMAN') ||
+      classification.primaryOutcome === 'COMPLAINT' ||
+      classification.primaryOutcome === 'HANDOFF_HUMAN';
+
+    const updated = await prisma.beeCallLog.update({
+      where: { id: callLogId },
+      data: {
+        outcome: mergedOutcome,
+        needs_human_alert: isHumanAlertNeeded,
+        vapi_cost: new Prisma.Decimal(vapiCost.toFixed(6)),
+        jev_cost: new Prisma.Decimal(jevCost.toFixed(6)),
+        total_cost: new Prisma.Decimal(totalCost.toFixed(6)),
+        cost_estimate: new Prisma.Decimal(totalCost.toFixed(6)),
+        jev_primary_outcome: classification.primaryOutcome,
+        jev_applicable_outcomes: classification.applicableOutcomes as any,
+        jev_sentiment: classification.sentiment,
+        jev_confidence: new Prisma.Decimal(classification.confidence.toFixed(2)),
+        jev_latency_ms: classification.latencyMs,
+        jev_status: 'completed',
+        jev_error: null,
+        jev_classified_at: new Date(),
+        jev_metadata: classification as any,
+      },
+    });
+
+    logger.info(
+      `[BeeService] Stage 2 classified call ${callLogId}: merged outcome="${mergedOutcome}", primary="${classification.primaryOutcome}", vapi=$${vapiCost.toFixed(6)}, jev=$${jevCost.toFixed(6)}, total=$${totalCost.toFixed(6)}`
+    );
+
+    // If Jev detected interest in warranty or new work and call doesn't have a lead yet, auto-create lead
+    if (!updated.lead_id) {
+      const hasWarranty = classification.applicableOutcomes.includes('INTERESTED_WARRANTY');
+      const hasNewWork = classification.applicableOutcomes.includes('INTERESTED_NEW_WORK');
+      if (hasWarranty || hasNewWork) {
+        const leadType = hasWarranty && hasNewWork ? 'both' : (hasNewWork ? 'new_work' : 'warranty_extension');
+        BeeService.createLeadFromCall({
+          orgId,
+          customerId: updated.customer_id,
+          customerName: updated.customer_name,
+          customerPhone: updated.customer_phone,
+          leadType,
+          details: summaryText || classification.primaryOutcome,
+          callLogId: updated.id,
+        })
+          .then((lead) => {
+            prisma.beeCallLog.update({
+              where: { id: updated.id },
+              data: { lead_id: lead.id },
+            }).catch(() => {});
+          })
+          .catch((leadErr) => {
+            logger.error('[BeeService] Failed to create lead from Stage 2 outcome:', leadErr);
+          });
+      }
+    }
+
+    // If Jev detected an outcome that triggers a follow-up task and call doesn't have a task yet, auto-create task
+    if (!updated.task_id && BeeService.isFollowupTaskOutcome(mergedOutcome, isHumanAlertNeeded)) {
+      BeeService.createTaskFromCall({
+        orgId,
+        jobId: null,
+        queueItemId: updated.queue_item_id,
+        customerId: updated.customer_id,
+        customerName: updated.customer_name,
+        customerPhone: updated.customer_phone,
+        outcome: mergedOutcome,
+        summary: summaryText || classification.primaryOutcome,
+        transcript: transcriptTurns,
+        callLogId: updated.id,
+      }).catch((taskErr) => {
+        logger.error('[BeeService] Failed to create follow-up task from Stage 2 outcome:', taskErr);
+      });
+    }
+
+    return updated;
   }
 
   /**

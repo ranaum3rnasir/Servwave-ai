@@ -281,6 +281,8 @@ export const useBeeStore = create<BeeState>()(
   },
   callNow: async (queueItemId) => {
     try {
+      const targetQueueItem = get().queueItems.find((q) => q.id === queueItemId);
+      const rawQueueAgentId = (targetQueueItem as any)?.agent_id || (targetQueueItem as any)?.assigned_agent_id;
       // Optimistically mark the item as in progress so the UI responds instantly
       set((state) => ({
         queueItems: state.queueItems.map((q) =>
@@ -292,6 +294,13 @@ export const useBeeStore = create<BeeState>()(
         archivedItems: state.archivedItems.map((q) =>
           q.id === queueItemId ? ({ ...q, status: 'in_progress' } as BeeQueueItem) : q
         ),
+        agents: rawQueueAgentId
+          ? state.agents.map((ag) =>
+              ag.id === rawQueueAgentId
+                ? { ...ag, calls_today: (ag.calls_today || 0) + 1 }
+                : ag
+            )
+          : state.agents,
       }));
       await beeApi.callNow(queueItemId);
       // Refresh queue, call logs and metrics in the background (non-blocking)
@@ -393,11 +402,25 @@ export const useBeeStore = create<BeeState>()(
   },
   testCall: async (phone, agentId) => {
     const res = await beeApi.triggerTestCall(phone, agentId);
+    if (res.ok && agentId) {
+      set((state) => ({
+        agents: state.agents.map((ag) =>
+          ag.id === agentId ? { ...ag, calls_today: (ag.calls_today || 0) + 1 } : ag
+        ),
+      }));
+    }
     return res.message || 'Test call initiated.';
   },
   triggerTestCallFull: async (payload) => {
     try {
       const res = await beeApi.triggerTestCall(payload);
+      if (res.ok && payload.agentId) {
+        set((state) => ({
+          agents: state.agents.map((ag) =>
+            ag.id === payload.agentId ? { ...ag, calls_today: (ag.calls_today || 0) + 1 } : ag
+          ),
+        }));
+      }
       return res;
     } catch (err: any) {
       if (err.response?.data) {

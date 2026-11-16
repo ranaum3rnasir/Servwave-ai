@@ -6047,13 +6047,26 @@ model BeeCallLog {
   lead_id           String?  @db.Uuid
   task_id           String?  @db.Uuid  // follow-up task created for this call (auto or manual)
   needs_human_alert Boolean  @default(false)
-  cost_estimate     Decimal? @db.Decimal(6, 4)
-  called_at         DateTime @default(now())
+  cost_estimate           Decimal?  @db.Decimal(10, 6)
+  vapi_cost               Decimal?  @db.Decimal(10, 6)
+  jev_cost                Decimal?  @db.Decimal(10, 6)
+  total_cost              Decimal?  @db.Decimal(10, 6)
+  jev_primary_outcome     String?
+  jev_applicable_outcomes Json?
+  jev_sentiment           String?
+  jev_confidence          Decimal?  @db.Decimal(3, 2)
+  jev_latency_ms          Int?
+  jev_status              String?   @default("pending") // 'pending', 'completed', 'failed', 'skipped'
+  jev_error               String?   @db.Text
+  jev_classified_at       DateTime?
+  jev_metadata            Json?
+  called_at               DateTime  @default(now())
 
   organization      Organization  @relation(fields: [organization_id], references: [id], onDelete: Cascade)
   queue_item        BeeQueueItem? @relation(fields: [queue_item_id], references: [id], onDelete: SetNull)
 
   @@index([organization_id, called_at])
+  @@index([organization_id, agent_id, called_at])
   @@index([organization_id, outcome])
   @@map("bee_call_logs")
 }

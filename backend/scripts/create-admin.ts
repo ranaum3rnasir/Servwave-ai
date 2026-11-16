@@ -1,15 +1,19 @@
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, Role } from '@prisma/client';
 import { createClient } from '@supabase/supabase-js';
 import { randomBytes } from 'crypto';
 import dotenv from 'dotenv';
+import { runUnscoped } from '../src/lib/tenant-context';
 
 dotenv.config();
 
-// Override with ADMIN_EMAIL to create a different account.
-const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'info@servwave.com';
-const ADMIN_FIRST_NAME = process.env.ADMIN_FIRST_NAME || 'Demo';
-const ADMIN_LAST_NAME = process.env.ADMIN_LAST_NAME || 'Admin';
-const DEMO_ORG_ID = '00000000-0000-0000-0000-000000000001';
+const args = process.argv.slice(2);
+const arg = (f: string) => { const i = args.indexOf(f); return i >= 0 ? args[i + 1] : undefined; };
+
+const ADMIN_EMAIL = arg('--email') || process.env.ADMIN_EMAIL || 'info@servwave.com';
+const ADMIN_FIRST_NAME = arg('--first') || process.env.ADMIN_FIRST_NAME || 'Demo';
+const ADMIN_LAST_NAME = arg('--last') || process.env.ADMIN_LAST_NAME || 'Admin';
+const ORG_ID = arg('--org-id') || process.env.ORG_ID || '00000000-0000-0000-0000-000000000001';
+const CLI_PASSWORD = arg('--password');
 
 /** Generate a strong random password (>= 20 chars, mixed alphabet). */
 function generatePassword(): string {
@@ -29,11 +33,11 @@ async function main() {
     // Idempotency: if the Prisma user row already exists, do nothing.
     const existing = await prisma.user.findUnique({ where: { email: ADMIN_EMAIL } });
     if (existing) {
-      console.log(`User ${ADMIN_EMAIL} already exists. Skipping (no changes made).`);
+      console.log(`User ${ADMIN_EMAIL} already exists in organization ${existing.organization_id}. Skipping.`);
       return;
     }
 
-    const password = generatePassword();
+    const password = CLI_PASSWORD || generatePassword();
 
     // Create the Supabase Auth user (email-confirmed so Google sign-in can link).
     let supabaseUserId: string | undefined;
@@ -55,6 +59,11 @@ async function main() {
         );
         if (!found) throw new Error('Auth user reported as existing but not found in listUsers.');
         supabaseUserId = found.id;
+        
+        // Update password if one was supplied
+        if (CLI_PASSWORD) {
+          await supabase.auth.admin.updateUserById(supabaseUserId, { password: CLI_PASSWORD });
+        }
       } else {
         throw new Error(`Supabase auth error: ${msg}`);
       }
@@ -67,23 +76,25 @@ async function main() {
     }
 
     // Create the matching Prisma users row.
-    await prisma.user.create({
-      data: {
-        id: supabaseUserId,
-        email: ADMIN_EMAIL,
-        first_name: ADMIN_FIRST_NAME,
-        last_name: ADMIN_LAST_NAME,
-        role: 'ADMIN',
-        organization_id: DEMO_ORG_ID,
-      },
+    await runUnscoped(async () => {
+      await prisma.user.create({
+        data: {
+          id: supabaseUserId,
+          email: ADMIN_EMAIL,
+          first_name: ADMIN_FIRST_NAME,
+          last_name: ADMIN_LAST_NAME,
+          role: Role.ADMIN,
+          organization_id: ORG_ID,
+          has_login: true,
+        },
+      });
     });
 
-    console.log('Admin user created.');
-    console.log(`  Email:    ${ADMIN_EMAIL}`);
-    console.log(`  Password: ${password}`);
-    console.log('  Role:     ADMIN');
-    console.log(`  Org:      ${DEMO_ORG_ID}`);
-    console.log('  (Google sign-in links by confirmed email; password is a fallback.)');
+    console.log('\n✅ Admin user created successfully.');
+    console.log(`   Organization ID: ${ORG_ID}`);
+    console.log(`   Email:           ${ADMIN_EMAIL}`);
+    console.log(`   Password:        ${password}`);
+    console.log(`   Role:            ADMIN\n`);
   } catch (err) {
     console.error('create-admin failed:', err);
     process.exit(1);

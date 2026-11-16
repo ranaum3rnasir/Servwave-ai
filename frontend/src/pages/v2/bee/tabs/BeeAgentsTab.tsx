@@ -351,7 +351,7 @@ const DEFAULT_MOCK_AGENTS: BeeAgentItem[] = [
     language: 'English',
     languages: ['English'],
     is_active: true,
-    calls_today: 38,
+    calls_today: 0,
   },
   {
     id: 'mock-agent-security',
@@ -364,7 +364,7 @@ const DEFAULT_MOCK_AGENTS: BeeAgentItem[] = [
     language: 'English',
     languages: ['English'],
     is_active: true,
-    calls_today: 9,
+    calls_today: 0,
   },
   {
     id: 'mock-agent-fire-doors',
@@ -535,8 +535,7 @@ export const BeeAgentsTab: React.FC = () => {
           DEFAULT_MOCK_AGENTS[0]!;
         return {
           ...a,
-          calls_today:
-            a.calls_today ?? (a.is_active ? (idx === 0 ? 38 : idx === 1 ? 9 : 12) : 0),
+          calls_today: a.calls_today ?? 0,
           persona_name: a.persona_name || fallback.persona_name,
         };
       });
@@ -867,9 +866,6 @@ export const BeeAgentsTab: React.FC = () => {
         selectedJobContextFields: selectedJobFields,
       });
       setTestCallResponse(res);
-      if (res.ok) {
-        useBeeStore.getState().loadCalls(1);
-      }
     } catch (err: any) {
       setTestCallResponse({
         ok: false,
@@ -1800,24 +1796,26 @@ export const BeeAgentsTab: React.FC = () => {
               {testCallResponse && (
                 <div
                   className={cn(
-                    'p-4 rounded-xl text-xs border flex items-start gap-2.5',
+                    'p-3.5 rounded-xl text-xs border flex items-center gap-2.5',
                     testCallResponse.ok
                       ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
                       : 'bg-rose-50 border-rose-200 text-rose-800'
                   )}
                 >
                   {testCallResponse.ok ? (
-                    <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0 mt-0.5" />
+                    <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
                   ) : (
-                    <AlertCircle className="h-4 w-4 text-rose-600 shrink-0 mt-0.5" />
+                    <AlertCircle className="h-4 w-4 text-rose-600 shrink-0" />
                   )}
                   <div>
                     <div className="font-bold">
-                      {testCallResponse.ok ? 'Test call initiated' : 'Test call failed'}
+                      {testCallResponse.ok ? 'Call initiated' : 'Test call failed'}
                     </div>
-                    <div className="mt-0.5">
-                      {testCallResponse.message || testCallResponse.error}
-                    </div>
+                    {!testCallResponse.ok && (
+                      <div className="mt-0.5">
+                        {testCallResponse.error || testCallResponse.message}
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -2012,22 +2010,24 @@ export const BeeAgentsTab: React.FC = () => {
             {testCallResponse && (
               <div
                 className={cn(
-                  'p-3 rounded-lg text-xs border flex items-start gap-2',
+                  'p-3 rounded-lg text-xs border flex items-center gap-2',
                   testCallResponse.ok
                     ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
                     : 'bg-rose-50 border-rose-200 text-rose-800'
                 )}
               >
                 {testCallResponse.ok ? (
-                  <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0 mt-0.5" />
+                  <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
                 ) : (
-                  <AlertCircle className="h-4 w-4 text-rose-600 shrink-0 mt-0.5" />
+                  <AlertCircle className="h-4 w-4 text-rose-600 shrink-0" />
                 )}
                 <div>
                   <div className="font-bold">
                     {testCallResponse.ok ? 'Call initiated' : 'Call failed'}
                   </div>
-                  <div>{testCallResponse.message || testCallResponse.error}</div>
+                  {!testCallResponse.ok && (
+                    <div className="mt-0.5">{testCallResponse.error || testCallResponse.message}</div>
+                  )}
                 </div>
               </div>
             )}

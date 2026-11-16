@@ -35,6 +35,7 @@ import {
   UserCheck,
   ShieldAlert,
   Link as LinkIcon,
+  RefreshCw,
 } from 'lucide-react';
 import {
   Tooltip,
@@ -159,6 +160,7 @@ export const BeeSetupTab: React.FC = () => {
   const [releaseConfirmItem, setReleaseConfirmItem] = useState<BeeAvailablePhoneNumber | null>(null);
   const [selectedPhoneDetails, setSelectedPhoneDetails] = useState<BeeAvailablePhoneNumber | null>(null);
   const [phoneToastMessage, setPhoneToastMessage] = useState<string | null>(null);
+  const [isRefreshingPhoneNumbers, setIsRefreshingPhoneNumbers] = useState(false);
 
   const cleanFriendlyName = (name?: string) => {
     if (!name) return 'ServWave Voice Line';
@@ -460,6 +462,19 @@ export const BeeSetupTab: React.FC = () => {
       alert(err?.response?.data?.error || err?.message || 'Failed to release phone number');
     } finally {
       setReleasingId(null);
+    }
+  };
+
+  const handleRefreshPhoneNumbers = async () => {
+    try {
+      setIsRefreshingPhoneNumbers(true);
+      await loadPhoneNumbers();
+      setPhoneToastMessage('Refreshed latest phone numbers from Vapi');
+      setTimeout(() => setPhoneToastMessage(null), 3000);
+    } catch (err: any) {
+      alert(err?.response?.data?.error || err?.message || 'Failed to refresh phone numbers');
+    } finally {
+      setIsRefreshingPhoneNumbers(false);
     }
   };
 
@@ -1102,17 +1117,30 @@ export const BeeSetupTab: React.FC = () => {
                     />
                   </div>
 
-                  <Button
-                    size="sm"
-                    onClick={() => {
-                      setBuyError(null);
-                      setIsBuyModalOpen(true);
-                    }}
-                    className="gap-1.5 text-xs shrink-0"
-                  >
-                    <Plus className="h-3.5 w-3.5" />
-                    Buy phone number
-                  </Button>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        setBuyError(null);
+                        setIsBuyModalOpen(true);
+                      }}
+                      className="gap-1.5 text-xs shrink-0"
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      Buy phone number
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleRefreshPhoneNumbers}
+                      disabled={isRefreshingPhoneNumbers}
+                      className="gap-1.5 text-xs shrink-0"
+                      title="Fetch latest available numbers from Vapi"
+                    >
+                      <RefreshCw className={`h-3.5 w-3.5 ${isRefreshingPhoneNumbers ? 'animate-spin' : ''}`} />
+                      Refresh
+                    </Button>
+                  </div>
                 </div>
 
                 {/* Available Phone Numbers Table (Two columns: Phone Number & Friendly Name) */}
@@ -1141,7 +1169,7 @@ export const BeeSetupTab: React.FC = () => {
                                   : 'Try adjusting your search filter or clear the query.'}
                               </p>
                               {availableNumbers.length === 0 && (
-                                <div className="pt-2">
+                                <div className="pt-2 flex items-center justify-center gap-2">
                                   <Button
                                     size="sm"
                                     onClick={() => {
@@ -1152,6 +1180,16 @@ export const BeeSetupTab: React.FC = () => {
                                   >
                                     <Plus className="h-3.5 w-3.5" />
                                     Buy your first phone number
+                                  </Button>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={handleRefreshPhoneNumbers}
+                                    disabled={isRefreshingPhoneNumbers}
+                                    className="gap-1.5"
+                                  >
+                                    <RefreshCw className={`h-3.5 w-3.5 ${isRefreshingPhoneNumbers ? 'animate-spin' : ''}`} />
+                                    Refresh numbers
                                   </Button>
                                 </div>
                               )}

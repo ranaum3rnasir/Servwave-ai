@@ -1,8 +1,10 @@
 import { Request, Response } from 'express';
 import { z } from 'zod';
+import { fromZonedTime, formatInTimeZone } from 'date-fns-tz';
 import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { formatPhoneDisplay } from '../lib/phone-format';
+import { getRequestOrgTimezone } from '../lib/timezone';
 import { BeeService } from '../services/bee/beeService';
 import { BeeVoiceAdapter, BEE_MASTER_PROMPT_TEMPLATE } from '../services/bee/beeVoiceAdapter';
 
@@ -218,7 +220,7 @@ export async function getBeeCallLogs(req: Request, res: Response) {
     }
 
     const skip = (page - 1) * limit;
-    const [rawRecords, total, customers, jobs, warrantyRecords, voiceAgents, relatedTasks] = await Promise.all([
+    const [rawRecords, total, customers, jobs, warrantyRecords, voiceAgents, relatedTasks, jobRules] = await Promise.all([
       prisma.beeCallLog.findMany({
         where,
         orderBy: { called_at: 'desc' },
@@ -250,6 +252,9 @@ export async function getBeeCallLogs(req: Request, res: Response) {
           lead: {
             select: { job_type: true },
           },
+          invoices: {
+            select: { status: true },
+          },
         },
         orderBy: { created_at: 'desc' },
         take: 100,
@@ -278,7 +283,10 @@ export async function getBeeCallLogs(req: Request, res: Response) {
         orderBy: { created_at: 'desc' },
         take: 200,
       }),
+      BeeService.getJobTypeWarranties(user.organization_id),
     ]);
+
+    const validJobTypes = new Set<string>((jobRules as any[]).map((rule: any) => rule.job_type));
 
     const records = rawRecords.map((r, idx) => {
       // Prefer the direct task_id link; fall back to description text-search for legacy records
@@ -296,31 +304,64 @@ export async function getBeeCallLogs(req: Request, res: Response) {
         }) ||
         (r.customer_phone ? customers.find((c) => c.phone && c.phone === r.customer_phone) : undefined);
 
+      const isTestCall = Boolean((r as any).is_test_call) || lowerName === 'test call' || lowerName.includes('test call');
+
       const resolvedCustId = matchedCust?.id || r.customer_id;
 
-      const matchedWarranty =
-        r.queue_item?.warranty_record ||
-        warrantyRecords.find((w) => w.customer_id === resolvedCustId);
+      let matchedWarranty = !isTestCall
+        ? r.queue_item?.warranty_record ||
+          warrantyRecords.find((w) => w.customer_id === resolvedCustId)
+        : undefined;
 
-      let jobId = matchedWarranty?.job_id;
-      let matchedJob = jobId ? jobs.find((j) => j.id === jobId) : undefined;
-      if (!matchedJob && resolvedCustId) {
-        matchedJob = jobs.find((j) => j.customer_id === resolvedCustId);
-      }
-      if (!matchedJob && lowerName) {
-        matchedJob = jobs.find((j) => {
-          const c = j.customer;
-          if (!c) return false;
-          const fullName = `${c.first_name || ''} ${c.last_name || ''}`.toLowerCase().trim();
-          const compName = (c.company_name || '').toLowerCase().trim();
-          return (fullName && fullName === lowerName) || (compName && compName === lowerName);
-        });
-      }
-      if (!matchedJob && jobs.length > 0) {
-        matchedJob = jobs[idx % jobs.length];
-      }
-      if (matchedJob) {
-        jobId = matchedJob.id;
+      let matchedJob: any = undefined;
+      let jobId: string | undefined = undefined;
+
+      if (!isTestCall) {
+        const candidateJobId = matchedWarranty?.job_id;
+        if (candidateJobId) {
+          matchedJob = jobs.find((j) => j.id === candidateJobId);
+        }
+        if (!matchedJob && resolvedCustId) {
+          matchedJob = jobs.find((j) => j.customer_id === resolvedCustId);
+        }
+        if (!matchedJob && lowerName) {
+          matchedJob = jobs.find((j) => {
+            const c = j.customer;
+            if (!c) return false;
+            const fullName = `${c.first_name || ''} ${c.last_name || ''}`.toLowerCase().trim();
+            const compName = (c.company_name || '').toLowerCase().trim();
+            return (fullName && fullName === lowerName) || (compName && compName === lowerName);
+          });
+        }
+
+        // Validate matchedJob against system job types and Bee criteria
+        if (matchedJob) {
+          const rawJobType = (
+            matchedJob.job_type ||
+            matchedJob.estimate?.job_type ||
+            matchedJob.lead?.job_type ||
+            ''
+          ).trim();
+          const isCompleted = matchedJob.status === 'COMPLETED' || Boolean(matchedJob.completed_at);
+          const hasSentOrPaidInvoice = Array.isArray(matchedJob.invoices) && matchedJob.invoices.some(
+            (inv: any) => inv.status === 'SENT' || inv.status === 'PAID'
+          );
+
+          // If matched job does not have a valid system job type or fulfill criteria, discard it
+          if (!validJobTypes.has(rawJobType) || (!isCompleted && !hasSentOrPaidInvoice)) {
+            matchedJob = undefined;
+          }
+        }
+
+        if (matchedJob) {
+          jobId = matchedJob.id;
+          if (!matchedWarranty || matchedWarranty.job_id !== jobId) {
+            matchedWarranty = warrantyRecords.find((w) => w.job_id === jobId) || matchedWarranty;
+          }
+        } else {
+          // If no verified job matches, do not attach an unverified warranty record
+          matchedWarranty = r.queue_item?.warranty_record;
+        }
       }
 
       const customerId = matchedJob?.customer_id || resolvedCustId;
@@ -334,27 +375,37 @@ export async function getBeeCallLogs(req: Request, res: Response) {
         ? `#${jobId.slice(0, 8)}`
         : '—';
 
-      const jobDesc =
-        matchedJob?.job_type ||
-        matchedJob?.estimate?.job_type ||
-        matchedJob?.lead?.job_type ||
-        matchedWarranty?.job_type ||
-        'General Service';
+      const jobDesc = isTestCall
+        ? 'Test Call'
+        : matchedJob?.job_type ||
+          matchedJob?.estimate?.job_type ||
+          matchedJob?.lead?.job_type ||
+          (matchedWarranty?.job_type && validJobTypes.has(matchedWarranty.job_type) ? matchedWarranty.job_type : undefined) ||
+          '—';
 
-      const formattedJob = jobNum !== '—' ? `${jobNum} · ${jobDesc}` : jobDesc;
+      const formattedJob = isTestCall
+        ? 'Test Call'
+        : jobNum !== '—'
+        ? `${jobNum} · ${jobDesc}`
+        : jobDesc;
 
       // Map outcome to multi-tag outcomes + backward-compatible primary code
       const parsedOutcome = BeeService.parseOutcomeTags(r.outcome, null, r.needs_human_alert);
       const outCode = parsedOutcome.primaryLegacyCode;
       const outcomeTags = parsedOutcome.tags;
       const lf = parsedOutcome.leadFormat;
-      const val = r.cost_estimate ? `$${r.cost_estimate}` : '—';
+      const totalCostNum = (r as any).total_cost !== null && (r as any).total_cost !== undefined
+        ? Number((r as any).total_cost)
+        : ((r as any).vapi_cost !== null && (r as any).vapi_cost !== undefined
+          ? Number((r as any).vapi_cost)
+          : (r.cost_estimate ? Number(r.cost_estimate) : null));
+      const val = totalCostNum !== null ? `$${totalCostNum.toFixed(4)}` : '—';
       const bk = r.lead_id
         ? `Lead #${r.lead_id.slice(-6)}`
         : parsedOutcome.needsHumanAlert
         ? 'Alert → Office'
         : '—';
-      const sent = parsedOutcome.sentiment;
+      const sent = (r as any).jev_sentiment || parsedOutcome.sentiment;
 
       const agentObj = voiceAgents.find((a) => a.id === r.agent_id);
       const agentName = agentObj?.name || 'Bee Outbound Agent';
@@ -370,7 +421,7 @@ export async function getBeeCallLogs(req: Request, res: Response) {
       const durS = (r.duration_seconds % 60).toString().padStart(2, '0');
       const durFormatted = `${durM}:${durS}`;
 
-      const warrantyEnds = matchedWarranty?.warranty_end_date
+      const warrantyEnds = !isTestCall && matchedWarranty?.warranty_end_date
         ? new Date(matchedWarranty.warranty_end_date).toLocaleDateString('en-US', {
             month: 'short',
             day: 'numeric',
@@ -407,6 +458,20 @@ export async function getBeeCallLogs(req: Request, res: Response) {
         lead_label: bk,
         value: val,
         sentiment: sent,
+        vapi_cost: (r as any).vapi_cost,
+        jev_cost: (r as any).jev_cost,
+        total_cost: (r as any).total_cost ?? r.cost_estimate,
+        jev_status: (r as any).jev_status,
+        jev_primary_outcome: (r as any).jev_primary_outcome,
+        jev_applicable_outcomes: (r as any).jev_applicable_outcomes,
+        jev_sentiment: (r as any).jev_sentiment,
+        jev_confidence: (r as any).jev_confidence,
+        jev_latency_ms: (r as any).jev_latency_ms,
+        cost_breakdown: {
+          vapi: (r as any).vapi_cost ?? r.cost_estimate,
+          jev: (r as any).jev_cost,
+          total: (r as any).total_cost ?? r.cost_estimate,
+        },
         needs_human_alert: r.needs_human_alert || parsedOutcome.needsHumanAlert,
         ai_summary: r.ai_summary,
         transcript: r.transcript,
@@ -552,12 +617,27 @@ export async function getBeeCallDetail(req: Request, res: Response) {
       orderBy: { created_at: 'desc' },
     });
 
+    const totalCostNum = (call as any).total_cost !== null && (call as any).total_cost !== undefined
+      ? Number((call as any).total_cost)
+      : ((call as any).vapi_cost !== null && (call as any).vapi_cost !== undefined
+        ? Number((call as any).vapi_cost)
+        : (call.cost_estimate ? Number(call.cost_estimate) : null));
+    const val = totalCostNum !== null ? `$${totalCostNum.toFixed(4)}` : '—';
+
     res.json({
       ok: true,
       call: {
         ...call,
         customer_phone: formatPhoneDisplay(call.customer_phone),
         p: formatPhoneDisplay(call.customer_phone),
+        value: val,
+        v: val,
+        total_cost: (call as any).total_cost ?? call.cost_estimate,
+        cost_breakdown: {
+          vapi: (call as any).vapi_cost ?? call.cost_estimate,
+          jev: (call as any).jev_cost,
+          total: (call as any).total_cost ?? call.cost_estimate,
+        },
         task: linkedTask
           ? {
               id: linkedTask.id,
@@ -575,6 +655,28 @@ export async function getBeeCallDetail(req: Request, res: Response) {
   } catch (err: any) {
     logger.error('Failed to get Bee call detail:', err);
     res.status(500).json({ error: 'Failed to retrieve call detail' });
+  }
+}
+
+/**
+ * Triggers or retries Stage 2 Jev Outcome Classification on demand for a given call.
+ */
+export async function classifyBeeCallStageTwo(req: Request, res: Response) {
+  const user = req.user!;
+  const id = req.params.id as string;
+  try {
+    const updated = await BeeService.classifyCallStageTwo(id, user.organization_id, { forceRetry: true });
+    if (!updated) {
+      return res.status(404).json({ error: 'Call log not found' });
+    }
+    return res.json({
+      ok: true,
+      message: 'Stage 2 classification complete',
+      call: updated,
+    });
+  } catch (err: any) {
+    logger.error('Failed to trigger Stage 2 classification:', err);
+    return res.status(500).json({ error: 'Failed to trigger Stage 2 classification' });
   }
 }
 
@@ -726,26 +828,49 @@ export async function getBeeQueue(req: Request, res: Response) {
             ? { status: { in: ['scheduled', 'skipped', 'in_progress'] } }
             : { status };
 
-    const rawItems = await prisma.beeQueueItem.findMany({
-      where: {
-        organization_id: user.organization_id,
-        ...statusWhere,
-      },
-      include: {
-        warranty_record: true,
-      },
-      orderBy: { scheduled_for: 'asc' },
-    });
+    const [rawItems, jobRules] = await Promise.all([
+      prisma.beeQueueItem.findMany({
+        where: {
+          organization_id: user.organization_id,
+          ...statusWhere,
+        },
+        include: {
+          warranty_record: true,
+        },
+        orderBy: { scheduled_for: 'asc' },
+      }),
+      BeeService.getJobTypeWarranties(user.organization_id),
+    ]);
+
+    const validJobTypes = new Set<string>((jobRules as any[]).map((rule: any) => rule.job_type));
 
     const enriched = await BeeService.enrichQueueItemsWithJobContext(user.organization_id, rawItems);
+
+    // Screen out items that do not fulfill Bee criteria:
+    // 1. Must have a linked job_id
+    // 2. Job type must exist in system job types
+    // 3. Fulfills either: Job completed (status === 'COMPLETED' or completed_at) OR Invoice sent/paid
+    const screenedEnriched = enriched.filter((item: any) => {
+      const jobInfo = item.job_info;
+      if (!jobInfo || !jobInfo.job_id) return false;
+      const jobType = (jobInfo.job_type || item.warranty_record?.job_type || '').trim();
+      if (!jobType || !validJobTypes.has(jobType)) return false;
+
+      const isCompleted = jobInfo.status === 'COMPLETED' || Boolean(jobInfo.completed_at);
+      const hasSentOrPaidInvoice = Array.isArray(jobInfo.invoices) && jobInfo.invoices.some(
+        (inv: any) => inv.status === 'SENT' || inv.status === 'PAID'
+      );
+      return isCompleted || hasSentOrPaidInvoice;
+    });
+
     const items =
       status === 'all'
-        ? enriched
+        ? screenedEnriched
         : status === 'scheduled'
-          ? enriched.filter((item: any) => item.status === 'scheduled' || item.status === 'in_progress')
+          ? screenedEnriched.filter((item: any) => item.status === 'scheduled' || item.status === 'in_progress')
           : status === 'archived'
-            ? enriched.filter((item: any) => item.status === 'archived')
-            : enriched.filter((item: any) => item.status === status);
+            ? screenedEnriched.filter((item: any) => item.status === 'archived')
+            : screenedEnriched.filter((item: any) => item.status === status);
 
     res.json({ ok: true, items });
   } catch (err: any) {
@@ -976,7 +1101,12 @@ export async function getBeeAgents(req: Request, res: Response) {
   try {
     await BeeService.seedDemoDataIfEmpty(user.organization_id);
 
-    const [rawAgents, availableNumbers, sampleJobsRes, org] = await Promise.all([
+    // Calculate start of today anchored to the organization's timezone
+    const tz = await getRequestOrgTimezone(req);
+    const todayStr = formatInTimeZone(new Date(), tz, 'yyyy-MM-dd');
+    const startOfToday = fromZonedTime(`${todayStr}T00:00:00`, tz);
+
+    const [rawAgents, availableNumbers, sampleJobsRes, org, todayCounts] = await Promise.all([
       prisma.beeVoiceAgent.findMany({
         where: { organization_id: user.organization_id },
         orderBy: { created_at: 'asc' },
@@ -987,9 +1117,33 @@ export async function getBeeAgents(req: Request, res: Response) {
         where: { id: user.organization_id },
         select: { name: true },
       }),
+      prisma.beeCallLog.groupBy({
+        by: ['agent_id'],
+        where: {
+          organization_id: user.organization_id,
+          called_at: { gte: startOfToday },
+          agent_id: { not: null },
+        },
+        _count: {
+          id: true,
+        },
+      }),
     ]);
 
-    const agents = rawAgents.map((a) => BeeService.normalizeAgentRecord(a));
+    const countMap = new Map<string, number>();
+    for (const tc of todayCounts) {
+      if (tc.agent_id) {
+        countMap.set(tc.agent_id, tc._count.id);
+      }
+    }
+
+    const agents = rawAgents.map((a) => {
+      const norm = BeeService.normalizeAgentRecord(a);
+      return {
+        ...norm,
+        calls_today: countMap.get(a.id) || 0,
+      };
+    });
 
     res.json({
       ok: true,
@@ -1209,7 +1363,6 @@ export async function triggerTestCall(req: Request, res: Response) {
     fromNumber,
     phoneNumberId,
     agentId,
-    jobId,
     conversationFlow,
     selectedJobContextFields,
   } = req.body;
@@ -1233,18 +1386,15 @@ export async function triggerTestCall(req: Request, res: Response) {
     }
     const agent = BeeService.normalizeAgentRecord(rawAgent);
 
-    const [sampleJobsRes, activePlans, availableNumbers] = await Promise.all([
-      BeeService.getSampleJobsForAgentContext(user.organization_id, 10, 0, undefined, jobId),
+    // Lightweight test call: Only fetch active plans and available numbers (no heavy jobs/customers queries)
+    const [activePlans, availableNumbers] = await Promise.all([
       prisma.beeWarrantyPlan.findMany({
         where: { organization_id: user.organization_id, is_active: true },
+        select: { name: true, price: true, duration_months: true, description: true },
         orderBy: { price: 'asc' },
       }),
       BeeService.getAvailablePhoneNumbers(user.organization_id),
     ]);
-
-    const sampleJobs = sampleJobsRes.jobs;
-    const selectedJob =
-      (jobId ? sampleJobs.find((j) => j.id === jobId) : undefined) || sampleJobs[0];
 
     const resolvedFrom = (fromNumber || agent?.default_from_number || '').trim() || undefined;
     const matchedPhoneObj = availableNumbers.find(
@@ -1281,30 +1431,15 @@ export async function triggerTestCall(req: Request, res: Response) {
       agentName: agent?.name,
       voiceId: agent?.voice_id,
       externalAgentId: agent?.vapi_assistant_id || undefined,
-      customerId: selectedJob?.customer_id,
-      customerName: selectedJob?.customer_name || `${user.first_name} ${user.last_name}`,
+      customerName: 'Valued Customer',
       agentPersona: agent?.persona_name || 'Emma',
       agentTone: agent?.tone,
       agentLanguage: agent?.language,
-      tradeFocus: agent?.trade_focus || selectedJob?.job_type || 'Doors & Locks',
-      jobId: selectedJob?.id,
-      jobNumber: selectedJob?.job_number,
-      jobType: selectedJob?.job_type || agent?.trade_focus || 'General Service',
+      tradeFocus: agent?.trade_focus || 'General Service',
+      jobType: agent?.trade_focus || 'General Service',
       isTestCall: true,
-      serviceRequest: selectedJob?.service_request,
-      scopeNotes: selectedJob?.scope_notes,
-      completionNotes: selectedJob?.completion_notes,
-      serviceAddress: selectedJob?.service_address,
-      completedAt: selectedJob?.completed_at
-        ? new Date(selectedJob.completed_at).toISOString()
-        : undefined,
-      warrantyEndDate: selectedJob?.warranty_end_date,
-      warrantyStatus: selectedJob?.warranty_status,
-      warrantyOfferPitch: agent?.warranty_offer_pitch || undefined,
-      newWorkPitch: agent?.new_work_pitch || undefined,
       conversationFlow: resolvedFlow,
       selectedJobContextFields: resolvedFields,
-      jobContextVariables: selectedJob?.job_context_variables,
       availablePlans: activePlans.map((p) => ({
         name: p.name,
         price: Number(p.price),
@@ -1326,57 +1461,29 @@ export async function triggerTestCall(req: Request, res: Response) {
         .catch(() => {});
     }
 
-    const resolvedCustomerName =
-      selectedJob?.customer_name || `${user.first_name || ''} ${user.last_name || ''}`.trim() || 'Test Caller';
-
     if (callResult.status === 'failed') {
-      if (callResult.callId) {
-        await BeeService.createInitialCallLog(user.organization_id, {
-          callId: callResult.callId,
-          status: 'failed',
-          provider: callResult.provider,
-          customerId: selectedJob?.customer_id,
-          customerName: resolvedCustomerName,
-          customerPhone: callResult.toNumber || targetTo,
-          agentId: agent?.id,
-          jobNumber: selectedJob?.job_number,
-          jobType: selectedJob?.job_type,
-          error: callResult.error,
-          isTestCall: true,
-        });
-      }
-
       return res.status(400).json({
         ok: false,
-        error: callResult.error,
-        callResult,
-        mergedPrompt: callResult.mergedPrompt,
-        dynamicVariables: callResult.dynamicVariables,
+        error: callResult.error || 'Failed to initiate test call',
       });
     }
 
-    // Create the initial BeeCallLog record (`CALL_INITIATED` with empty transcript/recording)
-    // and register server-side post-call result delivery so the same row updates once Vapi finishes
+    // Create minimal initial BeeCallLog record for webhook tracking without heavy job data
     const initialLog = await BeeService.createInitialCallLog(user.organization_id, {
       callId: callResult.callId,
       status: 'initiated',
       provider: callResult.provider,
-      customerId: selectedJob?.customer_id,
-      customerName: resolvedCustomerName,
+      customerName: 'Test Call',
       customerPhone: callResult.toNumber || targetTo,
       agentId: agent?.id,
-      jobNumber: selectedJob?.job_number,
-      jobType: selectedJob?.job_type,
       isTestCall: true,
     });
 
     res.json({
       ok: true,
-      message: `Test call initiated via ${callResult.provider.toUpperCase()} from ${callResult.fromNumber || 'default line'} to ${targetTo}. Call log created (${initialLog.id}).`,
+      message: 'Call initiated',
+      callId: callResult.callId,
       callLogId: initialLog.id,
-      callResult,
-      mergedPrompt: callResult.mergedPrompt,
-      dynamicVariables: callResult.dynamicVariables,
     });
   } catch (err: any) {
     logger.error('Failed to trigger test call:', err);
@@ -1943,12 +2050,67 @@ export async function buyBeePhoneNumber(req: Request, res: Response) {
   const user = req.user!;
   try {
     const { areaCode, name, provider, number } = req.body || {};
+    const org = await prisma.organization.findUnique({
+      where: { id: user.organization_id },
+      select: { name: true },
+    });
+    const friendlyLabel = name ? String(name).trim() : 'Bee Outbound Line';
+    const rawTagged = org?.name ? `${friendlyLabel} (${org.name})` : friendlyLabel;
+    const taggedName = rawTagged.slice(0, 40);
+
     const phoneNumber = await BeeVoiceAdapter.buyPhoneNumber(user.organization_id, {
       areaCode: areaCode ? String(areaCode).trim() : undefined,
-      name: name ? String(name).trim() : 'Bee Outbound Line',
+      name: taggedName,
       provider: provider || 'vapi',
       number: number ? String(number).trim() : undefined,
     });
+
+    // 1. Persist ownership in PhoneNumber table for this tenant
+    await prisma.phoneNumber.upsert({
+      where: {
+        organization_id_e164: {
+          organization_id: user.organization_id,
+          e164: phoneNumber.e164,
+        },
+      },
+      update: {
+        formatted: phoneNumber.formatted,
+        label: friendlyLabel,
+        source: 'vapi',
+        ctm_number_id: phoneNumber.id,
+        status: 'active',
+      },
+      create: {
+        organization_id: user.organization_id,
+        e164: phoneNumber.e164,
+        formatted: phoneNumber.formatted,
+        label: friendlyLabel,
+        source: 'vapi',
+        ctm_number_id: phoneNumber.id,
+        status: 'active',
+      },
+    });
+
+    // 2. Set as default Caller ID in BeeSetting if none is set yet
+    const beeSettings = await prisma.beeSetting.findUnique({
+      where: { organization_id: user.organization_id },
+    });
+    if (beeSettings) {
+      const setupCfg = (beeSettings.setup_config as any) || {};
+      if (!setupCfg.callerId) {
+        await prisma.beeSetting.update({
+          where: { organization_id: user.organization_id },
+          data: {
+            setup_config: {
+              ...setupCfg,
+              callerId: phoneNumber.e164,
+              defaultPhoneNumber: phoneNumber.e164,
+            },
+          },
+        });
+      }
+    }
+
     res.json({ ok: true, phoneNumber });
   } catch (err: any) {
     logger.error('Failed to buy Bee phone number:', err);
@@ -1959,14 +2121,62 @@ export async function buyBeePhoneNumber(req: Request, res: Response) {
 export async function releaseBeePhoneNumber(req: Request, res: Response) {
   const user = req.user!;
   try {
-    const { id } = req.params;
-    if (!id) {
+    const idParam = String(req.params.id || '').trim();
+    if (!idParam) {
       return res.status(400).json({ ok: false, error: 'Phone number ID is required' });
     }
-    const result = await BeeVoiceAdapter.releasePhoneNumber(user.organization_id, String(id));
+
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idParam);
+
+    // Multitenancy Guard: Verify that this phone number is owned by this organization
+    const ownedRecord = await prisma.phoneNumber.findFirst({
+      where: {
+        organization_id: user.organization_id,
+        OR: [
+          ...(isUuid ? [{ id: idParam }] : []),
+          { ctm_number_id: idParam },
+          { e164: idParam },
+        ],
+      },
+    });
+
+    const beeSettings = await prisma.beeSetting.findUnique({
+      where: { organization_id: user.organization_id },
+    });
+    const setupCfg = (beeSettings?.setup_config as any) || {};
+    const isConfiguredCallerId =
+      setupCfg.callerId === idParam || setupCfg.defaultPhoneNumber === idParam;
+
+    if (!ownedRecord && !isConfiguredCallerId) {
+      return res.status(403).json({
+        ok: false,
+        error: 'You do not have permission to release this phone number or it does not belong to your organization',
+      });
+    }
+
+    const vapiId = ownedRecord?.ctm_number_id || idParam;
+    const result = await BeeVoiceAdapter.releasePhoneNumber(user.organization_id, vapiId);
     if (!result.success) {
       return res.status(400).json({ ok: false, error: result.error || 'Failed to release phone number' });
     }
+
+    // Clean up local ownership
+    if (ownedRecord) {
+      await prisma.phoneNumber.delete({ where: { id: ownedRecord.id } }).catch(() => {});
+    }
+    if (isConfiguredCallerId) {
+      await prisma.beeSetting.update({
+        where: { organization_id: user.organization_id },
+        data: {
+          setup_config: {
+            ...setupCfg,
+            callerId: '',
+            defaultPhoneNumber: '',
+          },
+        },
+      }).catch(() => {});
+    }
+
     res.json({ ok: true, released: true });
   } catch (err: any) {
     logger.error('Failed to release Bee phone number:', err);

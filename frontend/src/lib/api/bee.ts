@@ -59,6 +59,17 @@ export interface BeeRecentCallItem {
   lf?: string;
   bk: string;
   v: string;
+  vapi_cost?: number | string | null;
+  jev_cost?: number | string | null;
+  total_cost?: number | string | null;
+  jev_primary_outcome?: string | null;
+  jev_applicable_outcomes?: string[] | null;
+  jev_sentiment?: string | null;
+  jev_confidence?: number | null;
+  jev_latency_ms?: number | null;
+  jev_status?: string | null;
+  jev_error?: string | null;
+  cost_breakdown?: { vapi?: any; jev?: any; total?: any };
   ai_summary?: string;
   transcript?: any;
   audio_url?: string;
@@ -127,6 +138,17 @@ export interface BeeCallLogItem {
   lead_label?: string;
   value?: string;
   sentiment?: string;
+  vapi_cost?: number | string | null;
+  jev_cost?: number | string | null;
+  total_cost?: number | string | null;
+  jev_primary_outcome?: string | null;
+  jev_applicable_outcomes?: string[] | null;
+  jev_sentiment?: string | null;
+  jev_confidence?: number | null;
+  jev_latency_ms?: number | null;
+  jev_status?: string | null;
+  jev_error?: string | null;
+  cost_breakdown?: { vapi?: any; jev?: any; total?: any };
   objections?: string[];
   task?: {
     id: string;
@@ -396,6 +418,8 @@ export const beeApi = {
     api.get<{ ok: boolean; call: BeeCallLogItem }>(`/api/ai-farm/bee/calls/${id}`).then((r) => r.data),
   updateCallOutcome: (id: string, outcome: string) =>
     api.patch<{ ok: boolean; count: number }>(`/api/ai-farm/bee/calls/${id}`, { outcome }).then((r) => r.data),
+  classifyCallStageTwo: (id: string) =>
+    api.post<{ ok: boolean; message: string; call: BeeCallLogItem }>(`/api/ai-farm/bee/calls/${id}/classify`).then((r) => r.data),
 
   getQueue: (status?: string) =>
     api.get<{ ok: boolean; items: BeeQueueItem[] }>('/api/ai-farm/bee/queue', { params: { status } }).then((r) => r.data),

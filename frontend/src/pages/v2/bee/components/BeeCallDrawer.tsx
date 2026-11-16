@@ -660,7 +660,7 @@ export const BeeCallDrawer: React.FC = () => {
                 Warranty ends
               </dt>
               <dd className="font-semibold text-text-primary m-0">
-                {call.we || call.warranty_ends || '-'}
+                {call.job_type === 'Test Call' || call.customer_name === 'Test Call' ? '—' : call.we || call.warranty_ends || '—'}
               </dd>
             </div>
 
@@ -669,7 +669,9 @@ export const BeeCallDrawer: React.FC = () => {
                 Call cost
               </dt>
               <dd className="font-semibold text-text-primary m-0">
-                {call.v || call.value || '-'}
+                {call.total_cost !== undefined && call.total_cost !== null
+                  ? `$${Number(call.total_cost).toFixed(4)}`
+                  : call.v || call.value || '-'}
               </dd>
             </div>
 
@@ -678,7 +680,7 @@ export const BeeCallDrawer: React.FC = () => {
                 Sentiment
               </dt>
               <dd className="font-semibold text-text-primary m-0">
-                {formatSnakeCase(call.sent || call.sentiment || 'Positive')}
+                {formatSnakeCase(call.jev_sentiment || call.sent || call.sentiment || 'Positive')}
               </dd>
             </div>
 

@@ -63,6 +63,7 @@ router.get('/calls', ctrl.getBeeCallLogs);
 router.post('/calls/sync', ctrl.syncBeeCallLogs);
 router.get('/calls/:id', ctrl.getBeeCallDetail);
 router.patch('/calls/:id', ctrl.updateBeeCallOutcome);
+router.post('/calls/:id/classify', ctrl.classifyBeeCallStageTwo);
 router.patch('/calls/:id/task', ctrl.linkBeeCallTask);
 
 // 3. Queue

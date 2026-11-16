@@ -73,9 +73,14 @@ export class VoiceEngineFactory {
     });
 
     const setupCfg = (settings?.setup_config as Record<string, any>) || {};
+    const hasVapiEnv = Boolean(process.env.VAPI_API_KEY?.trim() || process.env.VAPI_PRIVATE_KEY?.trim());
     const rawProvider =
       overrideEngineType ||
-      settings?.voice_provider ||
+      (settings?.voice_provider && settings.voice_provider !== 'simulated'
+        ? settings.voice_provider
+        : hasVapiEnv
+          ? 'vapi'
+          : 'simulated') ||
       setupCfg.voiceEngine ||
       process.env.VOICE_ENGINE_PROVIDER ||
       'vapi';

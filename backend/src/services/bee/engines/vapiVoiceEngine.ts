@@ -466,15 +466,16 @@ export class VapiVoiceEngine implements IVoiceCallingEngine {
 
     const url = `${this.getBaseUrl(ctx)}/phone-number`;
     const provider = options.provider || 'vapi';
+    const sanitizedName = (options.name || 'Bee Telephony Line').trim().slice(0, 40);
     const payload: any = {
       provider,
-      name: options.name || 'Bee Telephony Line',
+      name: sanitizedName,
     };
     if (provider === 'vapi') {
       const desiredAreaCode =
         (options as any).numberDesiredAreaCode ||
         (options.areaCode ? String(options.areaCode).replace(/\D/g, '').trim() : '') ||
-        '415';
+        '989';
       payload.numberDesiredAreaCode = desiredAreaCode;
     } else {
       if (options.number?.trim()) {
