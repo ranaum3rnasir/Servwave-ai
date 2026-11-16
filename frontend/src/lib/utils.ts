@@ -123,3 +123,89 @@ export function extractApiError(err: unknown, fallback: string): string {
   if (err instanceof Error && err.message) return err.message;
   return fallback;
 }
+
+/**
+ * For call logs with technical failure, extracts ONLY the message from the response body
+ * (e.g. from {"message": ["..."], "error": "Bad Request", "statusCode": 400}).
+ */
+export function extractFailureMessage(rawSummary?: string | null): string {
+  if (!rawSummary || typeof rawSummary !== 'string') return '';
+  const text = rawSummary.trim();
+  if (!text) return '';
+
+  // 1. Try to find a JSON object in the text: {...}
+  const firstBrace = text.indexOf('{');
+  const lastBrace = text.lastIndexOf('}');
+
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    const jsonCandidate = text.substring(firstBrace, lastBrace + 1);
+    try {
+      const parsed = JSON.parse(jsonCandidate);
+      // Case A: parsed.message
+      if (Array.isArray(parsed?.message)) {
+        const msg = parsed.message
+          .filter(Boolean)
+          .map((m: any) => String(m).trim())
+          .join(' ');
+        if (msg) return msg;
+      } else if (typeof parsed?.message === 'string' && parsed.message.trim()) {
+        return parsed.message.trim();
+      } else if (parsed?.message && typeof parsed.message === 'object') {
+        const subMsg = parsed.message.message || parsed.message.error || parsed.message.detail;
+        if (typeof subMsg === 'string' && subMsg.trim()) return subMsg.trim();
+      }
+
+      // Case B: parsed.error
+      if (typeof parsed?.error === 'string' && parsed.error.trim() && parsed.error.toLowerCase() !== 'bad request') {
+        return parsed.error.trim();
+      } else if (parsed?.error && typeof parsed.error === 'object') {
+        const errMsg = parsed.error.message || parsed.error.detail || parsed.error.description;
+        if (typeof errMsg === 'string' && errMsg.trim()) return errMsg.trim();
+      }
+
+      // Case C: other common API response fields
+      const fallbackField = parsed?.error_description || parsed?.detail || parsed?.description || parsed?.reason;
+      if (typeof fallbackField === 'string' && fallbackField.trim()) {
+        return fallbackField.trim();
+      }
+    } catch {
+      // not valid JSON, continue with string patterns below
+    }
+  }
+
+  // 2. Pattern: "Vapi (Call Failed|rejected call)[^:]*:\s*(.+)$"
+  const vapiPrefixMatch = text.match(/Vapi (?:Call Failed|rejected call)[^:]*:\s*(.+)$/i);
+  if (vapiPrefixMatch && vapiPrefixMatch[1]) {
+    const candidate = vapiPrefixMatch[1].trim();
+    const subCleaned = extractFailureMessage(candidate);
+    if (subCleaned) return subCleaned;
+    return candidate;
+  }
+
+  // 3. Pattern: "Call for ... failed:\s*(.+)$" or "Call failed:\s*(.+)$"
+  const callFailedMatch = text.match(/(?:Call (?:for [^:]+ )?failed|Failed):\s*(.+)$/i);
+  if (callFailedMatch && callFailedMatch[1]) {
+    const candidate = callFailedMatch[1].trim();
+    const subCleaned = extractFailureMessage(candidate);
+    if (subCleaned) return subCleaned;
+    return candidate;
+  }
+
+  return text;
+}
+
+/** Formats snake_case, CONSTANT_CASE or raw identifiers into clean, human-readable Title Case (e.g. "New_York" -> "New York", "one_time" -> "One-time"). */
+export function formatSnakeCase(val: string | null | undefined): string {
+  if (!val) return '';
+  const s = String(val).trim();
+  if (!s) return '';
+  if (s.toLowerCase() === 'one_time' || s.toLowerCase() === 'one-time') return 'One-time';
+  if (s.toLowerCase() === 'voice_opt_out') return 'Voice Opt-out';
+  return s
+    .replace(/_/g, ' ')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b[a-z]/g, (char) => char.toUpperCase());
+}
+

@@ -3211,7 +3211,17 @@ model Organization {
 
   @@index([stripe_account_id])
   @@index([default_inventory_location_id])
-  @@map("organizations")
+  
+  // --- Bee Agent (AI Warranty Upseller) ---
+  bee_settings         BeeSetting?
+  bee_warranty_plans   BeeWarrantyPlan[]
+  bee_voice_agents     BeeVoiceAgent[]
+  bee_warranty_records BeeWarrantyRecord[]
+  bee_queue_items      BeeQueueItem[]
+  bee_call_logs        BeeCallLog[]
+  bee_dnc_entries      BeeDncEntry[]
+
+@@map("organizations")
 }
 
 // SRVW-138 - an org-defined role. Its `key` is the role_key of the role's switch rows, in the
@@ -6935,4 +6945,181 @@ model JobReviewCustomerDecision {
   @@unique([review_id, entry_id])
   @@index([organization_id])
   @@map("job_review_customer_decisions")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+model BeeSetting {
+  id                    String   @id @default(uuid()) @db.Uuid
+  organization_id       String   @unique @db.Uuid
+  is_active             Boolean  @default(true)
+  call_window_start     String   @default("10:00") // 10:00 AM
+  call_window_end       String   @default("19:00") // 7:00 PM
+  timezone              String   @default("America/New_York")
+  max_retries           Int      @default(2)
+  retry_interval_hours  Int      @default(48)
+  default_lead_owner_id String?  @db.Uuid
+  alert_email           String?
+  alert_phone           String?
+  voice_provider        String   @default("simulated") // simulated, retell, vapi, bland
+  voice_provider_api_key String?
+  job_type_warranties   Json     @default("[]")
+  setup_config          Json?    @default("{}")
+  created_at            DateTime @default(now())
+  updated_at            DateTime @updatedAt
+
+  organization          Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@index([organization_id])
+  @@map("bee_settings")
+}
+
+model BeeWarrantyPlan {
+  id                 String   @id @default(uuid()) @db.Uuid
+  organization_id    String   @db.Uuid
+  name               String
+  duration_months    Int
+  price              Decimal  @db.Decimal(10, 2)
+  billing_interval   String   @default("one_time") // one_time, monthly, yearly
+  description        String?
+  inclusions         Json     @default("[]")
+  eligible_job_types Json     @default("[]")
+  is_active          Boolean  @default(true)
+  created_at         DateTime @default(now())
+  updated_at         DateTime @updatedAt
+
+  organization       Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@index([organization_id])
+  @@map("bee_warranty_plans")
+}
+
+model BeeVoiceAgent {
+  id                   String   @id @default(uuid()) @db.Uuid
+  organization_id      String   @db.Uuid
+  name                 String
+  persona_name         String   @default("Emma")
+  voice_id             String   @default("friendly_female_1")
+  trade_focus          String   @default("General")
+  trigger_days_before  Int      @default(30)
+  eligible_job_types   Json     @default("[]")
+  warranty_offer_pitch String?  @db.Text
+  new_work_pitch       String?  @db.Text
+  is_active            Boolean  @default(true)
+  created_at           DateTime @default(now())
+  updated_at           DateTime @updatedAt
+
+  organization         Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@index([organization_id])
+  @@map("bee_voice_agents")
+}
+
+model BeeWarrantyRecord {
+  id                  String   @id @default(uuid()) @db.Uuid
+  organization_id     String   @db.Uuid
+  job_id              String   @db.Uuid
+  customer_id         String   @db.Uuid
+  job_type            String?
+  job_completed_at    DateTime
+  warranty_start_date DateTime
+  warranty_end_date   DateTime
+  warranty_started_on String?  // 'Job Complete' | 'Invoice Sent'
+  status              String   @default("active") // active, expiring_soon, expired, extended
+  created_at          DateTime @default(now())
+  updated_at          DateTime @updatedAt
+
+  organization        Organization   @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  queue_items         BeeQueueItem[]
+
+  @@index([organization_id, status])
+  @@index([organization_id, warranty_end_date])
+  @@map("bee_warranty_records")
+}
+
+model BeeQueueItem {
+  id                     String    @id @default(uuid()) @db.Uuid
+  organization_id        String    @db.Uuid
+  warranty_record_id     String    @db.Uuid
+  customer_id            String    @db.Uuid
+  customer_name          String
+  customer_phone         String
+  agent_id               String?   @db.Uuid
+  status                 String    @default("scheduled") // scheduled, in_progress, completed, skipped, failed
+  attempt_count          Int       @default(0)
+  scheduled_for          DateTime
+  warranty_started_on    String?   // 'Job Complete' | 'Invoice Sent'
+  original_scheduled_for DateTime?
+  is_rescheduled         Boolean   @default(false)
+  rescheduled_at         DateTime?
+  customer_timezone      String?
+  timezone_source        String?   // customer_address, zip_code, city_state, state, state_estimate, system_default
+  is_timezone_estimated  Boolean   @default(false)
+  last_attempted_at      DateTime?
+  skip_reason            String?
+  created_at             DateTime  @default(now())
+  updated_at             DateTime  @updatedAt
+
+  organization       Organization      @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  warranty_record    BeeWarrantyRecord @relation(fields: [warranty_record_id], references: [id], onDelete: Cascade)
+  call_logs          BeeCallLog[]
+
+  @@index([organization_id, status, scheduled_for])
+  @@map("bee_queue_items")
+}
+
+model BeeCallLog {
+  id                String   @id @default(uuid()) @db.Uuid
+  organization_id   String   @db.Uuid
+  queue_item_id     String?  @db.Uuid
+  agent_id          String?  @db.Uuid
+  customer_id       String   @db.Uuid
+  customer_name     String
+  customer_phone    String
+  duration_seconds  Int      @default(0)
+  outcome           String   // warranty_lead, new_work_lead, both_leads, not_interested, voicemail, no_answer, opt_out_dnc, needs_human
+  transcript        Json?    // [{ speaker: 'bee'|'customer', text: '...', timestamp: 0 }]
+  ai_summary        String?  @db.Text
+  audio_url         String?
+  lead_id           String?  @db.Uuid
+  task_id           String?  @db.Uuid  // follow-up task created for this call (auto or manual)
+  needs_human_alert Boolean  @default(false)
+  cost_estimate           Decimal?  @db.Decimal(10, 6)
+  vapi_cost               Decimal?  @db.Decimal(10, 6)
+  jev_cost                Decimal?  @db.Decimal(10, 6)
+  total_cost              Decimal?  @db.Decimal(10, 6)
+  jev_primary_outcome     String?
+  jev_applicable_outcomes Json?
+  jev_sentiment           String?
+  jev_confidence          Decimal?  @db.Decimal(3, 2)
+  jev_latency_ms          Int?
+  jev_status              String?   @default("pending") // 'pending', 'completed', 'failed', 'skipped'
+  jev_error               String?   @db.Text
+  jev_classified_at       DateTime?
+  jev_metadata            Json?
+  called_at               DateTime  @default(now())
+
+  organization      Organization  @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  queue_item        BeeQueueItem? @relation(fields: [queue_item_id], references: [id], onDelete: SetNull)
+
+  @@index([organization_id, called_at])
+  @@index([organization_id, agent_id, called_at])
+  @@index([organization_id, outcome])
+  @@map("bee_call_logs")
+}
+
+model BeeDncEntry {
+  id              String   @id @default(uuid()) @db.Uuid
+  organization_id String   @db.Uuid
+  phone_number    String
+  reason          String?
+  source          String   @default("voice_opt_out") // voice_opt_out, manual, sms, org_blocked
+  call_log_id     String?  @db.Uuid
+  created_at      DateTime @default(now())
+
+  organization    Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@unique([organization_id, phone_number])
+  @@index([organization_id])
+  @@map("bee_dnc_entries")
 }

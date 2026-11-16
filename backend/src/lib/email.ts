@@ -3469,3 +3469,81 @@ export async function sendSalesContactEmail(params: {
   }
   return result;
 }
+
+export async function sendWarrantyEmail(params: {
+  organizationId: string;
+  to: string;
+  customerName: string;
+  jobType: string;
+  jobNumber?: string;
+  invoiceNumber: string;
+  warrantyDuration: string;
+  warrantyStartDate: Date;
+  warrantyEndDate: Date;
+  coverageDetails?: string;
+  record?: TransactionalEmailRecord;
+}): Promise<EmailDispatchResult> {
+  const startFormatted = params.warrantyStartDate.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  const endFormatted = params.warrantyEndDate.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+
+  const org = await prisma.organization.findUnique({
+    where: { id: params.organizationId },
+    select: { name: true, brand_color: true },
+  });
+  const orgName = org?.name?.trim() || 'ServWave';
+  const brandColor = org?.brand_color || '#2563EB';
+
+  const coverage = params.coverageDetails || 'Full coverage for labor and parts on all completed work as specified in your job invoice.';
+
+  const html = wrapHtml(h`
+    <h2 style="margin:0 0 8px;font-size:22px;color:#111827;">Your Service Warranty Certificate</h2>
+    <p style="margin:0 0 24px;font-size:15px;color:#6b7280;">Dear ${params.customerName},</p>
+    <p style="margin:0 0 16px;font-size:15px;color:#374151;">
+      Thank you for your business. Your service on <strong>${params.jobType}</strong> (Invoice #${params.invoiceNumber}${params.jobNumber ? `, Job #${params.jobNumber}` : ''}) is backed by our official service warranty.
+    </p>
+    <table width="100%" cellpadding="0" cellspacing="0" style="background:#f9fafb;border-radius:8px;border:1px solid #e5e7eb;margin:0 0 24px;">
+      <tr>
+        <td style="padding:16px 20px;border-bottom:1px solid #e5e7eb;">
+          <span style="font-size:13px;color:#6b7280;font-weight:500;">Warranty Coverage</span><br>
+          <span style="font-size:20px;font-weight:700;color:${brandColor};">${esc(params.warrantyDuration)}</span>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:16px 20px;border-bottom:1px solid #e5e7eb;">
+          <span style="font-size:13px;color:#6b7280;font-weight:500;">Effective Period</span><br>
+          <span style="font-size:15px;font-weight:600;color:#111827;">${startFormatted} – ${endFormatted}</span>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:16px 20px;">
+          <span style="font-size:13px;color:#6b7280;font-weight:500;">Coverage Terms</span><br>
+          <span style="font-size:14px;color:#374151;">${esc(coverage)}</span>
+        </td>
+      </tr>
+    </table>
+    <p style="margin:0 0 8px;font-size:14px;color:#6b7280;">
+      If you experience any issues or need support during your warranty period, please contact ${esc(orgName)}.
+    </p>
+  `);
+
+  const text = `Dear ${params.customerName},\n\nYour service on ${params.jobType} (Invoice #${params.invoiceNumber}) is backed by our official service warranty.\n\nCoverage: ${params.warrantyDuration}\nValid from: ${startFormatted} to ${endFormatted}\nTerms: ${coverage}\n\nThank you for choosing ${orgName}.`;
+  const subject = `Service Warranty Certificate: ${params.jobType} — ${orgName}`;
+
+  try {
+    const result = await sendToCustomerAboutRecord({
+      organizationId: params.organizationId,
+      record: params.record,
+      to: params.to,
+      subject,
+      text,
+      html,
+    });
+    if (result.status === 'sent') {
+      logger.info(`[BeeWarranty] Warranty certificate sent to ${params.to} for invoice ${params.invoiceNumber}`);
+    }
+    return result;
+  } catch (err) {
+    logger.error(`[BeeWarranty] Failed to send warranty email for invoice ${params.invoiceNumber}:`, err);
+    return { status: 'failed', error: err instanceof Error ? err.message : 'Unexpected email error' };
+  }
+}
