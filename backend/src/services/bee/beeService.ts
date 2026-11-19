@@ -1294,7 +1294,6 @@ export class BeeService {
               orgId: params.orgId,
               toE164: user.phone,
               body: smsBody,
-              alertKey: `bee-task:${params.task.id}:${user.id}`,
             });
             if (smsResult.delivered) {
               smsDeliveredCount++;
