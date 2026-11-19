@@ -17,7 +17,14 @@ import {
   isWithinAllowedCallingWindow,
   formatScheduledTimeInCustomerTimezone,
 } from './timezoneService';
-import { JevCallClassifier, ClassifierInput, JevOutcomeClassification } from './classifier/jevClassifier';
+import {
+  JevCallClassifier,
+  ClassifierInput,
+  JevOutcomeClassification,
+  CallOutcome,
+  MEANINGFUL_BUSINESS_OUTCOMES,
+  JevClassificationStatus,
+} from './classifier/jevClassifier';
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -98,22 +105,7 @@ export class BeeService {
         prisma.beeCallLog.count({
           where: {
             organization_id: orgId,
-            outcome: {
-              notIn: [
-                'no_answer',
-                'voicemail',
-                'No answer/Machine',
-                'Wrong Number',
-                'FAILED',
-                'NO_ANSWER',
-                'VOICEMAIL',
-                'NO_ANSWER,VOICEMAIL',
-                'WRONG_NUMBER',
-                'NEEDS_REVIEW',
-                'CALL_INITIATED',
-                'IN_PROGRESS',
-              ],
-            },
+            is_answered: true,
           },
         }),
         prisma.beeQueueItem.count({
@@ -380,14 +372,15 @@ export class BeeService {
         'No answer/Machine': 0,
         'Wrong Number': 0,
         'Donot Call': 0,
+        'Other': 0,
         'others': 0,
       };
 
       for (const call of dayCalls) {
         const parsed = this.parseOutcomeTags(call.outcome, null, call.needs_human_alert);
         if (parsed.tags.includes('INTERESTED_WARRANTY')) outcomes['Warranty lead']++;
-        if (parsed.tags.includes('INTERESTED_NEW_WORK')) outcomes['New-work lead']++;
-        if (parsed.tags.includes('COMPLAINT')) outcomes['complaints - Need human']++;
+        else if (parsed.tags.includes('INTERESTED_NEW_WORK')) outcomes['New-work lead']++;
+        else if (parsed.tags.includes('COMPLAINT')) outcomes['complaints - Need human']++;
         else if (parsed.tags.includes('CALLBACK_REQUESTED')) outcomes['Callback later - office']++;
         else if (parsed.tags.includes('HANDOFF_HUMAN') || call.needs_human_alert) outcomes['Need Human']++;
         else if (parsed.tags.includes('ALREADY_COVERED')) outcomes['Has other Coverage']++;
@@ -395,7 +388,10 @@ export class BeeService {
         else if (parsed.tags.includes('DNC_REQUESTED')) outcomes['Donot Call']++;
         else if (parsed.tags.includes('WRONG_NUMBER')) outcomes['Wrong Number']++;
         else if (parsed.tags.includes('NO_ANSWER') || parsed.tags.includes('VOICEMAIL')) outcomes['No answer/Machine']++;
-        else if (!parsed.tags.includes('INTERESTED_WARRANTY') && !parsed.tags.includes('INTERESTED_NEW_WORK')) outcomes['others']++;
+        else {
+          outcomes['Other']++;
+          outcomes['others']++;
+        }
       }
 
       callsPerDay.push({
@@ -2073,7 +2069,14 @@ export class BeeService {
   static normalizeAgentRecord(agent: any) {
     if (!agent) return null;
 
-    const rawJson = agent.eligible_job_types;
+    let rawJson: any = agent.eligible_job_types;
+    if (typeof rawJson === 'string') {
+      try {
+        rawJson = JSON.parse(rawJson);
+      } catch (e) {
+        rawJson = null;
+      }
+    }
     let eligibleJobTypes: string[] = [];
     let jobContextFields: string[] = [
       'assigned_team',
@@ -2131,6 +2134,22 @@ export class BeeService {
       }
     }
 
+    let flow =
+      (agent.flow && typeof agent.flow === 'object' && Array.isArray(agent.flow.steps)
+        ? agent.flow
+        : null) ||
+      (rawJson && typeof rawJson === 'object' && rawJson.flow && typeof rawJson.flow === 'object'
+        ? rawJson.flow
+        : null);
+
+    if (typeof flow === 'string') {
+      try {
+        flow = JSON.parse(flow);
+      } catch (e) {
+        flow = null;
+      }
+    }
+
     const persona = agent.persona_name || 'Emma';
     const trade = agent.trade_focus || 'General Service';
 
@@ -2170,6 +2189,7 @@ export class BeeService {
       voice_engine: voiceEngine,
       language,
       tone,
+      flow,
     };
   }
 
@@ -2271,6 +2291,20 @@ export class BeeService {
         ? body.tone
         : normalizedExisting?.tone || 'Warm, helpful, and consultative';
 
+    let parsedBodyFlow = body.flow;
+    if (typeof parsedBodyFlow === 'string') {
+      try {
+        parsedBodyFlow = JSON.parse(parsedBodyFlow);
+      } catch (e) {
+        parsedBodyFlow = null;
+      }
+    }
+
+    const flow =
+      parsedBodyFlow !== undefined && parsedBodyFlow !== null
+        ? parsedBodyFlow
+        : normalizedExisting?.flow || null;
+
     return {
       packedJson: {
         eligible_job_types: eligibleJobTypes,
@@ -2282,6 +2316,7 @@ export class BeeService {
         voice_engine: voiceEngine,
         language,
         tone,
+        flow,
       },
       warranty_offer_pitch: warrantyPitch,
       new_work_pitch: newWorkPitch,
@@ -3799,6 +3834,7 @@ export class BeeService {
         lineItemsSummary: item.job_info?.line_items_summary,
         warrantyOfferPitch: agent?.warranty_offer_pitch || undefined,
         newWorkPitch: agent?.new_work_pitch || undefined,
+        flow: agent?.flow,
         conversationFlow: agent?.conversation_flow,
         selectedJobContextFields: agent?.job_context_fields,
         jobContextVariables: item.job_context_variables,
@@ -4482,6 +4518,9 @@ export class BeeService {
     const durationSeconds = payload.duration_seconds ?? payload.duration ?? 45;
 
     // 4. Idempotency Check: if call record already exists with targetId, perform idempotent update
+    const parsedOutcomeFacts = this.parseOutcomeTags(outcome);
+    const isAnswered = parsedOutcomeFacts.isAnswered;
+
     const existing = await prisma.beeCallLog.findFirst({
       where: { id: targetId, organization_id: orgId },
     });
@@ -4493,19 +4532,28 @@ export class BeeService {
         data: {
           duration_seconds: durationSeconds,
           outcome,
+          is_answered: isAnswered,
           transcript: resolvedTranscript as any,
           ai_summary: summary,
           audio_url: audioUrl || existing.audio_url,
           needs_human_alert: needsHumanAlert,
+          ...(!isAnswered
+            ? {
+                jev_status: 'NOT_REQUIRED',
+                jev_cost: new Prisma.Decimal('0.000000'),
+              }
+            : {}),
         },
       });
 
       let finalCallLog = updated;
-      try {
-        const stageTwo = await this.classifyCallStageTwo(updated.id, orgId);
-        if (stageTwo) finalCallLog = stageTwo;
-      } catch (err) {
-        logger.error(`[BeeService] Stage 2 classification error in processInboundCall for ${updated.id}:`, err);
+      if (isAnswered) {
+        try {
+          const stageTwo = await this.classifyCallStageTwo(updated.id, orgId);
+          if (stageTwo) finalCallLog = stageTwo;
+        } catch (err) {
+          logger.error(`[BeeService] Stage 2 classification error in processInboundCall for ${updated.id}:`, err);
+        }
       }
 
       return {
@@ -4616,6 +4664,7 @@ export class BeeService {
         customer_name: customerName,
         customer_phone: customerPhone,
         duration_seconds: durationSeconds,
+        is_answered: isAnswered,
         outcome,
         transcript: resolvedTranscript as any,
         ai_summary: summary,
@@ -4626,6 +4675,8 @@ export class BeeService {
         cost_estimate: payload.cost_estimate ? new Prisma.Decimal(payload.cost_estimate) : null,
         vapi_cost: payload.cost_estimate ? new Prisma.Decimal(payload.cost_estimate) : null,
         total_cost: payload.cost_estimate ? new Prisma.Decimal(payload.cost_estimate) : null,
+        jev_status: isAnswered ? 'PENDING' : 'NOT_REQUIRED',
+        jev_cost: new Prisma.Decimal('0.000000'),
         called_at: new Date(),
       },
     });
@@ -4735,11 +4786,13 @@ export class BeeService {
     logger.info(`[BeeService] Successfully processed inbound call ${callLog.id} (outcome: ${outcome}, leadId: ${leadId})`);
 
     let finalCallLog = callLog;
-    try {
-      const stageTwo = await this.classifyCallStageTwo(callLog.id, orgId);
-      if (stageTwo) finalCallLog = stageTwo;
-    } catch (err) {
-      logger.error(`[BeeService] Stage 2 classification error in processInboundCall for ${callLog.id}:`, err);
+    if (isAnswered) {
+      try {
+        const stageTwo = await this.classifyCallStageTwo(callLog.id, orgId);
+        if (stageTwo) finalCallLog = stageTwo;
+      } catch (err) {
+        logger.error(`[BeeService] Stage 2 classification error in processInboundCall for ${callLog.id}:`, err);
+      }
     }
 
     return {
@@ -5051,42 +5104,61 @@ export class BeeService {
    * - Does NOT replace Stage 1 primary outcome with Jev primary outcome.
    * - Idempotent so retries never create duplicate tokens.
    */
+  /**
+   * Merges Stage 1 and Stage 2 Jev Call Outcome tags.
+   *
+   * Business Rules:
+   * - Does NOT add ANSWERED to user-facing outcomes.
+   * - If Jev returns valid business outcomes, applies all of them and omits OTHER.
+   * - If Jev returns no applicable outcomes or fails/times out, returns OTHER.
+   * - Never applies OTHER alongside meaningful business outcomes.
+   * - Idempotent so retries never create duplicate tokens.
+   */
   static mergeStageOutcomes(
     stageOneOutcome?: string | null,
     jevApplicableOutcomes?: string[] | null
   ): string {
-    const stage1Tokens = String(stageOneOutcome || '')
+    const rawStage1 = String(stageOneOutcome || '')
       .split(',')
       .map((t) => t.trim().toUpperCase())
       .filter(Boolean);
 
-    if (stage1Tokens.length === 0) {
-      stage1Tokens.push('ANSWERED');
-    }
+    const nonBusinessTokens = new Set([
+      'ANSWERED',
+      'COMPLETED',
+      'PENDING',
+      'PENDING_CLASSIFICATION',
+      'CALL_INITIATED',
+      'IN_PROGRESS',
+      'OTHER',
+    ]);
 
-    const seen = new Set<string>();
-    const result: string[] = [];
+    const combinedSet = new Set<string>();
 
-    // 1. Preserve all valid Stage 1 outcomes in their original order
-    for (const token of stage1Tokens) {
-      if (!seen.has(token)) {
-        seen.add(token);
-        result.push(token);
+    // 1. Preserve any explicit business outcomes from Stage 1 (e.g. manual override or stage 1 detection)
+    for (const token of rawStage1) {
+      if (!nonBusinessTokens.has(token) && (MEANINGFUL_BUSINESS_OUTCOMES as ReadonlySet<string>).has(token)) {
+        combinedSet.add(token);
       }
     }
 
-    // 2. Append every applicable Jev outcome, deduplicating across both stages
+    // 2. Append valid Jev business outcomes
     if (Array.isArray(jevApplicableOutcomes)) {
       for (const jevOut of jevApplicableOutcomes) {
         const normalized = String(jevOut || '').trim().toUpperCase();
-        if (normalized && !seen.has(normalized)) {
-          seen.add(normalized);
-          result.push(normalized);
+        if (normalized && !nonBusinessTokens.has(normalized) && (MEANINGFUL_BUSINESS_OUTCOMES as ReadonlySet<string>).has(normalized)) {
+          combinedSet.add(normalized);
         }
       }
     }
 
-    return result.join(',');
+    // 3. If one or more valid business outcomes exist, apply all and never add OTHER
+    if (combinedSet.size > 0) {
+      return Array.from(combinedSet).join(',');
+    }
+
+    // 4. If no valid business outcomes exist, fallback to OTHER for answered calls
+    return 'OTHER';
   }
 
   static parseOutcomeTags(
@@ -5113,8 +5185,9 @@ export class BeeService {
       const u = token.toUpperCase();
       const l = token.toLowerCase();
 
-      if (u === 'INTERESTED_BOTH' || l === 'both_leads' || (l.includes('both') && l.includes('lead'))) {
-        tagsSet.add('ANSWERED');
+      if (u === 'OTHER' || l === 'other') {
+        tagsSet.add('OTHER');
+      } else if (u === 'INTERESTED_BOTH' || l === 'both_leads' || (l.includes('both') && l.includes('lead'))) {
         tagsSet.add('INTERESTED_WARRANTY');
         tagsSet.add('INTERESTED_NEW_WORK');
         lf = 'both';
@@ -5123,7 +5196,6 @@ export class BeeService {
         l === 'warranty_lead' ||
         (l.includes('warranty') && l.includes('lead'))
       ) {
-        tagsSet.add('ANSWERED');
         tagsSet.add('INTERESTED_WARRANTY');
         lf = lf || 'warranty';
       } else if (
@@ -5136,11 +5208,9 @@ export class BeeService {
         l.includes('new_job') ||
         l.includes('new job')
       ) {
-        tagsSet.add('ANSWERED');
         tagsSet.add('INTERESTED_NEW_WORK');
         lf = lf || 'new job';
       } else if (u === 'LEAD_CREATED' || l === 'lead') {
-        tagsSet.add('ANSWERED');
         if (lf === 'both') {
           tagsSet.add('INTERESTED_WARRANTY');
           tagsSet.add('INTERESTED_NEW_WORK');
@@ -5151,22 +5221,16 @@ export class BeeService {
           lf = lf || 'lead';
         }
       } else if (u === 'COMPLAINT' || l.includes('complaint')) {
-        tagsSet.add('ANSWERED');
         tagsSet.add('COMPLAINT');
       } else if (u === 'CALLBACK_REQUESTED' || l.includes('callback')) {
-        tagsSet.add('ANSWERED');
         tagsSet.add('CALLBACK_REQUESTED');
       } else if (u === 'HANDOFF_HUMAN' || l.includes('human')) {
-        tagsSet.add('ANSWERED');
         tagsSet.add('HANDOFF_HUMAN');
       } else if (u === 'ALREADY_COVERED' || l.includes('coverage') || l.includes('covered')) {
-        tagsSet.add('ANSWERED');
         tagsSet.add('ALREADY_COVERED');
       } else if (u === 'NOT_INTERESTED' || l.includes('not_interested') || l.includes('not interested')) {
-        tagsSet.add('ANSWERED');
         tagsSet.add('NOT_INTERESTED');
       } else if (u === 'DNC_REQUESTED' || l.includes('dnc') || l.includes('opt_out') || l.includes('donot')) {
-        tagsSet.add('ANSWERED');
         tagsSet.add('DNC_REQUESTED');
       } else if (u === 'WRONG_NUMBER' || l.includes('wrong')) {
         tagsSet.add('WRONG_NUMBER');
@@ -5190,29 +5254,36 @@ export class BeeService {
 
     if (tagsSet.size === 0) {
       if (needsHumanFlag) {
-        tagsSet.add('ANSWERED');
         tagsSet.add('HANDOFF_HUMAN');
       } else {
-        tagsSet.add('ANSWERED');
+        tagsSet.add('OTHER');
       }
     }
 
-    // Ensure INTERESTED_BOTH is never kept as a combined tag, but expanded into individual tags
+    // Requirement 3: Never combine ANSWERED with other outcomes
+    if (tagsSet.size > 1 && tagsSet.has('ANSWERED')) {
+      tagsSet.delete('ANSWERED');
+    }
+
+    // Requirement 5: Never apply OTHER alongside meaningful business outcomes
+    if (tagsSet.size > 1 && tagsSet.has('OTHER')) {
+      tagsSet.delete('OTHER');
+    }
+
+    // Ensure INTERESTED_BOTH is expanded into individual tags
     if (tagsSet.has('INTERESTED_BOTH')) {
       tagsSet.delete('INTERESTED_BOTH');
-      tagsSet.add('ANSWERED');
       tagsSet.add('INTERESTED_WARRANTY');
       tagsSet.add('INTERESTED_NEW_WORK');
     }
 
-    // Order tags consistently: ANSWERED first (if answered), followed by specific semantic or factual tags
-    const orderedTags: string[] = [];
-    if (tagsSet.has('ANSWERED')) orderedTags.push('ANSWERED');
-    for (const t of tagsSet) {
-      if (t !== 'ANSWERED') orderedTags.push(t);
-    }
+    const orderedTags = Array.from(tagsSet);
 
-    const isAnswered = tagsSet.has('ANSWERED');
+    const isAnswered =
+      tagsSet.has('ANSWERED') ||
+      tagsSet.has('OTHER') ||
+      Array.from(tagsSet).some((t) => (MEANINGFUL_BUSINESS_OUTCOMES as ReadonlySet<string>).has(t));
+
     const needsHumanAlert =
       Boolean(needsHumanFlag) ||
       tagsSet.has('COMPLAINT') ||
@@ -5220,7 +5291,7 @@ export class BeeService {
       tagsSet.has('CALLBACK_REQUESTED') ||
       tagsSet.has('WRONG_NUMBER');
 
-    let primaryLegacyCode = orderedTags[orderedTags.length - 1] || 'ANSWERED';
+    let primaryLegacyCode = orderedTags[0] || (isAnswered ? 'OTHER' : 'NO_ANSWER');
     const rawLower = String(rawOutcome || '').toLowerCase();
     if (
       rawLower === 'warranty_lead' ||
@@ -5237,6 +5308,8 @@ export class BeeService {
       primaryLegacyCode = orderedTags.find((t) => t.startsWith('INTERESTED_')) || 'LEAD_CREATED';
     } else if (tagsSet.has('VOICEMAIL') && tagsSet.has('NO_ANSWER') && orderedTags.length === 2) {
       primaryLegacyCode = 'NO_ANSWER';
+    } else if (tagsSet.has('OTHER')) {
+      primaryLegacyCode = 'OTHER';
     }
 
     let sentiment = 'Neutral';
@@ -5344,11 +5417,9 @@ export class BeeService {
     // 3. Voicemail / Answering Machine (`NO_ANSWER,VOICEMAIL`)
     const isVoicemailOrMachine =
       reason.includes('voicemail') ||
-      reason.includes('machine_start') ||
-      reason.includes('machine_end') ||
-      reason.includes('machine-detected') ||
-      reason.includes('answering-machine') ||
-      reason === 'machine';
+      reason.includes('machine') ||
+      message.includes('voicemail') ||
+      message.includes('machine');
 
     if (isVoicemailOrMachine) {
       return {
@@ -5382,14 +5453,15 @@ export class BeeService {
       };
     }
 
-    // 5. Answered (`ANSWERED`)
+    // 5. Answered
     // A call is deterministically Answered when it connected and did not fail/voicemail/no-answer,
     // and either the customer spoke (`customerTurns.length > 0`) or the connected call lasted >= 5s.
+    // Initial Stage 1 provisional outcome is OTHER (internal answered state is tracked via isAnswered: true).
     if (customerTurns.length > 0 || durationSeconds >= 5) {
       const customerPreview = customerTurns.map((t) => t.text).join(' | ');
       return {
-        primaryOutcome: 'ANSWERED',
-        outcomeTags: ['ANSWERED'],
+        primaryOutcome: 'OTHER',
+        outcomeTags: ['OTHER'],
         isAnswered: true,
         needsHumanAlert: false,
         defaultSummary: customerPreview
@@ -5473,12 +5545,11 @@ export class BeeService {
               'FAILED',
               'WRONG_NUMBER',
               'NEEDS_REVIEW',
+              'OTHER',
             ].includes(t)
         );
         if (semanticTags.length > 0) {
-          resolvedOutcome = facts.isAnswered
-            ? ['ANSWERED', ...semanticTags].join(',')
-            : semanticTags.join(',');
+          resolvedOutcome = semanticTags.join(',');
         } else {
           resolvedOutcome = existing.outcome;
         }
@@ -5496,6 +5567,7 @@ export class BeeService {
       const updated = await prisma.beeCallLog.update({
         where: { id: existing.id },
         data: {
+          is_answered: facts.isAnswered,
           duration_seconds: durationSeconds || existing.duration_seconds,
           outcome: resolvedOutcome,
           needs_human_alert: existing.needs_human_alert || facts.needsHumanAlert,
@@ -5503,6 +5575,17 @@ export class BeeService {
             transcriptTurns.length > 0 ? (transcriptTurns as any) : (existing.transcript as any),
           audio_url: audioUrl || existing.audio_url,
           ai_summary: stageOneSummary || existing.ai_summary,
+          ...(!facts.isAnswered
+            ? {
+                jev_status: 'NOT_REQUIRED',
+                jev_cost: new Prisma.Decimal('0.000000'),
+              }
+            : {
+                jev_status:
+                  existing.jev_status && existing.jev_status !== 'NOT_REQUIRED'
+                    ? existing.jev_status
+                    : 'PENDING',
+              }),
           ...(vapiCostNum !== null
             ? {
                 vapi_cost: new Prisma.Decimal(vapiCostNum.toFixed(6)),
@@ -5580,15 +5663,19 @@ export class BeeService {
         });
       }
 
-      // Stage 2 Hook: Run Jev AI outcome classification strictly after Stage 1 persistence
+      // Stage 2 Hook: Run Jev AI outcome classification strictly after Stage 1 persistence ONLY IF ANSWERED
       let finalCallLog = updated;
-      try {
-        const stageTwoLog = await this.classifyCallStageTwo(updated.id, orgId);
-        if (stageTwoLog) {
-          finalCallLog = stageTwoLog;
+      if (facts.isAnswered) {
+        try {
+          const stageTwoLog = await this.classifyCallStageTwo(updated.id, orgId);
+          if (stageTwoLog) {
+            finalCallLog = stageTwoLog;
+          }
+        } catch (stageTwoErr) {
+          logger.error(`[BeeService] Stage 2 classification error on call ${updated.id}:`, stageTwoErr);
         }
-      } catch (stageTwoErr) {
-        logger.error(`[BeeService] Stage 2 classification error on call ${updated.id}:`, stageTwoErr);
+      } else {
+        logger.info(`[BeeService] Call ${updated.id} was unanswered (${facts.primaryOutcome}) — skipping Jev Stage 2`);
       }
 
       return {
@@ -5663,6 +5750,7 @@ export class BeeService {
         agent_id: agentId,
         queue_item_id: queueItemId,
         duration_seconds: durationSeconds,
+        is_answered: facts.isAnswered,
         outcome: stageOneOutcome,
         needs_human_alert: facts.needsHumanAlert,
         transcript: transcriptTurns as any,
@@ -5674,6 +5762,8 @@ export class BeeService {
           vapiCostNum !== null ? new Prisma.Decimal(vapiCostNum.toFixed(6)) : null,
         total_cost:
           vapiCostNum !== null ? new Prisma.Decimal(vapiCostNum.toFixed(6)) : null,
+        jev_status: facts.isAnswered ? 'PENDING' : 'NOT_REQUIRED',
+        jev_cost: new Prisma.Decimal('0.000000'),
         called_at: calledAt,
       },
     });
@@ -5700,15 +5790,19 @@ export class BeeService {
       });
     }
 
-    // Stage 2 Hook: Run Jev AI outcome classification strictly after Stage 1 persistence
+    // Stage 2 Hook: Run Jev AI outcome classification strictly after Stage 1 persistence ONLY IF ANSWERED
     let finalCreated = created;
-    try {
-      const stageTwoLog = await this.classifyCallStageTwo(created.id, orgId);
-      if (stageTwoLog) {
-        finalCreated = stageTwoLog;
+    if (facts.isAnswered) {
+      try {
+        const stageTwoLog = await this.classifyCallStageTwo(created.id, orgId);
+        if (stageTwoLog) {
+          finalCreated = stageTwoLog;
+        }
+      } catch (stageTwoErr) {
+        logger.error(`[BeeService] Stage 2 classification error on call ${created.id}:`, stageTwoErr);
       }
-    } catch (stageTwoErr) {
-      logger.error(`[BeeService] Stage 2 classification error on call ${created.id}:`, stageTwoErr);
+    } else {
+      logger.info(`[BeeService] Call ${created.id} was unanswered (${facts.primaryOutcome}) — skipping Jev Stage 2`);
     }
 
     return {
@@ -5719,178 +5813,287 @@ export class BeeService {
     };
   }
 
+  // In-flight mutex to protect against concurrent duplicate processing
+  private static activeClassifications = new Set<string>();
+
   /**
    * Stage 2 AI Call Transcript & Summary Outcome Classifier (Jev System One).
    * Runs strictly after Stage 1 persistence.
    *
    * Responsibilities:
-   * 1. Evaluates unstructured call transcripts and summaries against typed schema questions.
-   * 2. Merges Jev applicableOutcomes into Stage 1 outcomes (preserves Stage 1 tokens, appends Jev tokens, deduplicates).
-   * 3. Calculates accumulated total call cost = vapi_cost + jev_cost with micro-dollar precision.
-   * 4. Persists metadata: jev_primary_outcome, jev_applicable_outcomes, jev_sentiment, jev_confidence, jev_latency_ms, jev_status.
-   * 5. Safe & idempotent: failures do not alter Stage 1; retries do not duplicate outcomes or double-count Jev costs.
+   * 1. Stage 1 Gating: if unanswered, Jev is NOT invoked; marked NOT_REQUIRED; zero cost.
+   * 2. Evaluates unstructured call transcripts and summaries against typed schema questions.
+   * 3. If valid business outcomes match: applies all of them, jev_status = 'SUCCESS'.
+   * 4. If no business outcomes match: outcome = 'OTHER', jev_status = 'SUCCESS_NO_MATCH'.
+   * 5. If failure/timeout/invalid: outcome = 'OTHER', jev_status = 'FAILED' / 'TIMEOUT' / 'INVALID_RESPONSE'.
+   * 6. Retries: successful retry replaces previous fallback OTHER. Old failed retry cannot overwrite SUCCESS.
+   * 7. Concurrency: in-flight mutex prevents duplicate concurrent invocations.
+   * 8. Costs: Total Call Cost = Vapi Cost + Jev Cost. Jev cost incurred only on billable processing.
    */
   static async classifyCallStageTwo(
     callLogId: string,
     orgId: string,
     options?: { forceRetry?: boolean }
   ): Promise<any | null> {
-    const call = await prisma.beeCallLog.findFirst({
-      where: { id: callLogId, organization_id: orgId },
-    });
-
-    if (!call) {
-      logger.warn(`[BeeService] Stage 2 classification cannot find BeeCallLog ${callLogId} in org ${orgId}`);
-      return null;
+    if (this.activeClassifications.has(callLogId)) {
+      logger.info(`[BeeService] Stage 2 classification already in progress for call ${callLogId}`);
+      return prisma.beeCallLog.findFirst({ where: { id: callLogId, organization_id: orgId } });
     }
 
-    // Idempotency: if already completed and not force-retrying, skip re-evaluating
-    if (call.jev_status === 'completed' && !options?.forceRetry) {
-      logger.info(`[BeeService] Call ${callLogId} already has completed Stage 2 classification — returning cached result`);
-      return call;
-    }
-
-    const transcriptTurns = Array.isArray(call.transcript) ? call.transcript : [];
-    const summaryText = (call.ai_summary || '').trim();
-
-    // If neither transcript turns nor summary text are available (e.g. fast failure before connection)
-    if (transcriptTurns.length === 0 && !summaryText) {
-      logger.info(`[BeeService] Call ${callLogId} has neither transcript nor summary — marking Stage 2 as skipped`);
-      const skipped = await prisma.beeCallLog.update({
-        where: { id: callLogId },
-        data: {
-          jev_status: 'skipped',
-          jev_error: 'No transcript turns or summary text available for classification',
-        },
-      });
-      return skipped;
-    }
-
-    let classification: JevOutcomeClassification;
+    this.activeClassifications.add(callLogId);
     try {
-      const classifier = new JevCallClassifier();
-      classification = await classifier.classify({
-        transcript: transcriptTurns.length > 0 ? (transcriptTurns as any) : undefined,
-        summary: summaryText || undefined,
-        callId: call.id,
-        tenantId: orgId,
+      const call = await prisma.beeCallLog.findFirst({
+        where: { id: callLogId, organization_id: orgId },
       });
-    } catch (err: any) {
-      logger.error(`[BeeService] Stage 2 Jev classification failed for call ${callLogId}:`, err);
-      // Resilience: Jev failure or timeout must NOT break Stage 1 or erase Stage 1 outcomes
-      const failed = await prisma.beeCallLog.update({
-        where: { id: callLogId },
-        data: {
-          jev_status: 'failed',
-          jev_error: err?.message || String(err),
-        },
-      }).catch((dbErr) => {
-        logger.error(`[BeeService] Failed to record Stage 2 failure for call ${callLogId}:`, dbErr);
+
+      if (!call) {
+        logger.warn(`[BeeService] Stage 2 classification cannot find BeeCallLog ${callLogId} in org ${orgId}`);
+        return null;
+      }
+
+      // 1. Stage 1 Gating Check:
+      // If the call is unanswered, Stage 2 must NOT run, must not invoke Jev, must not incur costs, must not apply OTHER
+      if (call.is_answered === false) {
+        logger.info(`[BeeService] Call ${callLogId} is marked as unanswered (is_answered=false) — Jev NOT_REQUIRED`);
+        return prisma.beeCallLog.update({
+          where: { id: callLogId },
+          data: {
+            jev_status: 'NOT_REQUIRED',
+            jev_cost: new Prisma.Decimal('0.000000'),
+          },
+        });
+      }
+
+      // Also check outcome string if is_answered was not set (e.g. historical unmigrated edge case)
+      const parsedOutcome = this.parseOutcomeTags(call.outcome, null, call.needs_human_alert);
+      if (!parsedOutcome.isAnswered) {
+        logger.info(`[BeeService] Call ${callLogId} outcome is unanswered — Jev NOT_REQUIRED`);
+        return prisma.beeCallLog.update({
+          where: { id: callLogId },
+          data: {
+            is_answered: false,
+            jev_status: 'NOT_REQUIRED',
+            jev_cost: new Prisma.Decimal('0.000000'),
+          },
+        });
+      }
+
+      // 2. Idempotency Check:
+      // If already successfully completed with SUCCESS and not force-retrying, skip re-evaluating
+      if (call.jev_status === 'SUCCESS' && !options?.forceRetry) {
+        logger.info(`[BeeService] Call ${callLogId} already has SUCCESS Stage 2 classification — returning cached result`);
         return call;
-      });
-      return failed;
-    }
+      }
 
-    if (!classification || !classification.primaryOutcome || !Array.isArray(classification.applicableOutcomes)) {
-      logger.warn(`[BeeService] Stage 2 Jev returned invalid classification payload for call ${callLogId}`);
-      const failed = await prisma.beeCallLog.update({
+      const transcriptTurns = Array.isArray(call.transcript) ? call.transcript : [];
+      const summaryText = (call.ai_summary || '').trim();
+
+      // If neither transcript turns nor summary text are available:
+      // An answered call with no audio turns or summary is an INVALID_RESPONSE with fallback OTHER
+      if (transcriptTurns.length === 0 && !summaryText) {
+        logger.info(`[BeeService] Answered call ${callLogId} has neither transcript nor summary — marking INVALID_RESPONSE with OTHER`);
+        const vapiCost = call.vapi_cost !== null && call.vapi_cost !== undefined
+          ? Number(call.vapi_cost)
+          : (call.cost_estimate !== null && call.cost_estimate !== undefined ? Number(call.cost_estimate) : 0);
+        return prisma.beeCallLog.update({
+          where: { id: callLogId },
+          data: {
+            outcome: 'OTHER',
+            jev_status: 'INVALID_RESPONSE',
+            jev_error: 'No transcript turns or summary text available for classification',
+            jev_cost: new Prisma.Decimal('0.000000'),
+            total_cost: new Prisma.Decimal(vapiCost.toFixed(6)),
+          },
+        });
+      }
+
+      // 3. Mark PENDING before invocation
+      try {
+        await prisma.beeCallLog.update({
+          where: { id: callLogId },
+          data: { jev_status: 'PENDING' },
+        });
+      } catch {
+        // ignore provisional status update failure
+      }
+
+      // 4. Invoke Jev System One
+      let classification: JevOutcomeClassification;
+      try {
+        const classifier = new JevCallClassifier();
+        classification = await classifier.classify({
+          transcript: transcriptTurns.length > 0 ? (transcriptTurns as any) : undefined,
+          summary: summaryText || undefined,
+          callId: call.id,
+          tenantId: orgId,
+        });
+      } catch (err: any) {
+        logger.error(`[BeeService] Stage 2 Jev classification failed for call ${callLogId}:`, err);
+
+        // Protect against stale attempts overwriting newer successful classification
+        const fresh = await prisma.beeCallLog.findUnique({ where: { id: callLogId } });
+        if (fresh && fresh.jev_status === 'SUCCESS' && !options?.forceRetry) {
+          logger.info(`[BeeService] Not overwriting SUCCESS classification on call ${callLogId} with failure`);
+          return fresh;
+        }
+
+        const isTimeout =
+          err?.name === 'AbortError' ||
+          String(err?.message || '').toLowerCase().includes('timeout') ||
+          String(err?.message || '').toLowerCase().includes('timed out');
+
+        const failureStatus: JevClassificationStatus = isTimeout ? 'TIMEOUT' : 'FAILED';
+        const vapiCost = call.vapi_cost !== null && call.vapi_cost !== undefined
+          ? Number(call.vapi_cost)
+          : (call.cost_estimate !== null && call.cost_estimate !== undefined ? Number(call.cost_estimate) : 0);
+
+        try {
+          return await prisma.beeCallLog.update({
+            where: { id: callLogId },
+            data: {
+              outcome: 'OTHER',
+              jev_status: failureStatus,
+              jev_error: err?.message || String(err),
+              jev_cost: new Prisma.Decimal('0.000000'),
+              total_cost: new Prisma.Decimal(vapiCost.toFixed(6)),
+              cost_estimate: new Prisma.Decimal(vapiCost.toFixed(6)),
+            },
+          });
+        } catch (dbErr) {
+          logger.error(`[BeeService] Failed to record Stage 2 failure for call ${callLogId}:`, dbErr);
+          return call;
+        }
+      }
+
+      // 5. Validate Jev Response Structure
+      if (!classification || !classification.primaryOutcome || !Array.isArray(classification.applicableOutcomes)) {
+        logger.warn(`[BeeService] Stage 2 Jev returned invalid classification payload for call ${callLogId}`);
+        const fresh = await prisma.beeCallLog.findUnique({ where: { id: callLogId } });
+        if (fresh && fresh.jev_status === 'SUCCESS' && !options?.forceRetry) {
+          return fresh;
+        }
+        const vapiCost = call.vapi_cost !== null && call.vapi_cost !== undefined
+          ? Number(call.vapi_cost)
+          : (call.cost_estimate !== null && call.cost_estimate !== undefined ? Number(call.cost_estimate) : 0);
+
+        return prisma.beeCallLog.update({
+          where: { id: callLogId },
+          data: {
+            outcome: 'OTHER',
+            jev_status: 'INVALID_RESPONSE',
+            jev_error: 'Invalid classification response structure from Jev',
+            jev_cost: new Prisma.Decimal('0.000000'),
+            total_cost: new Prisma.Decimal(vapiCost.toFixed(6)),
+            cost_estimate: new Prisma.Decimal(vapiCost.toFixed(6)),
+          },
+        });
+      }
+
+      // 6. Cost accumulation: Total cost = Vapi cost + Jev analysisCost
+      const jevCost = BeeService.parseCost(classification.analysisCost);
+      const vapiCost = call.vapi_cost !== null && call.vapi_cost !== undefined
+        ? Number(call.vapi_cost)
+        : (call.cost_estimate !== null && call.cost_estimate !== undefined ? Number(call.cost_estimate) : 0);
+      const totalCost = BeeService.addMonetaryValues(vapiCost, jevCost);
+
+      // 7. Resolve Outcomes & Internal Status
+      const validBusinessOutcomes = classification.applicableOutcomes.filter((o) =>
+        MEANINGFUL_BUSINESS_OUTCOMES.has(o)
+      );
+
+      let finalOutcome: string;
+      let finalStatus: JevClassificationStatus;
+
+      if (validBusinessOutcomes.length > 0) {
+        finalOutcome = validBusinessOutcomes.join(',');
+        finalStatus = 'SUCCESS';
+      } else {
+        finalOutcome = 'OTHER';
+        finalStatus = 'SUCCESS_NO_MATCH';
+      }
+
+      const isHumanAlertNeeded =
+        call.needs_human_alert ||
+        validBusinessOutcomes.includes('COMPLAINT') ||
+        validBusinessOutcomes.includes('HANDOFF_HUMAN') ||
+        classification.primaryOutcome === 'COMPLAINT' ||
+        classification.primaryOutcome === 'HANDOFF_HUMAN';
+
+      const updated = await prisma.beeCallLog.update({
         where: { id: callLogId },
         data: {
-          jev_status: 'failed',
-          jev_error: 'Invalid classification response structure from Jev',
+          outcome: finalOutcome,
+          is_answered: true,
+          needs_human_alert: isHumanAlertNeeded,
+          vapi_cost: new Prisma.Decimal(vapiCost.toFixed(6)),
+          jev_cost: new Prisma.Decimal(jevCost.toFixed(6)),
+          total_cost: new Prisma.Decimal(totalCost.toFixed(6)),
+          cost_estimate: new Prisma.Decimal(totalCost.toFixed(6)),
+          jev_primary_outcome: classification.primaryOutcome,
+          jev_applicable_outcomes: validBusinessOutcomes as any,
+          jev_sentiment: classification.sentiment,
+          jev_confidence: new Prisma.Decimal(classification.confidence.toFixed(2)),
+          jev_latency_ms: classification.latencyMs,
+          jev_status: finalStatus,
+          jev_error: null,
+          jev_classified_at: new Date(),
+          jev_metadata: classification as any,
         },
       });
-      return failed;
-    }
 
-    // Cost accumulation: Total cost = Vapi cost + Jev analysisCost
-    const jevCost = BeeService.parseCost(classification.analysisCost);
-    const vapiCost = call.vapi_cost !== null && call.vapi_cost !== undefined
-      ? Number(call.vapi_cost)
-      : (call.cost_estimate !== null && call.cost_estimate !== undefined ? Number(call.cost_estimate) : 0);
-    const totalCost = BeeService.addMonetaryValues(vapiCost, jevCost);
+      logger.info(
+        `[BeeService] Stage 2 classified call ${callLogId}: outcome="${finalOutcome}", status="${finalStatus}", primary="${classification.primaryOutcome}", vapi=$${vapiCost.toFixed(6)}, jev=$${jevCost.toFixed(6)}, total=$${totalCost.toFixed(6)}`
+      );
 
-    // Merge outcomes: preserve Stage 1 outcomes, append Jev applicable outcomes, deduplicate
-    const mergedOutcome = BeeService.mergeStageOutcomes(call.outcome, classification.applicableOutcomes);
+      // Downstream lead creation on valid business interest
+      if (!updated.lead_id && finalStatus === 'SUCCESS') {
+        const hasWarranty = validBusinessOutcomes.includes('INTERESTED_WARRANTY');
+        const hasNewWork = validBusinessOutcomes.includes('INTERESTED_NEW_WORK');
+        if (hasWarranty || hasNewWork) {
+          const leadType = hasWarranty && hasNewWork ? 'both' : (hasNewWork ? 'new_work' : 'warranty_extension');
+          BeeService.createLeadFromCall({
+            orgId,
+            customerId: updated.customer_id,
+            customerName: updated.customer_name,
+            customerPhone: updated.customer_phone,
+            leadType,
+            details: summaryText || classification.primaryOutcome,
+            callLogId: updated.id,
+          })
+            .then((lead) => {
+              prisma.beeCallLog.update({
+                where: { id: updated.id },
+                data: { lead_id: lead.id },
+              }).catch(() => {});
+            })
+            .catch((leadErr) => {
+              logger.error('[BeeService] Failed to create lead from Stage 2 outcome:', leadErr);
+            });
+        }
+      }
 
-    const isHumanAlertNeeded =
-      call.needs_human_alert ||
-      classification.applicableOutcomes.includes('COMPLAINT') ||
-      classification.applicableOutcomes.includes('HANDOFF_HUMAN') ||
-      classification.primaryOutcome === 'COMPLAINT' ||
-      classification.primaryOutcome === 'HANDOFF_HUMAN';
-
-    const updated = await prisma.beeCallLog.update({
-      where: { id: callLogId },
-      data: {
-        outcome: mergedOutcome,
-        needs_human_alert: isHumanAlertNeeded,
-        vapi_cost: new Prisma.Decimal(vapiCost.toFixed(6)),
-        jev_cost: new Prisma.Decimal(jevCost.toFixed(6)),
-        total_cost: new Prisma.Decimal(totalCost.toFixed(6)),
-        cost_estimate: new Prisma.Decimal(totalCost.toFixed(6)),
-        jev_primary_outcome: classification.primaryOutcome,
-        jev_applicable_outcomes: classification.applicableOutcomes as any,
-        jev_sentiment: classification.sentiment,
-        jev_confidence: new Prisma.Decimal(classification.confidence.toFixed(2)),
-        jev_latency_ms: classification.latencyMs,
-        jev_status: 'completed',
-        jev_error: null,
-        jev_classified_at: new Date(),
-        jev_metadata: classification as any,
-      },
-    });
-
-    logger.info(
-      `[BeeService] Stage 2 classified call ${callLogId}: merged outcome="${mergedOutcome}", primary="${classification.primaryOutcome}", vapi=$${vapiCost.toFixed(6)}, jev=$${jevCost.toFixed(6)}, total=$${totalCost.toFixed(6)}`
-    );
-
-    // If Jev detected interest in warranty or new work and call doesn't have a lead yet, auto-create lead
-    if (!updated.lead_id) {
-      const hasWarranty = classification.applicableOutcomes.includes('INTERESTED_WARRANTY');
-      const hasNewWork = classification.applicableOutcomes.includes('INTERESTED_NEW_WORK');
-      if (hasWarranty || hasNewWork) {
-        const leadType = hasWarranty && hasNewWork ? 'both' : (hasNewWork ? 'new_work' : 'warranty_extension');
-        BeeService.createLeadFromCall({
+      // Downstream task creation on business outcomes that warrant human attention
+      if (!updated.task_id && BeeService.isFollowupTaskOutcome(finalOutcome, isHumanAlertNeeded)) {
+        BeeService.createTaskFromCall({
           orgId,
+          jobId: null,
+          queueItemId: updated.queue_item_id,
           customerId: updated.customer_id,
           customerName: updated.customer_name,
           customerPhone: updated.customer_phone,
-          leadType,
-          details: summaryText || classification.primaryOutcome,
+          outcome: finalOutcome,
+          summary: summaryText || classification.primaryOutcome,
+          transcript: transcriptTurns,
           callLogId: updated.id,
-        })
-          .then((lead) => {
-            prisma.beeCallLog.update({
-              where: { id: updated.id },
-              data: { lead_id: lead.id },
-            }).catch(() => {});
-          })
-          .catch((leadErr) => {
-            logger.error('[BeeService] Failed to create lead from Stage 2 outcome:', leadErr);
-          });
+        }).catch((err) => {
+          logger.error('[BeeService] Failed to create follow-up task on Stage 2 outcome:', err);
+        });
       }
-    }
 
-    // If Jev detected an outcome that triggers a follow-up task and call doesn't have a task yet, auto-create task
-    if (!updated.task_id && BeeService.isFollowupTaskOutcome(mergedOutcome, isHumanAlertNeeded)) {
-      BeeService.createTaskFromCall({
-        orgId,
-        jobId: null,
-        queueItemId: updated.queue_item_id,
-        customerId: updated.customer_id,
-        customerName: updated.customer_name,
-        customerPhone: updated.customer_phone,
-        outcome: mergedOutcome,
-        summary: summaryText || classification.primaryOutcome,
-        transcript: transcriptTurns,
-        callLogId: updated.id,
-      }).catch((taskErr) => {
-        logger.error('[BeeService] Failed to create follow-up task from Stage 2 outcome:', taskErr);
-      });
+      return updated;
+    } finally {
+      this.activeClassifications.delete(callLogId);
     }
-
-    return updated;
   }
 
   /**

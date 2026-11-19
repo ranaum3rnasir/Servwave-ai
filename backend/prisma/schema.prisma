@@ -7084,6 +7084,7 @@ model BeeCallLog {
   lead_id           String?  @db.Uuid
   task_id           String?  @db.Uuid  // follow-up task created for this call (auto or manual)
   needs_human_alert Boolean  @default(false)
+  is_answered       Boolean  @default(false)
   cost_estimate           Decimal?  @db.Decimal(10, 6)
   vapi_cost               Decimal?  @db.Decimal(10, 6)
   jev_cost                Decimal?  @db.Decimal(10, 6)
@@ -7105,6 +7106,7 @@ model BeeCallLog {
   @@index([organization_id, called_at])
   @@index([organization_id, agent_id, called_at])
   @@index([organization_id, outcome])
+  @@index([organization_id, is_answered])
   @@map("bee_call_logs")
 }
 

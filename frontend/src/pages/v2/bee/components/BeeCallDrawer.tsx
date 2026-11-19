@@ -23,7 +23,7 @@ const SPEED_OPTIONS = [
 ];
 
 const OUTCOME_CHANGE_OPTIONS = [
-  { value: 'ANSWERED', label: 'Answered' },
+  { value: 'OTHER', label: 'Other' },
   { value: 'INTERESTED_WARRANTY', label: 'Warranty plan' },
   { value: 'INTERESTED_NEW_WORK', label: 'New Job' },
   { value: 'CALLBACK_REQUESTED', label: 'Call back later' },
@@ -394,7 +394,7 @@ export const BeeCallDrawer: React.FC = () => {
     }
     return (
       <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-muted text-text-secondary border border-border">
-        {o === 'NO_ANSWER' ? 'No answer / machine' : o === 'NOT_INTERESTED' ? 'Not interested' : o || 'Completed'}
+        {o === 'NO_ANSWER' ? 'No answer / machine' : o === 'NOT_INTERESTED' ? 'Not interested' : o === 'OTHER' ? 'Other' : o || 'Other'}
       </span>
     );
   };

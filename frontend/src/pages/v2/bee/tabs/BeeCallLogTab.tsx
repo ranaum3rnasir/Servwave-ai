@@ -36,7 +36,7 @@ export const callLogFilterRegistry: FacetConfig[] = [
     label: 'Outcome',
     icon: 'M21.801 10A10 10 0 1 1 17 3.335 M9 11 3 3L22 4',
     options: [
-      { value: 'ANSWERED', label: 'Answered' },
+      { value: 'OTHER', label: 'Other' },
       { value: 'NO_ANSWER', label: 'No answer / Machine' },
       { value: 'FAILED', label: 'Technical failure' },
       { value: 'WRONG_NUMBER', label: 'Wrong number' },
@@ -99,12 +99,13 @@ const OUTCOME_PRIORITY: Record<string, number> = {
   ALREADY_COVERED: 7,
   NOT_INTERESTED: 8,
   DNC_REQUESTED: 9,
-  FAILED: 10,
-  WRONG_NUMBER: 11,
-  VOICEMAIL: 12,
-  NO_ANSWER: 13,
-  ANSWERED: 14,
-  CALL_INITIATED: 15,
+  OTHER: 10,
+  FAILED: 11,
+  WRONG_NUMBER: 12,
+  VOICEMAIL: 13,
+  NO_ANSWER: 14,
+  ANSWERED: 15,
+  CALL_INITIATED: 16,
 };
 
 export function normalizeCallOutcomeTags(
@@ -122,6 +123,14 @@ export function normalizeCallOutcomeTags(
         set.add(item);
       }
     }
+    // Requirement 3: Never combine ANSWERED with business outcomes
+    if (set.size > 1 && set.has('ANSWERED')) {
+      set.delete('ANSWERED');
+    }
+    // Requirement 5: Never apply OTHER alongside meaningful outcomes
+    if (set.size > 1 && set.has('OTHER')) {
+      set.delete('OTHER');
+    }
     const ordered = Array.from(set).sort((a, b) => {
       const pa = OUTCOME_PRIORITY[a] ?? 99;
       const pb = OUTCOME_PRIORITY[b] ?? 99;
@@ -134,7 +143,7 @@ export function normalizeCallOutcomeTags(
     .map((s) => s.trim())
     .filter(Boolean);
 
-  if (rawTokens.length === 0) return ['ANSWERED'];
+  if (rawTokens.length === 0) return ['OTHER'];
 
   const set = new Set<string>();
   for (const t of rawTokens) {
@@ -145,6 +154,15 @@ export function normalizeCallOutcomeTags(
     } else {
       set.add(u);
     }
+  }
+
+  // Requirement 3: Never combine ANSWERED with business outcomes
+  if (set.size > 1 && set.has('ANSWERED')) {
+    set.delete('ANSWERED');
+  }
+  // Requirement 5: Never apply OTHER alongside meaningful outcomes
+  if (set.size > 1 && set.has('OTHER')) {
+    set.delete('OTHER');
   }
 
   const primary = lf || rawTokens[0];
@@ -162,6 +180,13 @@ export function normalizeCallOutcomeTags(
 
 const SingleOutcomePill: React.FC<{ tag: string }> = ({ tag }) => {
   const o = tag.toUpperCase().replace(/\s+/g, '_');
+  if (o === 'OTHER') {
+    return (
+      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-muted text-text-secondary border border-border whitespace-nowrap">
+        Other
+      </span>
+    );
+  }
   if (o === 'INTERESTED_WARRANTY') {
     return (
       <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-success-surface text-success-text border border-success-border whitespace-nowrap">

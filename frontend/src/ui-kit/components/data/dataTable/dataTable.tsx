@@ -163,6 +163,12 @@ export interface DataTableProps<TData, TValue> {
   mobileCards?: boolean;
 
   /**
+   * Render pagination controls above the table in addition to below it.
+   * Off by default so only tables that explicitly request top pagination show it.
+   */
+  topPagination?: boolean;
+
+  /**
    * A wide admin table (mobile slice 17): the table scrolls sideways inside its
    * own box and its identifying column stays put. Names the box on the mobile
    * gate's exemption list (`ui-kit/lib/intendedScrollers.ts`); see `Table`'s
@@ -262,7 +268,7 @@ function DataTable<TData, TValue>({
   sorting: sortingProp, onSortingChange, manualSorting,
   rowSelection: rowSelectionProp, onRowSelectionChange,
   columnVisibility: columnVisibilityProp, onColumnVisibilityChange, defaultColumnVisibility,
-  enableColumnResizing = false, mobileCards = false, scrollBox,
+  enableColumnResizing = false, mobileCards = false, scrollBox, topPagination = false,
 }: DataTableProps<TData, TValue>) {
   const [sorting, setSorting] = useTableState<SortingState>(sortingProp, onSortingChange, []);
   const [rowSelection, setRowSelection] = useTableState<RowSelectionState>(
@@ -351,6 +357,28 @@ function DataTable<TData, TValue>({
    */
   const containerRef = React.useRef<HTMLDivElement>(null);
   const [available, setAvailable] = React.useState(0);
+  const [scrollLeft, setScrollLeft] = React.useState(0);
+  const scrollRafRef = React.useRef<number | null>(null);
+
+  React.useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    const onScroll = () => {
+      if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current);
+      scrollRafRef.current = requestAnimationFrame(() => {
+        setScrollLeft(el.scrollLeft);
+      });
+    };
+
+    el.addEventListener("scroll", onScroll, { passive: true });
+    setScrollLeft(el.scrollLeft);
+
+    return () => {
+      if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current);
+      el.removeEventListener("scroll", onScroll);
+    };
+  }, [showCards]);
   // useLayoutEffect, and a synchronous first read, because ResizeObserver only
   // reports AFTER a paint. With the observer alone the first frame was always
   // laid out from `available = 0` - every column at its declared size, summing
@@ -624,19 +652,27 @@ function DataTable<TData, TValue>({
   }, [pinnedIds, showCards, layout]);
 
   /** Sticky-left offset per pinned column - where each one actually starts. */
-  const pinnedOffsets = React.useMemo(() => {
-    const offsets: Record<string, number> = {};
+  const { pinnedOffsets, totalPinnedWidth, columnLeftOffsets } = React.useMemo(() => {
+    const pOffsets: Record<string, number> = {};
+    const cOffsets: Record<string, number> = {};
     let running = 0;
+    let pinnedTotal = 0;
+    let inPinnedRun = true;
+
     for (const column of table.getVisibleLeafColumns()) {
-      if (!pinnedIds.includes(column.id)) break;
-      offsets[column.id] = running;
-      // A zero is "not laid out yet", not a zero-width column: before the
-      // first measurement, and in any environment without layout, the
-      // requested width is the best answer available.
+      cOffsets[column.id] = running;
       const rendered = renderedWidths[column.id];
-      running += rendered && rendered > 0 ? rendered : layout[column.id] ?? column.getSize();
+      const colWidth = rendered && rendered > 0 ? rendered : layout[column.id] ?? column.getSize();
+
+      if (inPinnedRun && pinnedIds.includes(column.id)) {
+        pOffsets[column.id] = running;
+        pinnedTotal = running + colWidth;
+      } else {
+        inPinnedRun = false;
+      }
+      running += colWidth;
     }
-    return offsets;
+    return { pinnedOffsets: pOffsets, totalPinnedWidth: pinnedTotal, columnLeftOffsets: cOffsets };
   }, [table, layout, renderedWidths, pinnedIds]);
 
   const pinnedStyle = (columnId: string, zIndex: number): React.CSSProperties =>
@@ -775,6 +811,23 @@ function DataTable<TData, TValue>({
             {headerGroup.headers.map((header) => {
               const pinned = pinnedOffsets[header.column.id] !== undefined;
               const resizable = enableColumnResizing && header.column.getCanResize();
+              const colWidth = layout[header.column.id] ?? header.column.getSize();
+              const colStart = columnLeftOffsets[header.column.id] ?? 0;
+              const colMeta = header.column.columnDef.meta as { label?: string; align?: string } | undefined;
+              const colTitle = colMeta?.label ?? (typeof header.column.columnDef.header === 'string' ? header.column.columnDef.header : header.column.id);
+
+              // If unpinned and partially tucked under pinned columns (or container left edge):
+              // Shift the header content rightwards so the label remains visible and legible at the boundary
+              let headerSlideX = 0;
+              if (!pinned && colWidth > 40 && colMeta?.align !== 'right') {
+                const visibleLeft = colStart - scrollLeft;
+                if (visibleLeft < totalPinnedWidth && visibleLeft + colWidth > totalPinnedWidth) {
+                  const tucked = totalPinnedWidth - visibleLeft;
+                  const maxShift = Math.max(0, colWidth - 44);
+                  headerSlideX = Math.min(Math.max(0, tucked), maxShift);
+                }
+              }
+
               return (
                 <TableHead
                   key={header.id}
@@ -782,10 +835,20 @@ function DataTable<TData, TValue>({
                   // Same attribute the legacy table uses for the same job.
                   data-col-id={header.column.id}
                   pinned={pinned}
+                  title={colTitle ? String(colTitle) : undefined}
                   style={{ width: layout[header.column.id], ...pinnedStyle(header.column.id, 3) }}
                   className={cn((pinned || resizable) && "relative")}
                 >
-                  {header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext())}
+                  <div
+                    className="w-full flex items-center will-change-transform"
+                    style={
+                      headerSlideX > 0
+                        ? { transform: `translateX(${headerSlideX}px)` }
+                        : undefined
+                    }
+                  >
+                    {header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext())}
+                  </div>
                   {resizable && (
                     /* Absolutely positioned so the grip straddles the column
                        boundary; `touch-none` stops a drag from scrolling the
@@ -887,11 +950,9 @@ function DataTable<TData, TValue>({
   return (
     <div className={cn("bg-kit-card overflow-hidden rounded-lg border shadow-sm", className)}>
       {children?.(table)}
-      {/* Same controls above and below the rows - a long table otherwise
-          means scrolling all the way down just to reach Next. Both read the
-          one `table` instance, so paging from either stays in sync with the
-          other for free. */}
-      <DataTablePagination table={table} isFetching={isFetching} placement="top" hidePageSize={hidePageSize} />
+      {topPagination && (
+        <DataTablePagination table={table} isFetching={isFetching} placement="top" hidePageSize={hidePageSize} />
+      )}
       {body}
       <DataTablePagination table={table} isFetching={isFetching} hidePageSize={hidePageSize} />
     </div>

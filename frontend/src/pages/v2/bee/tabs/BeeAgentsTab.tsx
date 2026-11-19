@@ -28,11 +28,14 @@ import {
   StickyNote,
   Trash2,
   Phone,
-  Tag,
   PhoneCall,
   Sparkles,
+  ArrowLeft,
+  ArrowRight,
 } from 'lucide-react';
 import {
+  JOB_DYNAMIC_VARIABLES,
+  CUSTOMER_DYNAMIC_VARIABLES,
   JOB_CONTEXT_VARIABLES,
   CORE_DYNAMIC_VARIABLES,
   ALL_DYNAMIC_VARIABLES,
@@ -41,6 +44,21 @@ import {
   getUsedJobContextKeys,
   DynamicVariableDefinition,
 } from '@/lib/bee/dynamicVariables';
+import {
+  AgentFlow,
+  Step,
+  Objection,
+  Branch,
+  Outcome,
+  VARIABLES,
+  GUARDRAIL_TEXT,
+  GuardrailId,
+  validateFlow,
+  compilePrompt,
+} from '@/lib/bee/agentFlow';
+import { warrantyFlow as DEFAULT_AGENT_FLOW } from '@/lib/bee/exampleFlow';
+import { BeeScriptEditor } from '../components/BeeScriptEditor';
+import { BeeFlowStepCard } from '../components/BeeFlowStepCard';
 import { Heading } from '@/ui-kit/components/ui/heading';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -64,6 +82,33 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { cn, formatPhone, formatPhoneInput } from '@/lib/utils';
+
+const GUARDRAIL_CONFIG: Record<GuardrailId, { title: string; desc: string }> = {
+  short_replies: {
+    title: 'Keep replies short',
+    desc: 'One or two sentences at a time, then let the customer talk.',
+  },
+  only_linked_prices: {
+    title: 'Only quote linked plans',
+    desc: 'Never invent prices, discounts or dates that aren’t in the data.',
+  },
+  honor_stop: {
+    title: 'Honor stop requests',
+    desc: 'Stop immediately and add the number to Do Not Call.',
+  },
+  disclose_ai: {
+    title: 'Say it’s an AI if asked',
+    desc: 'Answer honestly when the customer asks who they are talking to.',
+  },
+  handoff_upset: {
+    title: 'Hand off upset customers',
+    desc: 'Offer a callback from the office instead of continuing.',
+  },
+  hide_internal: {
+    title: 'Hide internal numbers',
+    desc: 'Never mention internal costs or margins.',
+  },
+};
 
 export interface JobContextFieldDefinition {
   key: string;
@@ -93,15 +138,6 @@ export const JOB_CONTEXT_FIELD_DEFINITIONS: JobContextFieldDefinition[] = [
     details:
       'Includes job scope_notes, technician completion_notes, estimate notes, and visit field notes.',
     icon: StickyNote,
-  },
-  {
-    key: 'invoice_sent',
-    label: 'Invoice Sent',
-    token: '{{invoice_sent}}',
-    shortDesc: 'Invoice #, status, sent/paid dates, billed & balance due',
-    details:
-      'References all invoices sent for the job including invoice number, payment status, sent date, paid date, total billed, and balance due.',
-    icon: Receipt,
   },
   {
     key: 'line_items',
@@ -161,7 +197,7 @@ const DEFAULT_CONVERSATION_FLOW: Required<BeeAgentConversationFlow> = {
   new_work_pitch:
     'While I have you on the line, is there any other equipment, maintenance, or new project around the property you would like our technicians to take a look at?',
   objection_handling:
-    'If the customer asks about past billing or what was included, reference {{invoice_sent}} and {{total_costs}} clearly. If they want time to think, offer to email or text the plan details with no pressure.',
+    'If the customer asks about past billing or what was included, reference {{total_costs}} and {{line_items}} clearly. If they want time to think, offer to email or text the plan details with no pressure.',
   custom_instructions:
     'Keep responses natural and under 2 sentences at a time. Use the selected Job Info variables naturally when answering customer questions.',
 };
@@ -169,7 +205,6 @@ const DEFAULT_CONVERSATION_FLOW: Required<BeeAgentConversationFlow> = {
 const DEFAULT_JOB_CONTEXT_FIELDS = [
   'assigned_team',
   'job_notes',
-  'invoice_sent',
   'line_items',
   'total_costs',
   'visits',
@@ -179,10 +214,10 @@ const DEFAULT_JOB_CONTEXT_FIELDS = [
 type FlowFieldKey = keyof BeeAgentConversationFlow;
 type WizardStepId = 'basics' | 'conversation_flow' | 'launch';
 
-const WIZARD_STEPS: Array<{ id: WizardStepId; label: string }> = [
-  { id: 'basics', label: '1. Basics' },
-  { id: 'conversation_flow', label: '2. Conversation flow' },
-  { id: 'launch', label: '3. Test & launch' },
+const WIZARD_STEPS: Array<{ id: WizardStepId; label: string; number: string }> = [
+  { id: 'basics', label: 'Voice & persona', number: '1' },
+  { id: 'conversation_flow', label: 'Call flow', number: '2' },
+  { id: 'launch', label: 'Test & launch', number: '3' },
 ];
 
 export const FLOW_SECTIONS: Array<{ key: FlowFieldKey; label: string }> = [
@@ -441,8 +476,8 @@ export const BeeAgentsTab: React.FC = () => {
     useState<FlowFieldKey>('greeting_pitch');
   const [copiedToken, setCopiedToken] = useState<string | null>(null);
 
-  // Dynamic variable selector category & validation states
-  const [variableCategoryTab, setVariableCategoryTab] = useState<'job_context' | 'core'>('job_context');
+  // Dynamic variable selector category & validation states ('job' vs 'customer')
+  const [variableCategoryTab, setVariableCategoryTab] = useState<'job' | 'customer'>('job');
   const [sectionErrors, setSectionErrors] = useState<Record<string, string[]>>({});
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const cursorPositionRef = useRef<{ start: number; end: number }>({ start: 0, end: 0 });
@@ -490,6 +525,207 @@ export const BeeAgentsTab: React.FC = () => {
   const [isQuickTestOpen, setIsQuickTestOpen] = useState(false);
   const [quickTestAgent, setQuickTestAgent] = useState<BeeAgentItem | null>(null);
 
+  // ── Call Flow Builder State (Step 2) ──
+  const [agentFlow, setAgentFlow] = useState<AgentFlow>(DEFAULT_AGENT_FLOW);
+  const [flowTab, setFlowTab] = useState<'steps' | 'objections' | 'guardrails'>('steps');
+  const [expandedStepId, setExpandedStepId] = useState<string>(DEFAULT_AGENT_FLOW.steps[0]?.id ?? '');
+  const [previewMode, setPreviewMode] = useState<'sounds' | 'prompt'>('sounds');
+  const [previewCustomerIdx, setPreviewCustomerIdx] = useState<number>(0);
+
+  // Preview sample customers
+  const previewCustomers = useMemo(() => {
+    const mockCustomers = [
+      { name: 'Umer', jobNum: 'J00187' },
+      { name: 'Ayesha', jobNum: 'J00182' },
+      { name: 'David', jobNum: 'J00181' },
+    ];
+    if (sampleJobs.length > 0) {
+      return sampleJobs.slice(0, 3).map((j, idx) => ({
+        name: j.customer_name?.split(' ')[0] || mockCustomers[idx]?.name || 'Customer',
+        jobNum: formatJobNumber(j.job_number) || mockCustomers[idx]?.jobNum || `J0000${idx + 1}`,
+      }));
+    }
+    return mockCustomers;
+  }, [sampleJobs]);
+
+  // Per-customer variable values for live preview interpolation
+  const previewVarValues = useMemo(() => {
+    const mocks: Array<Record<string, string>> = [
+      {
+        'customer.first_name': 'Umer',
+        'customer.last_name': 'Nasir',
+        'customer.email': 'umer@example.com',
+        'customer.phone': '+1 (555) 234-5678',
+        'agent.name': ELEVENLABS_VAPI_VOICES.find((v) => v.id === voiceId)?.name || 'Sarah',
+        'company.name': agentCompanyName || 'ServWave',
+        'job.number': 'J00187',
+        'job.type': 'HVAC Service',
+        'job.equipment': 'HVAC split system',
+        'job.service_address': '14 Garden Road',
+        'job.completed_date': 'March 4',
+        'job.assigned_team': 'Dave Tech',
+        'warranty.plan_name': 'Basic Parts',
+        'warranty.end_date': 'December 2',
+        'warranty.days_left': '14',
+        'offer.early_discount': '10%',
+        'invoice.date': 'March 6',
+        'invoice.total': '$240',
+      },
+      {
+        'customer.first_name': 'Ayesha',
+        'customer.last_name': 'Khan',
+        'customer.email': 'ayesha@example.com',
+        'customer.phone': '+1 (555) 345-6789',
+        'agent.name': ELEVENLABS_VAPI_VOICES.find((v) => v.id === voiceId)?.name || 'Sarah',
+        'company.name': agentCompanyName || 'ServWave',
+        'job.number': 'J00182',
+        'job.type': 'Plumbing Service',
+        'job.equipment': 'tankless water heater',
+        'job.service_address': '27 Canal View',
+        'job.completed_date': 'April 18',
+        'job.assigned_team': 'Team North',
+        'warranty.plan_name': 'Full Protection',
+        'warranty.end_date': 'December 9',
+        'warranty.days_left': '21',
+        'offer.early_discount': '10%',
+        'invoice.date': 'April 20',
+        'invoice.total': '$310',
+      },
+      {
+        'customer.first_name': 'David',
+        'customer.last_name': 'Brown',
+        'customer.email': 'david@example.com',
+        'customer.phone': '+1 (555) 456-7890',
+        'agent.name': ELEVENLABS_VAPI_VOICES.find((v) => v.id === voiceId)?.name || 'Sarah',
+        'company.name': agentCompanyName || 'ServWave',
+        'job.number': 'J00181',
+        'job.type': 'Commercial Cooling',
+        'job.equipment': 'rooftop AC unit',
+        'job.service_address': '3 Harbor Street',
+        'job.completed_date': 'May 2',
+        'job.assigned_team': 'Team South',
+        'warranty.plan_name': 'Premium Annual',
+        'warranty.end_date': 'December 15',
+        'warranty.days_left': '27',
+        'offer.early_discount': '10%',
+        'invoice.date': 'May 5',
+        'invoice.total': '$420',
+      },
+    ];
+
+    const idx = previewCustomerIdx;
+    const j = sampleJobs[idx];
+    if (j) {
+      const fallback = mocks[idx] || mocks[0]!;
+      return {
+        ...fallback,
+        'customer.first_name': j.customer_name?.split(' ')[0] || fallback['customer.first_name']!,
+        'customer.last_name': j.customer_name?.split(' ').slice(1).join(' ') || fallback['customer.last_name']!,
+        'customer.phone': j.customer_phone || fallback['customer.phone']!,
+        'job.number': formatJobNumber(j.job_number) || fallback['job.number']!,
+        'job.type': j.job_type || fallback['job.type']!,
+        'job.equipment': j.job_type || fallback['job.equipment']!,
+        'job.service_address': j.service_address || fallback['job.service_address']!,
+        'warranty.end_date': j.warranty_end_date
+          ? new Date(j.warranty_end_date).toLocaleDateString([], { month: 'long', day: 'numeric' })
+          : fallback['warranty.end_date']!,
+        'agent.name': ELEVENLABS_VAPI_VOICES.find((v) => v.id === voiceId)?.name || 'Sarah',
+        'company.name': agentCompanyName || 'ServWave',
+      };
+    }
+    return mocks[idx] || mocks[0]!;
+  }, [previewCustomerIdx, sampleJobs, voiceId, agentCompanyName]);
+
+  // Interpolate line with amber highlights
+  const interpolateLine = (line: string): Array<{ text: string; isVar: boolean }> => {
+    const segments: Array<{ text: string; isVar: boolean }> = [];
+    let last = 0;
+    const re = /\{\{\s*([a-zA-Z_][a-zA-Z0-9_.]*)\s*\}\}/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(line)) !== null) {
+      if (m.index > last) {
+        segments.push({ text: line.slice(last, m.index), isVar: false });
+      }
+      const tokenKey = m[1] || '';
+      const val = previewVarValues[tokenKey] || tokenKey;
+      segments.push({ text: val, isVar: true });
+      last = m.index + m[0].length;
+    }
+    if (last < line.length) {
+      segments.push({ text: line.slice(last), isVar: false });
+    }
+    return segments;
+  };
+
+  // Flow check issues
+  const flowIssues = useMemo(() => validateFlow(agentFlow), [agentFlow]);
+
+  // Mutation helpers for agentFlow
+  const updateStep = (id: string, updated: Step) => {
+    setAgentFlow((prev) => ({
+      ...prev,
+      steps: prev.steps.map((s) => (s.id === id ? updated : s)),
+    }));
+  };
+  const deleteStep = (id: string) => {
+    setAgentFlow((prev) => ({
+      ...prev,
+      steps: prev.steps.filter((s) => s.id !== id),
+    }));
+    setExpandedStepId('');
+  };
+  const moveStep = (id: string, dir: 'up' | 'down') => {
+    setAgentFlow((prev) => {
+      const steps = [...prev.steps];
+      const idx = steps.findIndex((s) => s.id === id);
+      if (dir === 'up' && idx > 0) {
+        const temp = steps[idx - 1]!;
+        steps[idx - 1] = steps[idx]!;
+        steps[idx] = temp;
+      }
+      if (dir === 'down' && idx < steps.length - 1) {
+        const temp = steps[idx + 1]!;
+        steps[idx + 1] = steps[idx]!;
+        steps[idx] = temp;
+      }
+      return { ...prev, steps };
+    });
+  };
+  const addStep = () => {
+    const newId = `step_${Date.now()}`;
+    const newStep: Step = {
+      id: newId,
+      title: 'New step',
+      goal: '',
+      line: '',
+      mode: 'guide',
+      branches: [{ id: `b_${Date.now()}`, when: 'Customer responds', outcome: { type: 'end_call' } }],
+    };
+    setAgentFlow((prev) => ({
+      ...prev,
+      steps: [...prev.steps, newStep],
+    }));
+    setExpandedStepId(newId);
+  };
+  const updateObjection = (id: string, updated: Objection) => {
+    setAgentFlow((prev) => ({
+      ...prev,
+      objections: prev.objections.map((o) => (o.id === id ? updated : o)),
+    }));
+  };
+  const deleteObjection = (id: string) => {
+    setAgentFlow((prev) => ({
+      ...prev,
+      objections: prev.objections.filter((o) => o.id !== id),
+    }));
+  };
+  const toggleGuardrail = (key: GuardrailId) => {
+    setAgentFlow((prev) => ({
+      ...prev,
+      guardrails: { ...prev.guardrails, [key]: !prev.guardrails[key] },
+    }));
+  };
+
   useEffect(() => {
     loadAgents();
     loadSettings();
@@ -510,9 +746,9 @@ export const BeeAgentsTab: React.FC = () => {
   useEffect(() => {
     if (sampleJobs.length > 0 && !testJobId && sampleJobs[0]?.id) {
       setTestJobId(sampleJobs[0].id);
-      if (!previewJobId) setPreviewJobId(sampleJobs[0].id);
+      // By default no job is referenced for preview; Bee uses raw variables until user explicitly selects a job
     }
-  }, [sampleJobs, testJobId, previewJobId]);
+  }, [sampleJobs, testJobId]);
 
   useEffect(() => {
     if (availableNumbers.length > 0) {
@@ -628,6 +864,9 @@ export const BeeAgentsTab: React.FC = () => {
     setDiscountOffer('10% early renewal discount');
     setCrossSellOffer('Annual tune-up inspection ($89 special)');
     setActiveWizardStep('basics');
+    setAgentFlow(JSON.parse(JSON.stringify(DEFAULT_AGENT_FLOW)));
+    setFlowTab('steps');
+    setExpandedStepId(DEFAULT_AGENT_FLOW.steps[0]?.id ?? '');
     setIsEditorOpen(true);
   };
 
@@ -653,6 +892,14 @@ export const BeeAgentsTab: React.FC = () => {
       ...DEFAULT_CONVERSATION_FLOW,
       ...(agent.conversation_flow || {}),
     });
+    if (agent.flow && agent.flow.steps && agent.flow.steps.length > 0) {
+      setAgentFlow(JSON.parse(JSON.stringify(agent.flow)));
+      setExpandedStepId(agent.flow.steps[0]?.id ?? '');
+    } else {
+      setAgentFlow(JSON.parse(JSON.stringify(DEFAULT_AGENT_FLOW)));
+      setExpandedStepId(DEFAULT_AGENT_FLOW.steps[0]?.id ?? '');
+    }
+    setFlowTab('steps');
     setActiveWizardStep('basics');
     setIsEditorOpen(true);
   };
@@ -734,30 +981,15 @@ export const BeeAgentsTab: React.FC = () => {
   };
 
   const validateAllSections = (): boolean => {
-    const errorsBySection: Record<string, string[]> = {};
-    let firstFailingKey: FlowFieldKey | null = null;
-
-    for (const item of FLOW_SECTIONS) {
-      const text = conversationFlow[item.key] || '';
-      const res = validateScriptVariables(text);
-      if (!res.isValid) {
-        errorsBySection[item.key] = res.errors;
-        if (!firstFailingKey) firstFailingKey = item.key;
-      }
-    }
-
-    setSectionErrors(errorsBySection);
-
-    if (firstFailingKey) {
-      setActiveWizardStep('conversation_flow');
-      setActiveFlowField(firstFailingKey);
-      toast.error(
-        `Please fix dynamic variable errors in "${FLOW_SECTION_LABELS[firstFailingKey]}": ${errorsBySection[firstFailingKey]?.[0] || 'Invalid syntax'}`
-      );
-      setTimeout(() => textareaRef.current?.focus(), 50);
+    const flowIssues = validateFlow(agentFlow);
+    const flowErrors = flowIssues.filter((i) => i.level === 'error');
+    const firstErr = flowErrors[0];
+    if (firstErr) {
+      const msg = `${firstErr.where ? `${firstErr.where}: ` : ''}${firstErr.message}`;
+      toast.error(msg);
+      setEditorError(msg);
       return false;
     }
-
     return true;
   };
 
@@ -793,7 +1025,7 @@ export const BeeAgentsTab: React.FC = () => {
     }
   };
 
-  const handleSaveAgent = async (e?: React.FormEvent) => {
+  const handleSaveAgent = async (forcedActive?: boolean, e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!name.trim()) {
       setEditorError('Please enter an Agent Name.');
@@ -816,6 +1048,23 @@ export const BeeAgentsTab: React.FC = () => {
       const usedContextFields = getUsedJobContextKeys(conversationFlow);
       const finalJobFields = Array.from(new Set([...selectedJobFields, ...usedContextFields]));
 
+      const targetIsActive = forcedActive !== undefined ? forcedActive : isActive;
+
+      // Derive backward-compatible conversation_flow fields from agentFlow
+      const greetingStep = agentFlow.steps.find((s) => s.id === 'step-1' || s.title.toLowerCase().includes('open') || s.title.toLowerCase().includes('greet'));
+      const checkinStep = agentFlow.steps.find((s) => s.id === 'step-2' || s.title.toLowerCase().includes('check'));
+      const warrantyStep = agentFlow.steps.find((s) => s.id === 'step-3' || s.title.toLowerCase().includes('warrant'));
+      const newWorkStep = agentFlow.steps.find((s) => s.id === 'step-4' || s.title.toLowerCase().includes('new work'));
+
+      const derivedConversationFlow: BeeAgentConversationFlow = {
+        greeting_pitch: greetingStep ? greetingStep.line : conversationFlow.greeting_pitch,
+        checkin_flow: checkinStep ? checkinStep.line : conversationFlow.checkin_flow,
+        warranty_offer_pitch: warrantyStep ? warrantyStep.line : conversationFlow.warranty_offer_pitch,
+        new_work_pitch: newWorkStep ? newWorkStep.line : conversationFlow.new_work_pitch,
+        objection_handling: agentFlow.objections.map((o) => `If customer: ${o.examples.join(', ')} -> Respond: ${o.reply}`).join('\n') || conversationFlow.objection_handling,
+        custom_instructions: conversationFlow.custom_instructions,
+      };
+
       const payload: Partial<BeeAgentItem> = {
         name: name.trim(),
         persona_name: selectedVoiceObj.name,
@@ -824,11 +1073,12 @@ export const BeeAgentsTab: React.FC = () => {
         languages: ['English'],
         tone,
         voice_engine: engineProvider || 'vapi',
-        is_active: isActive,
+        is_active: targetIsActive,
         job_context_fields: finalJobFields,
-        conversation_flow: conversationFlow,
-        warranty_offer_pitch: conversationFlow.warranty_offer_pitch,
-        new_work_pitch: conversationFlow.new_work_pitch,
+        flow: agentFlow,
+        conversation_flow: derivedConversationFlow,
+        warranty_offer_pitch: derivedConversationFlow.warranty_offer_pitch,
+        new_work_pitch: derivedConversationFlow.new_work_pitch,
       };
 
       if (editingAgentId && !editingAgentId.startsWith('mock-agent-')) {
@@ -837,6 +1087,7 @@ export const BeeAgentsTab: React.FC = () => {
         await createAgent(payload);
       }
       setIsEditorOpen(false);
+      toast.success(targetIsActive ? 'Agent deployed successfully' : 'Agent saved as draft');
     } catch (err: any) {
       setEditorError(
         err.response?.data?.error || err.message || 'Failed to save agent'
@@ -862,6 +1113,7 @@ export const BeeAgentsTab: React.FC = () => {
         phoneNumberId: matchedNum?.vapiPhoneNumberId || matchedNum?.id || undefined,
         agentId: agentId || (editingAgentId && !editingAgentId.startsWith('mock-agent-') ? editingAgentId : undefined),
         jobId: testJobId || undefined,
+        flow: agentFlow,
         conversationFlow,
         selectedJobContextFields: selectedJobFields,
       });
@@ -939,11 +1191,21 @@ export const BeeAgentsTab: React.FC = () => {
       const found = sampleJobs.find((j) => j.id === previewJobId);
       if (found) return found;
     }
-    return activePreviewJob || sampleJobs[0] || null;
+    return null;
   }, [activePreviewJob, sampleJobs, previewJobId]);
 
   const compiledScriptPreview = useMemo(() => {
-    if (!selectedPreviewJob) return null;
+    if (!selectedPreviewJob) {
+      // Default: no job referenced yet, display raw script with variables
+      return {
+        greeting: conversationFlow.greeting_pitch || '',
+        checkin: conversationFlow.checkin_flow || '',
+        warranty: conversationFlow.warranty_offer_pitch || '',
+        newWork: conversationFlow.new_work_pitch || '',
+        objections: conversationFlow.objection_handling || '',
+        custom: conversationFlow.custom_instructions || '',
+      };
+    }
     const j = selectedPreviewJob;
     const rawVars = (j.job_context_variables || {}) as Record<string, string>;
 
@@ -957,6 +1219,7 @@ export const BeeAgentsTab: React.FC = () => {
 
     const vars: Record<string, string> = {
       customer_name: j.customer_name || 'Customer',
+      phone: formatPhone(j.customer_phone) || '(555) 000-0000',
       customer_phone: formatPhone(j.customer_phone) || '(555) 000-0000',
       company_name: agentCompanyName || 'ServWave',
       agent_persona: ELEVENLABS_VAPI_VOICES.find((v) => v.id === voiceId)?.name || 'Rachel',
@@ -1039,10 +1302,7 @@ export const BeeAgentsTab: React.FC = () => {
 
   const currentSectionText = conversationFlow[activeFlowField] || '';
   const displayedVariables =
-    variableCategoryTab === 'job_context' ? JOB_CONTEXT_VARIABLES : CORE_DYNAMIC_VARIABLES;
-  const usedCountInActive = displayedVariables.filter((v) =>
-    isVariableUsedInText(currentSectionText, v.token)
-  ).length;
+    variableCategoryTab === 'job' ? JOB_DYNAMIC_VARIABLES : CUSTOMER_DYNAMIC_VARIABLES;
 
   return (
     <div className="space-y-6 text-slate-900 font-sans">
@@ -1193,41 +1453,84 @@ export const BeeAgentsTab: React.FC = () => {
 
       {/* Deploy new agent / Edit agent Modal */}
       <Dialog open={isEditorOpen} onOpenChange={setIsEditorOpen}>
-        <DialogContent className="max-w-4xl max-h-[90vh] flex flex-col p-0 overflow-hidden bg-white sm:rounded-2xl border border-slate-200 shadow-2xl">
-          {/* Modal Header (Pinned) */}
-          <div className="shrink-0 px-6 pt-6 pb-3 border-b border-slate-100 bg-white">
-            <DialogHeader className="space-y-1">
-              <DialogTitle className="text-base font-bold text-slate-900">
-                {editingAgentId && !editingAgentId.startsWith('mock-agent-')
-                  ? `Edit agent - ${name}`
-                  : 'Deploy new agent'}
-              </DialogTitle>
-              <DialogDescription className="text-xs text-slate-500">
-                Configure your AI agent’s voice persona, tone rules, customized conversation flow, and test live calls.
-              </DialogDescription>
-            </DialogHeader>
+        <DialogContent className="max-w-[1360px] w-full max-h-[94vh] flex flex-col p-0 overflow-hidden bg-white sm:rounded-[20px] border border-[#E2E8F0] shadow-2xl">
+          {/* Modal Header */}
+          <div className="shrink-0 px-8 pt-6 pb-0 border-b border-[#E2E8F0] bg-white flex flex-col gap-4">
+            <div className="pb-4 border-b border-[#E2E8F0] flex items-center gap-3">
+              <h1 className="text-[24px] font-extrabold text-[#0F172A] tracking-[-0.01em] m-0">
+                {name || 'New agent'}
+              </h1>
 
-            {/* Wizard Steps Tabs (3 Clean Steps) */}
-            <div className="flex items-center gap-2 overflow-x-auto pb-1 mt-3 scrollbar-none">
+              <button
+                type="button"
+                onClick={() => setIsActive(!isActive)}
+                title={`Click to set as ${isActive ? 'Draft' : 'Active'}`}
+                className="cursor-pointer select-none focus:outline-none focus:ring-2 focus:ring-primary/20 rounded-full transition-transform active:scale-95"
+              >
+                <Badge
+                  tone={isActive ? 'success' : 'neutral'}
+                  variant="outline"
+                  className={cn(
+                    'rounded-full px-3 py-1 text-xs font-semibold shrink-0 cursor-pointer select-none border transition-colors inline-flex items-center gap-1.5',
+                    isActive
+                      ? 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100/80'
+                      : 'bg-slate-100 text-slate-700 border-slate-200 hover:bg-slate-200/80'
+                  )}
+                >
+                  <span
+                    className={cn(
+                      'w-2 h-2 rounded-full',
+                      isActive ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'
+                    )}
+                  />
+                  <span>{isActive ? 'Active' : 'Draft'}</span>
+                </Badge>
+              </button>
+            </div>
+
+            {/* Stepper Nav */}
+            <nav aria-label="Setup steps" className="flex items-center gap-7 flex-wrap">
               {WIZARD_STEPS.map((step) => {
                 const isCurrent = activeWizardStep === step.id;
+                const isPast =
+                  (activeWizardStep === 'conversation_flow' && step.id === 'basics') ||
+                  (activeWizardStep === 'launch' && (step.id === 'basics' || step.id === 'conversation_flow'));
+
                 return (
                   <button
                     key={step.id}
                     type="button"
                     onClick={() => handleSwitchWizardStep(step.id)}
                     className={cn(
-                      'px-4 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-colors',
+                      'flex items-center gap-2 transition-all',
                       isCurrent
-                        ? 'bg-[#0c192c] text-white shadow-xs'
-                        : 'bg-slate-100 hover:bg-slate-200/80 text-slate-700'
+                        ? 'pb-3 text-[14px] font-bold text-[#0F172A] border-b-2 border-[#0F172A]'
+                        : 'pb-3.5 text-[14px] font-semibold text-[#475569] border-b-2 border-transparent hover:text-[#0F172A]'
                     )}
                   >
-                    {step.label}
+                    {isPast ? (
+                      <span className="w-[22px] h-[22px] rounded-full bg-[#DCFCE7] text-[#166534] inline-flex items-center justify-center">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <path d="M20 6 9 17l-5-5" />
+                        </svg>
+                      </span>
+                    ) : (
+                      <span
+                        className={cn(
+                          'w-[22px] h-[22px] rounded-full inline-flex items-center justify-center text-[12px] font-bold box-border',
+                          isCurrent
+                            ? 'bg-[#0F172A] text-white'
+                            : 'border border-[#CBD5E1] text-[#475569]'
+                        )}
+                      >
+                        {step.number}
+                      </span>
+                    )}
+                    <span>{step.label}</span>
                   </button>
                 );
               })}
-            </div>
+            </nav>
           </div>
 
           {/* Modal Body (Scrollable) */}
@@ -1254,9 +1557,6 @@ export const BeeAgentsTab: React.FC = () => {
                     placeholder="e.g. Commercial Care - Fire Doors"
                     className="h-10 text-xs rounded-lg border-slate-200"
                   />
-                  <p className="text-xs text-slate-400 mt-1">
-                    Internal name used on reports, call logs, and queue assignments.
-                  </p>
                 </div>
 
                 {/* Voice Selection */}
@@ -1302,9 +1602,6 @@ export const BeeAgentsTab: React.FC = () => {
                       )}
                     </button>
                   </div>
-                  <p className="text-xs text-slate-500 mt-1.5">
-                    {selectedVoice.description} ({selectedVoice.accent})
-                  </p>
                 </div>
 
                 {/* Language Selection (English only) */}
@@ -1322,9 +1619,6 @@ export const BeeAgentsTab: React.FC = () => {
                       </SelectItem>
                     </SelectContent>
                   </Select>
-                  <p className="text-xs text-slate-400 mt-1">
-                    Currently supported language for automated voice calls.
-                  </p>
                 </div>
 
                 {/* Tone Selection */}
@@ -1344,381 +1638,528 @@ export const BeeAgentsTab: React.FC = () => {
                       ))}
                     </SelectContent>
                   </Select>
-                  <div className="mt-2 p-2.5 rounded-lg bg-slate-50 border border-slate-200/80 text-[11px] text-slate-600 leading-relaxed flex items-start gap-1.5">
-                    <Sparkles className="h-3.5 w-3.5 text-brand shrink-0 mt-0.5" />
-                    <span>
-                      <strong className="text-slate-900">Injected Tone Rule: </strong>
-                      {TONE_OPTIONS.find((t) => t.value === tone)?.rule || tone}
-                    </span>
-                  </div>
                 </div>
-
-
               </div>
             </div>
           )}
 
-          {/* Step 2: Conversation flow (Merged: Variables, Script Sections, Early Renewal Packages in Warranty Pitch, and Live Preview) */}
+          {/* Step 2: Call Flow Builder */}
           {activeWizardStep === 'conversation_flow' && (
-            <div className="space-y-6">
-              {/* Dynamic Variables Selector Panel */}
-              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    <Database className="h-3.5 w-3.5 text-slate-700" />
-                    <span className="text-xs font-bold text-slate-800">
-                      Dynamic Variables ({usedCountInActive} used in this section)
-                    </span>
-                    <span className="text-[11px] text-slate-500">
-                      Click variable to insert at cursor into active section ({FLOW_SECTION_LABELS[activeFlowField]})
-                    </span>
-                  </div>
-
-                  {/* Category Switcher Tabs */}
-                  <div className="inline-flex rounded-lg border border-slate-200 bg-white p-0.5 text-xs font-medium shadow-2xs">
+            <div className="flex flex-col lg:flex-row gap-0 -mx-6 -my-5 min-h-[620px] bg-white">
+              {/* Left Panel: Call Steps / Objections / Guardrails */}
+              <div className="flex-[999_1_620px] min-w-0 p-6 lg:p-8 lg:pb-10 overflow-y-auto border-r border-[#E2E8F0] flex flex-col gap-5">
+                {/* Tab Bar: Call steps, Objections, Guardrails */}
+                <div role="tablist" aria-label="Flow sections" className="flex items-center gap-1.5 p-1 bg-[#F1F5F9] rounded-[12px] w-fit">
+                  {([
+                    { id: 'steps', label: 'Call steps', count: agentFlow.steps.length },
+                    { id: 'objections', label: 'Objections', count: agentFlow.objections.length },
+                    {
+                      id: 'guardrails',
+                      label: 'Guardrails',
+                      count: Object.values(agentFlow.guardrails).filter(Boolean).length,
+                    },
+                  ] as const).map((tab) => (
                     <button
+                      key={tab.id}
                       type="button"
-                      onClick={() => setVariableCategoryTab('job_context')}
+                      role="tab"
+                      aria-selected={flowTab === tab.id}
+                      onClick={() => setFlowTab(tab.id)}
                       className={cn(
-                        'px-2.5 py-1 rounded-md text-[11px] font-medium transition-all',
-                        variableCategoryTab === 'job_context'
-                          ? 'bg-[#0c192c] text-white font-semibold shadow-xs'
-                          : 'text-slate-600 hover:text-slate-900'
+                        'h-[38px] px-3.5 rounded-[9px] text-[14px] font-bold inline-flex items-center gap-2 transition-all border-none',
+                        flowTab === tab.id
+                          ? 'bg-white text-[#0F172A] shadow-xs'
+                          : 'bg-transparent text-[#475569] hover:text-[#0F172A]'
                       )}
                     >
-                      Job Context ({JOB_CONTEXT_VARIABLES.length})
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setVariableCategoryTab('core')}
-                      className={cn(
-                        'px-2.5 py-1 rounded-md text-[11px] font-medium transition-all',
-                        variableCategoryTab === 'core'
-                          ? 'bg-[#0c192c] text-white font-semibold shadow-xs'
-                          : 'text-slate-600 hover:text-slate-900'
-                      )}
-                    >
-                      Customer & Job Info ({CORE_DYNAMIC_VARIABLES.length})
-                    </button>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                  {displayedVariables.map((def) => {
-                    const isUsedInActive = isVariableUsedInText(currentSectionText, def.token);
-                    return (
-                      <button
-                        key={def.key}
-                        type="button"
-                        onClick={() => insertVariableIntoFlow(def.token)}
+                      <span>{tab.label}</span>
+                      <span
                         className={cn(
-                          'p-2.5 rounded-lg text-xs transition-all flex flex-col justify-between text-left border relative group cursor-pointer',
-                          isUsedInActive
-                            ? 'bg-emerald-50/90 border-emerald-300 ring-1 ring-emerald-200 text-emerald-950 shadow-2xs font-semibold'
-                            : 'bg-white/80 border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-300'
-                        )}
-                        title={`Click to insert ${def.token} at cursor into ${FLOW_SECTION_LABELS[activeFlowField]}`}
-                      >
-                        <div className="flex items-center justify-between w-full mb-1">
-                          <span className="font-semibold text-xs truncate">
-                            {def.label}
-                          </span>
-                          {isUsedInActive ? (
-                            <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-600 text-white uppercase tracking-wider">
-                              <Check className="h-2.5 w-2.5" /> In Section
-                            </span>
-                          ) : (
-                            <span className="text-[10px] text-slate-400 group-hover:text-slate-700">Available</span>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-1 font-mono text-[10px] text-slate-500">
-                          <Tag className="h-2.5 w-2.5 text-slate-400 shrink-0" />
-                          <span className="truncate">{def.token}</span>
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Conversation Flow Stages Tabs */}
-              <div className="space-y-4">
-                <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
-                  {FLOW_SECTIONS.map((tab) => {
-                    const hasErrors = (sectionErrors[tab.key]?.length || 0) > 0;
-                    return (
-                      <button
-                        key={tab.key}
-                        type="button"
-                        onClick={() => handleSwitchFlowSection(tab.key)}
-                        className={cn(
-                          'px-3.5 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-colors flex items-center gap-1.5',
-                          activeFlowField === tab.key
-                            ? 'bg-[#0c192c] text-white shadow-xs'
-                            : hasErrors
-                            ? 'bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100'
-                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200/70'
+                          'text-[12px] rounded-full px-2 py-0.5 font-bold',
+                          flowTab === tab.id
+                            ? 'bg-[#0F172A] text-white'
+                            : 'bg-[#E2E8F0] text-[#334155]'
                         )}
                       >
-                        <span>{tab.label}</span>
-                        {hasErrors && (
-                          <span className="h-2 w-2 rounded-full bg-rose-500 shrink-0" />
-                        )}
-                      </button>
-                    );
-                  })}
+                        {tab.count}
+                      </span>
+                    </button>
+                  ))}
                 </div>
 
-                <Textarea
-                  ref={textareaRef}
-                  value={conversationFlow[activeFlowField] || ''}
-                  onSelect={updateCursor}
-                  onKeyUp={updateCursor}
-                  onClick={updateCursor}
-                  onFocus={updateCursor}
-                  onChange={(e) => {
-                    const nextVal = e.target.value;
-                    setConversationFlow((prev) => ({
-                      ...prev,
-                      [activeFlowField]: nextVal,
-                    }));
-                    // Live clear error if user fixes it
-                    if (sectionErrors[activeFlowField]?.length) {
-                      const res = validateScriptVariables(nextVal);
-                      if (res.isValid) {
-                        setSectionErrors((prev) => ({
-                          ...prev,
-                          [activeFlowField]: [],
-                        }));
-                      }
-                    }
-                  }}
-                  rows={4}
-                  className={cn(
-                    'text-xs font-mono rounded-lg border-slate-200 leading-relaxed',
-                    (sectionErrors[activeFlowField]?.length || 0) > 0 &&
-                      'border-rose-300 focus-visible:ring-rose-400 bg-rose-50/20'
-                  )}
-                />
+                {/* Call Steps Tab */}
+                {flowTab === 'steps' && (
+                  <div className="flex flex-col gap-5">
+                    <p className="m-0 text-[14px] text-[#475569] leading-relaxed">
+                      Bee moves through these steps in order. Write what Bee should say, then decide where each customer answer leads. Click a step to edit it.
+                    </p>
 
-                {/* Inline Validation Banner if Section has Errors */}
-                {sectionErrors[activeFlowField] && sectionErrors[activeFlowField].length > 0 && (
-                  <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-start gap-2.5 animate-in fade-in duration-150">
-                    <AlertCircle className="h-4 w-4 text-rose-600 shrink-0 mt-0.5" />
-                    <div className="space-y-1">
-                      <div className="font-semibold text-rose-900">
-                        Dynamic Variable Error ({sectionErrors[activeFlowField].length})
-                      </div>
-                      <ul className="list-disc list-inside space-y-0.5 text-rose-700 text-[11px]">
-                        {sectionErrors[activeFlowField].map((err, i) => (
-                          <li key={i}>{err}</li>
+                    {/* Step list with vertical rail */}
+                    <div className="relative pl-1">
+                      {/* Rail connector */}
+                      <div className="absolute left-[15px] top-4 bottom-8 w-[2px] bg-[#E2E8F0] z-0" />
+
+                      <div className="space-y-4 relative z-10">
+                        {agentFlow.steps.map((step, idx) => (
+                          <div key={step.id} className="flex items-start gap-3.5">
+                            {/* Rail circle node */}
+                            <div
+                              className={cn(
+                                'w-8 h-8 rounded-full flex items-center justify-center text-[13px] font-extrabold shrink-0 mt-3.5 box-border transition-all',
+                                expandedStepId === step.id
+                                  ? 'bg-[#0F172A] text-white shadow-xs'
+                                  : 'bg-white text-[#0F172A] border-[1.5px] border-[#CBD5E1]'
+                              )}
+                            >
+                              {idx + 1}
+                            </div>
+
+                            {/* Step Card */}
+                            <div className="flex-1 min-w-0">
+                              <BeeFlowStepCard
+                                step={step}
+                                index={idx}
+                                isExpanded={expandedStepId === step.id}
+                                allSteps={agentFlow.steps}
+                                objections={agentFlow.objections}
+                                onToggle={() =>
+                                  setExpandedStepId(expandedStepId === step.id ? '' : step.id)
+                                }
+                                onUpdate={(updated) => updateStep(step.id, updated)}
+                                onDelete={() => deleteStep(step.id)}
+                                onMoveUp={() => moveStep(step.id, 'up')}
+                                onMoveDown={() => moveStep(step.id, 'down')}
+                                canMoveUp={idx > 0}
+                                canMoveDown={idx < agentFlow.steps.length - 1}
+                              />
+                            </div>
+                          </div>
                         ))}
-                      </ul>
-                      <div className="text-[10px] text-rose-600 mt-1">
-                        Variables must use valid double curly braces (e.g. <code className="bg-rose-100 px-1 py-0.5 rounded font-mono">{'{{customer_name}}'}</code>) and reference registered fields.
+
+                        {/* Add Step Action Row */}
+                        <div className="flex items-center gap-3.5 pt-1">
+                          <div className="w-7 h-7 rounded-full border-2 border-dashed border-[#94A3B8] shrink-0" />
+                          <div className="flex items-center gap-2.5 flex-wrap">
+                            <button
+                              type="button"
+                              onClick={addStep}
+                              className="h-[38px] px-3.5 rounded-[10px] border border-dashed border-[#94A3B8] hover:border-[#0F172A] bg-white text-[13px] font-bold text-[#0F172A] inline-flex items-center gap-1.5 transition-colors shadow-2xs"
+                            >
+                              <Plus className="h-3.5 w-3.5" />
+                              <span>Add step</span>
+                            </button>
+                            <span className="text-[13px] text-[#475569]">
+                              or start from a template:
+                              {[
+                                {
+                                  name: 'Renewal',
+                                  title: 'Warranty offer',
+                                  goal: 'Explain that coverage is ending and offer renewal.',
+                                  line: 'Your parts and labor coverage on the {{job.equipment}} ends on {{warranty.end_date}}. If you renew before then, you get {{offer.early_discount}} off. Can I walk you through the options?',
+                                },
+                                {
+                                  name: 'Win-back',
+                                  title: 'Win-back',
+                                  goal: 'Re-engage a customer who recently passed on coverage.',
+                                  line: 'Hi {{customer.first_name}}, following up on your {{job.equipment}} service at {{job.service_address}} — we can still lock in your {{offer.early_discount}} renewal incentive until {{warranty.end_date}}.',
+                                },
+                                {
+                                  name: 'Maintenance reminder',
+                                  title: 'Maintenance reminder',
+                                  goal: 'Schedule an annual equipment tune-up.',
+                                  line: 'It has been a year since our last visit on {{job.completed_date}}. Your {{job.equipment}} is due for its seasonal maintenance inspection. Would you like to schedule that now?',
+                                },
+                              ].map((t) => (
+                                <button
+                                  key={t.name}
+                                  type="button"
+                                  onClick={() => {
+                                    const newId = `step_${Date.now()}`;
+                                    const newStep: Step = {
+                                      id: newId,
+                                      title: t.title,
+                                      goal: t.goal,
+                                      line: t.line,
+                                      mode: 'guide',
+                                      branches: [
+                                        {
+                                          id: `b_${Date.now()}`,
+                                          when: 'Customer is interested',
+                                          outcome: { type: 'next' },
+                                        },
+                                        {
+                                          id: `b_${Date.now() + 1}`,
+                                          when: 'Busy right now',
+                                          outcome: { type: 'callback' },
+                                        },
+                                      ],
+                                    };
+                                    setAgentFlow((prev) => ({
+                                      ...prev,
+                                      steps: [...prev.steps, newStep],
+                                    }));
+                                    setExpandedStepId(newId);
+                                  }}
+                                  className="ml-1.5 font-semibold text-[#0F172A] underline underline-offset-2 hover:text-blue-700"
+                                >
+                                  {t.name}
+                                </button>
+                              ))}
+                            </span>
+                          </div>
+                        </div>
                       </div>
                     </div>
                   </div>
                 )}
 
-                {/* Section 3: Warranty Pitch - Early Renewal Packages & Offer Integration */}
-                {activeFlowField === 'warranty_offer_pitch' && (
-                  <div className="rounded-xl border border-emerald-200/90 bg-emerald-50/40 p-4 space-y-4 animate-in fade-in duration-200">
-                    <div className="flex items-center justify-between">
-                      <Label className="text-xs font-bold text-slate-900 block">
-                        Early Renewal Packages & Offer Selection
-                      </Label>
-                      <span className="text-[11px] text-slate-500">
-                        Pitched to customer when offering coverage extension
-                      </span>
-                    </div>
+                {/* Objections Tab */}
+                {flowTab === 'objections' && (
+                  <div className="flex flex-col gap-3.5">
+                    <p className="m-0 mb-1 text-[14px] text-[#475569] leading-relaxed">
+                      Objections can come up at any point in the call. Bee answers, then goes back to the step it was on unless you say otherwise.
+                    </p>
 
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      {/* Renewal Packages */}
-                      <div className="space-y-2">
-                        <span className="text-xs font-semibold text-slate-700 block">
-                          Packages Pitched:
-                        </span>
-                        {[
-                          '1-Year Warranty Extension ($199/yr or $19/mo)',
-                          '2-Year Complete Protection ($349/2yr)',
-                          'Monthly VIP Maintenance ($29/mo)',
-                        ].map((plan) => {
-                          const isSel = selectedPlans.includes(plan);
+                    <div className="flex flex-col gap-3">
+                      {agentFlow.objections.map((obj) => (
+                        <div
+                          key={obj.id}
+                          className="border border-[#E2E8F0] rounded-[14px] p-4 px-[18px] flex flex-col gap-2.5 bg-white shadow-2xs"
+                        >
+                          <div className="flex items-center justify-between gap-2.5 flex-wrap">
+                            <input
+                              value={obj.name}
+                              onChange={(e) =>
+                                updateObjection(obj.id, { ...obj, name: e.target.value })
+                              }
+                              placeholder="Objection Name (e.g. Too expensive)"
+                              className="text-[15px] font-bold text-[#0F172A] bg-transparent border-0 outline-none p-0 flex-1 min-w-[140px]"
+                            />
+                            <div className="flex items-center gap-2 shrink-0">
+                              <span className="text-[12px] font-semibold text-[#475569] bg-[#F1F5F9] rounded-full px-2.5 py-1">
+                                Then:{' '}
+                                {obj.after.type === 'goto'
+                                  ? obj.after.stepId === '__return__'
+                                    ? 'Back to current step'
+                                    : `Go to: ${obj.after.stepId}`
+                                  : obj.after.type === 'callback'
+                                  ? 'Book a callback, end call'
+                                  : obj.after.type === 'transfer'
+                                  ? 'Transfer to office'
+                                  : obj.after.type === 'do_not_call'
+                                  ? 'Add to Do Not Call, end call'
+                                  : obj.after.type === 'end_call'
+                                  ? 'End call'
+                                  : (obj.after as any).type}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => deleteObjection(obj.id)}
+                                className="w-7 h-7 rounded-[8px] border border-transparent hover:border-[#E2E8F0] hover:bg-slate-50 text-[#475569] hover:text-rose-600 transition-colors inline-flex items-center justify-center"
+                                title="Delete objection"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="text-[13px] text-[#475569] flex items-center gap-1.5 flex-wrap">
+                            <span>Sounds like:</span>
+                            <input
+                              value={obj.examples.join(', ')}
+                              onChange={(e) =>
+                                updateObjection(obj.id, {
+                                  ...obj,
+                                  examples: e.target.value
+                                    .split(',')
+                                    .map((s) => s.trim())
+                                    .filter(Boolean),
+                                })
+                              }
+                              placeholder="e.g. that's a lot, can't afford it"
+                              className="text-[13px] text-[#0F172A] font-medium bg-transparent border-0 border-b border-dashed border-[#CBD5E1] focus:border-[#0F172A] outline-none px-1 flex-1 min-w-[200px]"
+                            />
+                          </div>
+
+                          <div className="text-[14px] leading-relaxed bg-[#F8FAFC] rounded-[10px] p-2.5 px-3">
+                            <BeeScriptEditor
+                              value={obj.reply}
+                              onChange={(val) => updateObjection(obj.id, { ...obj, reply: val })}
+                              placeholder="Explain how Bee should respond..."
+                              rows={2}
+                            />
+                          </div>
+                        </div>
+                      ))}
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const newObj: Objection = {
+                            id: `obj_${Date.now()}`,
+                            name: 'New objection',
+                            examples: ['I need to think about it'],
+                            reply: 'No pressure at all. I can email or text the plan details so you have them in writing.',
+                            after: { type: 'goto', stepId: '__return__' },
+                          };
+                          setAgentFlow((prev) => ({
+                            ...prev,
+                            objections: [...prev.objections, newObj],
+                          }));
+                        }}
+                        className="self-start h-11 px-4 rounded-[12px] border border-dashed border-[#94A3B8] hover:border-[#0F172A] bg-white text-[14px] font-bold text-[#0F172A] inline-flex items-center gap-1.5 transition-colors shadow-2xs"
+                      >
+                        <Plus className="h-4 w-4" />
+                        <span>Add objection</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Guardrails Tab */}
+                {flowTab === 'guardrails' && (
+                  <div className="flex flex-col gap-2.5">
+                    <p className="m-0 mb-1 text-[14px] text-[#475569] leading-relaxed">
+                      Rules Bee follows on every call, no matter which step it&apos;s on.
+                    </p>
+
+                    <div className="flex flex-col gap-2.5">
+                      {(Object.entries(GUARDRAIL_TEXT) as [GuardrailId, string][]).map(
+                        ([key, text]) => {
+                          const isChecked = Boolean(agentFlow.guardrails[key]);
+                          const cfg = GUARDRAIL_CONFIG[key];
                           return (
-                            <label
-                              key={plan}
-                              className="flex items-center gap-2 text-xs font-medium text-slate-700 cursor-pointer"
+                            <div
+                              key={key}
+                              className="border border-[#E2E8F0] rounded-[12px] p-3 px-4 flex items-center justify-between gap-4 bg-white shadow-2xs"
                             >
-                              <Checkbox
-                                checked={isSel}
-                                onCheckedChange={(c) => {
-                                  if (c) setSelectedPlans([...selectedPlans, plan]);
-                                  else setSelectedPlans(selectedPlans.filter((p) => p !== plan));
-                                }}
-                              />
-                              <span>{plan}</span>
-                            </label>
+                              <div className="flex flex-col gap-0.5">
+                                <span className="text-[14px] font-bold text-[#0F172A]">
+                                  {cfg?.title || key.replace(/_/g, ' ')}
+                                </span>
+                                <span className="text-[13px] text-[#475569]">
+                                  {cfg?.desc || text}
+                                </span>
+                              </div>
+
+                              <button
+                                type="button"
+                                role="switch"
+                                aria-checked={isChecked}
+                                aria-label={cfg?.title || key}
+                                onClick={() => toggleGuardrail(key)}
+                                className={cn(
+                                  'shrink-0 w-[46px] h-[28px] rounded-full p-[3px] flex items-center transition-colors cursor-pointer border-none',
+                                  isChecked ? 'bg-[#0F172A] justify-end' : 'bg-[#CBD5E1] justify-start'
+                                )}
+                              >
+                                <span className="w-[22px] h-[22px] rounded-full bg-white block shadow-xs" />
+                              </button>
+                            </div>
+                          );
+                        }
+                      )}
+
+                      {/* Custom Rules */}
+                      <div className="flex flex-col gap-1.5 mt-2">
+                        <Label htmlFor="custom-rules" className="text-[13px] font-bold text-[#0F172A] block">
+                          Your own rules
+                        </Label>
+                        <Textarea
+                          id="custom-rules"
+                          value={agentFlow.customRules.join('\n')}
+                          onChange={(e) =>
+                            setAgentFlow((prev) => ({
+                              ...prev,
+                              customRules: e.target.value.split('\n'),
+                            }))
+                          }
+                          rows={3}
+                          placeholder="Never call before 9am or after 7pm customer time."
+                          className="border border-[#CBD5E1] rounded-[10px] p-2.5 px-3 text-[14px] leading-relaxed resize-y focus:border-[#0F172A] font-sans"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Right Panel: Live Preview */}
+              <div className="flex-[1_1_400px] min-w-0 lg:min-w-[380px] lg:max-w-[460px] bg-[#F8FAFC] border-l border-[#E2E8F0] p-6 overflow-y-auto flex flex-col gap-4 self-stretch">
+                {/* Preview Mode Selector */}
+                <div role="tablist" aria-label="Preview mode" className="flex items-center gap-1 p-1 bg-[#E2E8F0] rounded-[10px] w-fit">
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={previewMode === 'sounds'}
+                    onClick={() => setPreviewMode('sounds')}
+                    className={cn(
+                      'h-[34px] px-3 rounded-[7px] text-[13px] font-bold transition-all border-none',
+                      previewMode === 'sounds'
+                        ? 'bg-white text-[#0F172A] shadow-xs'
+                        : 'bg-transparent text-[#334155] hover:text-[#0F172A]'
+                    )}
+                  >
+                    How it sounds
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={previewMode === 'prompt'}
+                    onClick={() => setPreviewMode('prompt')}
+                    className={cn(
+                      'h-[34px] px-3 rounded-[7px] text-[13px] font-bold transition-all border-none',
+                      previewMode === 'prompt'
+                        ? 'bg-white text-[#0F172A] shadow-xs'
+                        : 'bg-transparent text-[#334155] hover:text-[#0F172A]'
+                    )}
+                  >
+                    Generated prompt
+                  </button>
+                </div>
+
+                {previewMode === 'sounds' ? (
+                  <>
+                    {/* Customer selector pills */}
+                    <div className="flex flex-col gap-1.5">
+                      <span className="text-[12px] font-bold text-[#475569] uppercase tracking-[0.06em]">
+                        Preview with customer
+                      </span>
+                      <div className="flex flex-wrap gap-1.5">
+                        {previewCustomers.map((cust, ci) => {
+                          const isSel = previewCustomerIdx === ci;
+                          return (
+                            <button
+                              key={ci}
+                              type="button"
+                              aria-pressed={isSel}
+                              onClick={() => setPreviewCustomerIdx(ci)}
+                              className={cn(
+                                'h-[34px] px-3 rounded-full text-[13px] font-semibold transition-all',
+                                isSel
+                                  ? 'border border-[#0F172A] bg-[#0F172A] text-white shadow-xs'
+                                  : 'border border-[#CBD5E1] bg-white text-[#0F172A] hover:bg-slate-50'
+                              )}
+                            >
+                              {cust.name} · {cust.jobNum}
+                            </button>
                           );
                         })}
                       </div>
-
-                      {/* Early Renewal Incentive & Cross-sell */}
-                      <div className="space-y-3">
-                        <div>
-                          <Label className="text-xs font-semibold text-slate-700 block mb-1">
-                            Early renewal incentive discount:
-                          </Label>
-                          <Input
-                            value={discountOffer}
-                            onChange={(e) => setDiscountOffer(e.target.value)}
-                            placeholder="e.g. 10% early renewal discount"
-                            className="h-8 text-xs rounded-lg border-slate-200 bg-white"
-                          />
-                        </div>
-
-                        <div>
-                          <Label className="text-xs font-semibold text-slate-700 block mb-1">
-                            Secondary cross-sell offer:
-                          </Label>
-                          <Input
-                            value={crossSellOffer}
-                            onChange={(e) => setCrossSellOffer(e.target.value)}
-                            placeholder="e.g. Annual tune-up inspection ($89 special)"
-                            className="h-8 text-xs rounded-lg border-slate-200 bg-white"
-                          />
-                        </div>
-                      </div>
                     </div>
+
+                    {/* Step Preview Bubbles */}
+                    <div className="flex flex-col gap-3.5">
+                      {agentFlow.steps.map((step, idx) => {
+                        const isStepExpanded = expandedStepId === step.id;
+                        return (
+                          <div key={step.id} className="flex flex-col gap-1">
+                            <span className="text-[11px] font-bold text-[#475569] uppercase tracking-[0.06em]">
+                              {idx + 1} · {step.title}
+                            </span>
+                            <div
+                              className={cn(
+                                'rounded-tl-[4px] rounded-tr-[14px] rounded-br-[14px] rounded-bl-[14px] p-2.5 px-3.5 text-[14px] leading-relaxed transition-all bg-white border',
+                                isStepExpanded
+                                  ? 'border-[#0F172A] shadow-xs'
+                                  : 'border-[#E2E8F0]'
+                              )}
+                            >
+                              {interpolateLine(step.line || '(No script entered)').map(
+                                (seg, si) =>
+                                  seg.isVar ? (
+                                    <span
+                                      key={si}
+                                      className="bg-[#FEF3C7] text-[#78350F] rounded-[4px] px-[3px] font-semibold mx-0.5"
+                                    >
+                                      {seg.text}
+                                    </span>
+                                  ) : (
+                                    <span key={si}>{seg.text}</span>
+                                  )
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Flow Check Panel */}
+                    <div className="border border-[#E2E8F0] bg-white rounded-[12px] p-3.5 px-4 flex flex-col gap-2.5">
+                      <span className="text-[13px] font-extrabold text-[#0F172A]">Flow check</span>
+                      {flowIssues.length === 0 ? (
+                        <>
+                          <div className="flex gap-2.5 items-start text-[13px] leading-[1.45] text-[#0F172A]">
+                            <span className="shrink-0 w-5 h-5 rounded-full bg-[#DCFCE7] text-[#166534] text-[12px] font-extrabold inline-flex items-center justify-center">
+                              ✓
+                            </span>
+                            <span>
+                              All details used in the script exist in your job and customer data.
+                            </span>
+                          </div>
+                          <div className="flex gap-2.5 items-start text-[13px] leading-[1.45] text-[#0F172A]">
+                            <span className="shrink-0 w-5 h-5 rounded-full bg-[#DCFCE7] text-[#166534] text-[12px] font-extrabold inline-flex items-center justify-center">
+                              ✓
+                            </span>
+                            <span>
+                              Every answer leads to a step, an action or the end of the call.
+                            </span>
+                          </div>
+                        </>
+                      ) : (
+                        flowIssues.map((issue, ii) => (
+                          <div
+                            key={ii}
+                            className="flex gap-2.5 items-start text-[13px] leading-[1.45] text-[#0F172A]"
+                          >
+                            <span
+                              className={cn(
+                                'shrink-0 w-5 h-5 rounded-full text-[12px] font-extrabold inline-flex items-center justify-center',
+                                issue.level === 'error'
+                                  ? 'bg-[#FEE2E2] text-[#991B1B]'
+                                  : 'bg-[#FEF3C7] text-[#92400E]'
+                              )}
+                            >
+                              !
+                            </span>
+                            <span>
+                              <strong>{issue.where}:</strong> {issue.message}
+                            </span>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  /* Generated Prompt View */
+                  <div className="flex flex-col gap-2">
+                    <p className="m-0 text-[13px] text-[#475569] leading-relaxed">
+                      This is generated from the steps on the left. Users never edit it directly, so the structure stays consistent for every agent.
+                    </p>
+                    <pre className="m-0 bg-[#0F172A] text-[#E2E8F0] rounded-[12px] p-4 text-[12px] font-mono leading-relaxed whitespace-pre-wrap max-h-[720px] overflow-y-auto">
+                      {(() => {
+                        try {
+                          return compilePrompt(agentFlow, [
+                            {
+                              name: '1-Year Warranty Extension',
+                              price: '$199/yr or $19/mo',
+                              term: '12 months',
+                              includes: 'parts and labor',
+                            },
+                            {
+                              name: '2-Year Complete Protection',
+                              price: '$349',
+                              term: '24 months',
+                              includes: 'parts, labor and one tune-up per year',
+                            },
+                          ]);
+                        } catch (err: any) {
+                          return `Cannot compile prompt yet:\n${err.message}`;
+                        }
+                      })()}
+                    </pre>
                   </div>
                 )}
-              </div>
-
-              {/* Live Conversation Script Preview using referenced existing job */}
-              <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4 space-y-3">
-                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2.5">
-                  <div className="flex items-center gap-2">
-                    <Eye className="h-4 w-4 text-brand" />
-                    <span className="text-xs font-bold text-slate-900">
-                      Live Conversation Script Preview
-                    </span>
-                    <span className="text-[11px] text-slate-500">
-                      (Interpolated with actual job context variables)
-                    </span>
-                  </div>
-
-                  {/* Job selector for live preview */}
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-slate-600 font-medium shrink-0">Referenced job:</span>
-                    <BeeJobSearchSelect
-                      value={previewJobId || selectedPreviewJob?.id || ''}
-                      onSelect={(job) => {
-                        setPreviewJobId(job.id);
-                        setActivePreviewJob(job);
-                      }}
-                      initialJobs={sampleJobs}
-                      triggerClassName="h-8 text-xs w-[240px] bg-white border-slate-200"
-                    />
-                  </div>
-                </div>
-
-                {/* Simulated Script Cards */}
-                <div className="space-y-3 text-xs">
-                  {/* 1. Greeting */}
-                  <div className="p-3.5 rounded-xl bg-white border border-slate-200 shadow-2xs">
-                    <div className="flex items-center justify-between mb-1.5">
-                      <span className="font-bold text-slate-800 text-[11px] uppercase tracking-wider">
-                        1. Greeting
-                      </span>
-                      <span className="text-[10px] text-slate-400 font-mono">Agent Opening</span>
-                    </div>
-                    <p className="text-slate-700 leading-relaxed font-sans">
-                      &ldquo;{compiledScriptPreview?.greeting}&rdquo;
-                    </p>
-                  </div>
-
-                  {/* Combined Framed Card: Check-In, Warranty Pitch & Packages */}
-                  <div className="p-4 rounded-xl border-2 border-slate-200/90 bg-slate-50/60 shadow-xs space-y-3">
-                    <div className="flex items-center justify-between border-b border-slate-200 pb-2">
-                      <div className="flex items-center gap-2">
-                        <span className="font-bold text-slate-900 text-xs uppercase tracking-wide">
-                          Check-In & Warranty Renewal Funnel
-                        </span>
-                        <span className="text-[10px] font-semibold text-slate-500 bg-white border border-slate-200 px-2 py-0.5 rounded-full">
-                          Connected Flow
-                        </span>
-                      </div>
-                      <span className="text-[10px] text-slate-400 font-mono">Check-in · Pitch · Packages</span>
-                    </div>
-
-                    {/* Stage A: Check-In */}
-                    <div className="p-3 rounded-lg bg-white border border-slate-200/80 shadow-2xs">
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="font-bold text-slate-800 text-[11px] uppercase tracking-wider">
-                          2. Check-In
-                        </span>
-                        <span className="text-[10px] text-slate-400 font-mono">Quality Assurance</span>
-                      </div>
-                      <p className="text-slate-700 leading-relaxed font-sans">
-                        &ldquo;{compiledScriptPreview?.checkin}&rdquo;
-                      </p>
-                    </div>
-
-                    {/* Stage B: Warranty Pitch & Packages */}
-                    <div className="p-3 rounded-lg bg-white border border-slate-200/80 shadow-2xs space-y-2.5">
-                      <div className="flex items-center justify-between">
-                        <span className="font-bold text-slate-800 text-[11px] uppercase tracking-wider">
-                          3. Warranty Pitch & Early Renewal Offer
-                        </span>
-                        <span className="text-[10px] text-slate-400 font-mono">Renewal Pitch</span>
-                      </div>
-                      <p className="text-slate-700 leading-relaxed font-sans">
-                        &ldquo;{compiledScriptPreview?.warranty}&rdquo;
-                      </p>
-
-                      {/* Packages & Incentives */}
-                      <div className="pt-2.5 border-t border-slate-100">
-                        <div className="text-[11px] font-semibold text-slate-700 mb-1.5 flex items-center justify-between">
-                          <span>Offered Renewal Packages & Incentives</span>
-                          {discountOffer && (
-                            <span className="text-[10px] font-medium text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded">
-                              Incentive: {discountOffer}
-                            </span>
-                          )}
-                        </div>
-                        {selectedPlans.length > 0 ? (
-                          <div className="flex flex-wrap gap-1.5 items-center">
-                            {selectedPlans.map((p) => (
-                              <span
-                                key={p}
-                                className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-200"
-                              >
-                                {p}
-                              </span>
-                            ))}
-                          </div>
-                        ) : (
-                          <span className="text-[11px] text-slate-400 italic">
-                            No specific package selected (agent presents standard plan terms).
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* 4. New Job */}
-                  <div className="p-3.5 rounded-xl bg-white border border-slate-200 shadow-2xs">
-                    <div className="flex items-center justify-between mb-1.5">
-                      <span className="font-bold text-slate-800 text-[11px] uppercase tracking-wider">
-                        4. New Job Discovery
-                      </span>
-                      <span className="text-[10px] text-slate-400 font-mono">Cross-sell & Inquiries</span>
-                    </div>
-                    <p className="text-slate-700 leading-relaxed font-sans">
-                      &ldquo;{compiledScriptPreview?.newWork}&rdquo;
-                    </p>
-                  </div>
-                </div>
               </div>
             </div>
           )}
@@ -1772,9 +2213,9 @@ export const BeeAgentsTab: React.FC = () => {
                     Sample job context
                   </Label>
                   <BeeJobSearchSelect
-                    value={testJobId || selectedPreviewJob?.id || ''}
+                    value={testJobId || ''}
                     onSelect={(job) => {
-                      setTestJobId(job.id);
+                      setTestJobId(job ? job.id : '');
                       setActivePreviewJob(job);
                     }}
                     initialJobs={sampleJobs}
@@ -1820,7 +2261,7 @@ export const BeeAgentsTab: React.FC = () => {
                 </div>
               )}
 
-              <div className="flex items-center justify-between pt-4 border-t border-slate-100">
+              <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-100">
                 <Button
                   type="button"
                   variant="outline"
@@ -1834,26 +2275,9 @@ export const BeeAgentsTab: React.FC = () => {
                   <Phone className="h-3.5 w-3.5 text-slate-600" />
                   {isTriggeringTestCall ? 'Dialing test call...' : 'Trigger Test Call'}
                 </Button>
-
-                <div className="flex items-center gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setIsEditorOpen(false)}
-                    className="text-xs font-semibold"
-                  >
-                    Cancel
-                  </Button>
-                  <Button
-                    type="button"
-                    onClick={() => handleSaveAgent()}
-                    disabled={isSavingAgent}
-                    className="bg-[#0c192c] hover:bg-slate-800 text-white font-semibold text-xs px-5 shadow-sm"
-                  >
-                    {isSavingAgent ? 'Saving agent...' : 'Save & Deploy Agent'}
-                  </Button>
-                </div>
+                <span className="text-[11px] text-slate-500">
+                  Dial your personal phone to preview voice, persona, and conversation flow in real time.
+                </span>
               </div>
             </div>
           )}
@@ -1862,41 +2286,51 @@ export const BeeAgentsTab: React.FC = () => {
 
           {/* Modal Footer Navigation (Pinned) */}
           <div className="shrink-0 px-6 py-3.5 border-t border-slate-100 bg-slate-50/80 flex items-center justify-between">
-            <button
-              type="button"
-              onClick={() => setIsEditorOpen(false)}
-              className="text-xs font-semibold text-slate-600 hover:text-slate-900"
-            >
-              Cancel
-            </button>
+            <div className="flex items-center gap-2">
+              {activeWizardStep !== 'basics' ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    handleSwitchWizardStep(activeWizardStep === 'launch' ? 'conversation_flow' : 'basics')
+                  }
+                  className="text-xs font-semibold gap-1 text-slate-700"
+                >
+                  <ArrowLeft className="h-3.5 w-3.5" /> Back
+                </Button>
+              ) : <div />}
+            </div>
 
             <div className="flex items-center gap-2">
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={() => handleSaveAgent()}
+                onClick={() => handleSaveAgent(false)}
                 disabled={isSavingAgent}
-                className="text-xs font-semibold"
+                className="text-xs font-semibold text-slate-700"
               >
                 Save Draft
               </Button>
               {activeWizardStep !== 'launch' ? (
                 <Button
                   type="button"
+                  size="sm"
                   onClick={handleContinueStep}
-                  className="bg-[#0c192c] hover:bg-slate-800 text-white font-semibold text-xs px-4 shadow-sm"
+                  className="bg-[#0c192c] hover:bg-slate-800 text-white font-semibold text-xs px-5 shadow-sm gap-1"
                 >
-                  Continue
+                  Continue <ArrowRight className="h-3.5 w-3.5" />
                 </Button>
               ) : (
                 <Button
                   type="button"
-                  onClick={() => handleSaveAgent()}
+                  size="sm"
+                  onClick={() => handleSaveAgent(true)}
                   disabled={isSavingAgent}
-                  className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs px-5 shadow-sm"
+                  className="bg-[#0c192c] hover:bg-slate-800 text-white font-semibold text-xs px-5 shadow-sm"
                 >
-                  {isSavingAgent ? 'Saving agent...' : 'Save & Deploy Agent'}
+                  {isSavingAgent ? 'Deploying agent...' : 'Deploy Agent'}
                 </Button>
               )}
             </div>
