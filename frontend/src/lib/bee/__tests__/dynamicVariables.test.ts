@@ -3,8 +3,11 @@ import {
   validateScriptVariables,
   isVariableUsedInText,
   getUsedJobContextKeys,
+  JOB_DYNAMIC_VARIABLES,
+  CUSTOMER_DYNAMIC_VARIABLES,
   JOB_CONTEXT_VARIABLES,
   CORE_DYNAMIC_VARIABLES,
+  ALL_SHOWN_DYNAMIC_VARIABLES,
   AVAILABLE_DYNAMIC_VARIABLE_SET,
 } from '../dynamicVariables';
 
@@ -110,5 +113,36 @@ describe('getUsedJobContextKeys', () => {
     expect(usedKeys).toContain('assigned_team');
     expect(usedKeys).toContain('line_items');
     expect(usedKeys).not.toContain('internal_costs');
+  });
+});
+
+describe('Displayed Conversation Flow Variables', () => {
+  it('exposes exactly the 14 requested variables in conversation flow tabs partitioned into Job and Customer', () => {
+    expect(ALL_SHOWN_DYNAMIC_VARIABLES).toHaveLength(14);
+    expect(JOB_DYNAMIC_VARIABLES).toHaveLength(11);
+    expect(CUSTOMER_DYNAMIC_VARIABLES).toHaveLength(4);
+
+    const customerKeys = CUSTOMER_DYNAMIC_VARIABLES.map((v) => v.key);
+    expect(customerKeys).toEqual([
+      'customer_name',
+      'phone',
+      'company_name',
+      'service_address',
+    ]);
+
+    const jobKeys = JOB_DYNAMIC_VARIABLES.map((v) => v.key);
+    expect(jobKeys).toEqual([
+      'job_type',
+      'service_request',
+      'service_address',
+      'warranty_end_date',
+      'assigned_team',
+      'job_notes',
+      'line_items',
+      'total_costs',
+      'internal_costs',
+      'visits',
+      'communication_history',
+    ]);
   });
 });

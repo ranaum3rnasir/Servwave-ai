@@ -68,6 +68,7 @@ export const BeeCallDetailModal: React.FC = () => {
             <div className="flex items-center gap-2.5">
               <Button
                 size="icon"
+                aria-label={isPlaying ? 'Pause call recording' : 'Play call recording'}
                 className="h-8 w-8"
                 onClick={togglePlay}
               >

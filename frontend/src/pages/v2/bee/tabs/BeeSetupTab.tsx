@@ -493,7 +493,7 @@ export const BeeSetupTab: React.FC = () => {
       : [];
 
     if (orgJobTypes.length > 0) {
-      return orgJobTypes.map((jt) => {
+      return orgJobTypes.map((jt: string) => {
         const existing = savedMap.get(jt);
         if (existing) {
           return {

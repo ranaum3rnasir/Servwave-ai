@@ -63,8 +63,30 @@ export type CallOutcome =
   | 'ALREADY_COVERED'
   | 'DNC_REQUESTED'
   | 'WRONG_NUMBER'
+  | 'OTHER'
   | 'NO_ANSWER'
   | 'NEEDS_REVIEW';
+
+export const MEANINGFUL_BUSINESS_OUTCOMES: ReadonlySet<CallOutcome> = new Set([
+  'INTERESTED_WARRANTY',
+  'INTERESTED_NEW_WORK',
+  'CALLBACK_REQUESTED',
+  'HANDOFF_HUMAN',
+  'COMPLAINT',
+  'NOT_INTERESTED',
+  'ALREADY_COVERED',
+  'DNC_REQUESTED',
+  'WRONG_NUMBER',
+]);
+
+export type JevClassificationStatus =
+  | 'NOT_REQUIRED'
+  | 'PENDING'
+  | 'SUCCESS'
+  | 'SUCCESS_NO_MATCH'
+  | 'FAILED'
+  | 'TIMEOUT'
+  | 'INVALID_RESPONSE';
 
 export type SentimentOutcome = 'POSITIVE' | 'NEUTRAL' | 'HESITANT' | 'ANGRY_OR_FRUSTRATED';
 
@@ -322,30 +344,37 @@ export class JevCallClassifier {
       'ALREADY_COVERED',
       'NOT_INTERESTED',
       'WRONG_NUMBER',
+      'OTHER',
       'NEEDS_REVIEW'
     ];
 
-    // Sort applicable outcomes according to business priority order for clean presentation
-    applicableOutcomes.sort((a, b) => {
-      const idxA = priorityOrder.indexOf(a);
-      const idxB = priorityOrder.indexOf(b);
-      return (idxA !== -1 ? idxA : 99) - (idxB !== -1 ? idxB : 99);
-    });
+    // Filter applicable outcomes to meaningful business outcomes only (excludes NO_ANSWER, NEEDS_REVIEW, etc.)
+    const validBusiness = applicableOutcomes.filter((o) => MEANINGFUL_BUSINESS_OUTCOMES.has(o));
 
-    // Primary outcome selection:
-    // Trust Jev's direct choice classification when confident (>= 0.60).
-    // Only apply priority overrides when Jev's choice is ambiguous, low-confidence (<0.50), or NEEDS_REVIEW.
-    let primaryOutcome = primaryChoice;
-    const primaryConf = primaryAnswer?.confidence ?? 0;
-    const dncProb = answers.dnc_demanded?.noul ?? answers.dnc_demanded?.probability ?? 0;
+    let primaryOutcome: CallOutcome;
+    let finalApplicableOutcomes: CallOutcome[];
 
-    if (primaryConf < 0.60 && dncProb >= 0.70) {
-      primaryOutcome = 'DNC_REQUESTED';
-    } else if (
-      (primaryOutcome === 'NEEDS_REVIEW' || primaryConf < 0.50) &&
-      applicableOutcomes.length > 0
-    ) {
-      primaryOutcome = applicableOutcomes[0]!;
+    if (validBusiness.length === 0) {
+      primaryOutcome = 'OTHER';
+      finalApplicableOutcomes = [];
+    } else {
+      validBusiness.sort((a, b) => {
+        const idxA = priorityOrder.indexOf(a);
+        const idxB = priorityOrder.indexOf(b);
+        return (idxA !== -1 ? idxA : 99) - (idxB !== -1 ? idxB : 99);
+      });
+      finalApplicableOutcomes = validBusiness;
+
+      const primaryConf = primaryAnswer?.confidence ?? 0;
+      const dncProb = answers.dnc_demanded?.noul ?? answers.dnc_demanded?.probability ?? 0;
+
+      if (primaryConf < 0.60 && dncProb >= 0.70 && validBusiness.includes('DNC_REQUESTED')) {
+        primaryOutcome = 'DNC_REQUESTED';
+      } else if (MEANINGFUL_BUSINESS_OUTCOMES.has(primaryChoice) && validBusiness.includes(primaryChoice)) {
+        primaryOutcome = primaryChoice;
+      } else {
+        primaryOutcome = validBusiness[0]!;
+      }
     }
 
     // Calculate exact analysis cost from token usage:
@@ -360,7 +389,7 @@ export class JevCallClassifier {
 
     return {
       primaryOutcome,
-      applicableOutcomes,
+      applicableOutcomes: finalApplicableOutcomes,
       sentiment: (sentimentAnswer?.choice || sentimentAnswer?.selected || 'NEUTRAL') as SentimentOutcome,
       confidence,
       latencyMs,

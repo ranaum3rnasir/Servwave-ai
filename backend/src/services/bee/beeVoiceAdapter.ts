@@ -1,5 +1,6 @@
 import { prisma } from '../../lib/prisma';
 import { logger } from '../../lib/logger';
+import { BeeService } from './beeService';
 import { VoiceEngineFactory } from './engines/voiceEngineFactory';
 import { VapiVoiceEngine } from './engines/vapiVoiceEngine';
 import {
@@ -9,6 +10,14 @@ import {
   VoiceEngineCallResultPayload,
   VoiceEnginePhoneNumber,
 } from './engines/voiceEngine.interface';
+import {
+  AgentFlow,
+  compilePrompt,
+  finalPrompt,
+  interpolateLine,
+  Plan,
+  VarKey,
+} from './agentFlow';
 
 export type JobContextFieldKey =
   | 'assigned_team'
@@ -130,6 +139,7 @@ export interface VoiceCallPayload {
   warrantyOfferPitch?: string;
   newWorkPitch?: string;
   conversationFlow?: AgentConversationFlow;
+  flow?: AgentFlow | any;
   selectedJobContextFields?: string[];
   jobContextVariables?: JobContextVariablesMap;
   availablePlans?: Array<{ name: string; price: number; durationMonths: number; description?: string }>;
@@ -283,6 +293,7 @@ export class BeeVoiceAdapter {
       customer_id: payload.customerId || '',
       customer_name: payload.customerName || '{{customer_name}}',
       customer_phone: payload.to || '{{customer_phone}}',
+      phone: payload.to || '{{phone}}',
       agent_persona: persona,
       agent_tone: tone,
       agent_language: language,
@@ -298,6 +309,7 @@ export class BeeVoiceAdapter {
       completed_at: payload.completedAt || '',
       warranty_start_date: payload.warrantyStartDate || '',
       warranty_end_date: payload.warrantyEndDate || '{{warranty_end_date}}',
+      warranty_expiry: payload.warrantyEndDate || '{{warranty_expiry}}',
       warranty_status: payload.warrantyStatus || 'active',
       available_plans: payload.availablePlans ? JSON.stringify(payload.availablePlans) : '[]',
       available_plans_summary: availablePlansSummary,
@@ -320,6 +332,104 @@ export class BeeVoiceAdapter {
     baseVariables.flow_custom_instructions = interpolate(flowCustomInstructions);
     baseVariables.warranty_pitch = baseVariables.flow_warranty_pitch;
     baseVariables.new_work_pitch = baseVariables.flow_new_work_pitch;
+
+    let flowObj = payload.flow;
+    if (typeof flowObj === 'string') {
+      try {
+        flowObj = JSON.parse(flowObj);
+      } catch (e) {
+        flowObj = null;
+      }
+    }
+
+    if (flowObj && Array.isArray(flowObj.steps) && flowObj.steps.length > 0) {
+      const plans: Plan[] = (payload.availablePlans || []).map((p) => ({
+        name: p.name,
+        price: `$${p.price}`,
+        term: `${p.durationMonths} months`,
+        includes: p.description || 'parts and labor coverage',
+      }));
+      if (plans.length === 0) {
+        plans.push({
+          name: 'Standard Extended Protection',
+          price: '$240',
+          term: '12 months',
+          includes: 'parts and labor coverage',
+        });
+      }
+
+      const compiled = compilePrompt(flowObj, plans);
+
+      const custName =
+        payload.customerName && payload.customerName !== '{{customer_name}}'
+          ? payload.customerName
+          : 'Valued Customer';
+      const custFirst = custName.split(' ')[0] || 'Valued Customer';
+      const custLast = custName.split(' ').slice(1).join(' ') || '';
+
+      const contextValues: Partial<Record<VarKey, string>> = {
+        'customer.first_name': custFirst,
+        'customer.last_name': custLast,
+        'customer.email': 'customer@example.com',
+        'customer.phone':
+          payload.to && payload.to !== '{{customer_phone}}' ? payload.to : '+1 555-0100',
+        'agent.name': persona,
+        'company.name': companyName,
+        'job.number':
+          payload.jobNumber && payload.jobNumber !== '{{job_number}}'
+            ? payload.jobNumber
+            : 'J00187',
+        'job.type':
+          payload.jobType && payload.jobType !== '{{job_type}}'
+            ? payload.jobType
+            : tradeFocus,
+        'job.equipment':
+          payload.serviceRequest || (payload.jobType && payload.jobType !== '{{job_type}}' ? `${payload.jobType} system` : 'HVAC split system'),
+        'job.service_address':
+          payload.serviceAddress && payload.serviceAddress !== '{{service_address}}'
+            ? payload.serviceAddress
+            : '14 Garden Road',
+        'job.completed_date': payload.completedAt || 'Recently',
+        'job.assigned_team':
+          filteredJobVars.assigned_team &&
+          filteredJobVars.assigned_team !== '{{assigned_team}}'
+            ? filteredJobVars.assigned_team
+            : 'Team North',
+        'warranty.plan_name': plans[0]?.name || 'Standard Extended Protection',
+        'warranty.end_date':
+          payload.warrantyEndDate && payload.warrantyEndDate !== '{{warranty_end_date}}'
+            ? payload.warrantyEndDate
+            : 'December 2',
+        'warranty.days_left': '14',
+        'offer.early_discount': '10%',
+        'invoice.date':
+          filteredJobVars.invoice_sent &&
+          filteredJobVars.invoice_sent !== '{{invoice_sent}}'
+            ? filteredJobVars.invoice_sent
+            : 'Recently',
+        'invoice.total':
+          filteredJobVars.total_costs &&
+          filteredJobVars.total_costs !== '{{total_costs}}'
+            ? filteredJobVars.total_costs
+            : '$240',
+      };
+
+      const finalSysPrompt = finalPrompt(compiled, contextValues);
+
+      const step1Line = flowObj.steps[0]?.line || '';
+      const firstMessage =
+        interpolateLine(step1Line, contextValues as Record<string, string>) ||
+        `Hi ${custFirst}, this is ${persona} from ${companyName}. Do you have a quick minute?`;
+
+      return {
+        mergedPrompt: finalSysPrompt,
+        firstMessage,
+        dynamicVariables: {
+          ...baseVariables,
+          ...contextValues,
+        },
+      };
+    }
 
     const mergedPrompt = interpolate(BEE_MASTER_PROMPT_TEMPLATE);
     baseVariables.master_prompt = mergedPrompt;
@@ -352,30 +462,87 @@ export class BeeVoiceAdapter {
     ]);
 
     const companyName = org?.name || 'Our Service Team';
-    const { mergedPrompt, firstMessage } = this.buildMergedMasterPrompt({
-      to: '{{customer_phone}}',
-      customerName: '{{customer_name}}',
-      companyName,
-      agentPersona: agent.persona_name || 'Emma',
-      agentTone: agent.tone || 'Warm, helpful, and consultative',
-      agentLanguage: agent.language || 'English (US)',
-      tradeFocus: agent.trade_focus || 'General Service',
-      jobNumber: '{{job_number}}',
-      jobType: '{{job_type}}',
-      serviceRequest: '{{service_request}}',
-      serviceAddress: '{{service_address}}',
-      warrantyEndDate: '{{warranty_end_date}}',
-      warrantyOfferPitch: agent.warranty_offer_pitch,
-      newWorkPitch: agent.new_work_pitch,
-      conversationFlow: agent.conversation_flow,
-      selectedJobContextFields: agent.job_context_fields,
-      availablePlans: activePlans.map((p) => ({
-        name: p.name,
-        price: Number(p.price),
-        durationMonths: p.duration_months,
-        description: p.description || undefined,
-      })),
-    });
+    const plans: Plan[] = activePlans.map((p) => ({
+      name: p.name,
+      price: `$${Number(p.price)}`,
+      term: `${p.duration_months} months`,
+      includes: p.description || 'parts and labor coverage',
+    }));
+
+    let systemPrompt = '';
+    let firstMessage = '';
+
+    let agentFlow = agent.flow;
+    if (typeof agentFlow === 'string') {
+      try {
+        agentFlow = JSON.parse(agentFlow);
+      } catch (e) {
+        agentFlow = null;
+      }
+    }
+    if ((!agentFlow || !Array.isArray(agentFlow.steps) || agentFlow.steps.length === 0) && agent.eligible_job_types) {
+      let rawEj = agent.eligible_job_types;
+      if (typeof rawEj === 'string') {
+        try {
+          rawEj = JSON.parse(rawEj);
+        } catch (e) {}
+      }
+      if (rawEj && typeof rawEj === 'object' && rawEj.flow) {
+        agentFlow = rawEj.flow;
+        if (typeof agentFlow === 'string') {
+          try {
+            agentFlow = JSON.parse(agentFlow);
+          } catch (e) {
+            agentFlow = null;
+          }
+        }
+      }
+    }
+
+    if (agentFlow && Array.isArray(agentFlow.steps) && agentFlow.steps.length > 0) {
+      systemPrompt = compilePrompt(
+        agentFlow,
+        plans.length > 0
+          ? plans
+          : [
+              {
+                name: 'Standard Extended Protection',
+                price: '$240',
+                term: '12 months',
+                includes: 'parts and labor coverage',
+              },
+            ]
+      );
+      firstMessage = agentFlow.steps[0]?.line || '';
+    } else {
+      const { mergedPrompt, firstMessage: fm } = this.buildMergedMasterPrompt({
+        to: '{{customer_phone}}',
+        customerName: '{{customer_name}}',
+        companyName,
+        agentPersona: agent.persona_name || 'Emma',
+        agentTone: agent.tone || 'Warm, helpful, and consultative',
+        agentLanguage: agent.language || 'English (US)',
+        tradeFocus: agent.trade_focus || 'General Service',
+        jobNumber: '{{job_number}}',
+        jobType: '{{job_type}}',
+        serviceRequest: '{{service_request}}',
+        serviceAddress: '{{service_address}}',
+        warrantyEndDate: '{{warranty_end_date}}',
+        warrantyOfferPitch: agent.warranty_offer_pitch,
+        newWorkPitch: agent.new_work_pitch,
+        conversationFlow: agent.conversation_flow,
+        flow: agent.flow,
+        selectedJobContextFields: agent.job_context_fields,
+        availablePlans: activePlans.map((p) => ({
+          name: p.name,
+          price: Number(p.price),
+          durationMonths: p.duration_months,
+          description: p.description || undefined,
+        })),
+      });
+      systemPrompt = mergedPrompt;
+      firstMessage = fm;
+    }
 
     return {
       agentId: agent.id,
@@ -386,7 +553,7 @@ export class BeeVoiceAdapter {
       language: agent.language || 'English (US)',
       tone: agent.tone || 'Warm, helpful, and consultative',
       firstMessage,
-      systemPrompt: mergedPrompt,
+      systemPrompt,
     };
   }
 
@@ -496,6 +663,33 @@ export class BeeVoiceAdapter {
       org?.phone?.trim() ||
       undefined;
 
+    let flowToUse = payload.flow;
+    if (typeof flowToUse === 'string') {
+      try {
+        flowToUse = JSON.parse(flowToUse);
+      } catch (e) {
+        flowToUse = null;
+      }
+    }
+    if ((!flowToUse || !Array.isArray(flowToUse.steps) || flowToUse.steps.length === 0) && payload.agentId) {
+      const dbAgent = await prisma.beeVoiceAgent.findFirst({
+        where: { id: payload.agentId, organization_id: orgId },
+      });
+      if (dbAgent) {
+        const normAgent = BeeService.normalizeAgentRecord(dbAgent);
+        flowToUse = normAgent?.flow;
+      }
+    }
+    if (!flowToUse || !Array.isArray(flowToUse.steps) || flowToUse.steps.length === 0) {
+      const defaultAgent = await prisma.beeVoiceAgent.findFirst({
+        where: { organization_id: orgId, is_active: true },
+      });
+      if (defaultAgent) {
+        const normDefault = BeeService.normalizeAgentRecord(defaultAgent);
+        flowToUse = normDefault?.flow;
+      }
+    }
+
     const enrichedPayload: VoiceCallPayload = {
       ...payload,
       from: resolvedFromNumber,
@@ -505,6 +699,7 @@ export class BeeVoiceAdapter {
       serviceRequest: payload.serviceRequest || payload.jobType || 'Service',
       serviceAddress: payload.serviceAddress || 'Customer Site',
       warrantyEndDate: payload.warrantyEndDate || 'Upcoming',
+      flow: flowToUse,
     };
 
     const { mergedPrompt, firstMessage, dynamicVariables } =

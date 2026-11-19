@@ -45,7 +45,8 @@ const OUTCOME_COLORS: Record<string, string> = {
   'No answer/Machine': token('--border-color'),
   'Wrong Number': token('--warning-strong'),
   'Donot Call': token('--ocean-900'),
-  'others': token('--success'),
+  'Other': token('--text-secondary'),
+  'others': token('--text-secondary'),
 };
 
 const getOutcomeColor = (key: string): string => {
@@ -889,7 +890,14 @@ export const BeeOutcomeTag: React.FC<{ tag: string }> = ({ tag }) => {
       </span>
     );
   }
-  if (t.includes('lead') || t.includes('sold') || t.includes('others') || t.includes('both') || t.includes('warranty')) {
+  if (t === 'other' || t === 'others') {
+    return (
+      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold bg-neutral-surface text-text-secondary border border-border">
+        Other
+      </span>
+    );
+  }
+  if (t.includes('lead') || t.includes('sold') || t.includes('both') || t.includes('warranty')) {
     return (
       <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold bg-success-surface text-success-text border border-success-border">
         Lead created

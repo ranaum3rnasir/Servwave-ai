@@ -123,7 +123,7 @@ export const BeeWarrantyPlansTab: React.FC = () => {
 
     if (orgJobTypes.length > 0) {
       const savedMap = new Map(jobTypeWarranties.map((j) => [j.job_type, j]));
-      const merged: JobTypeWarrantyItem[] = orgJobTypes.map((jt) => {
+      const merged: JobTypeWarrantyItem[] = orgJobTypes.map((jt: string) => {
         const existing = savedMap.get(jt);
         if (existing) {
           return { ...existing };

@@ -27,6 +27,10 @@ import {
 import { cn } from "@/ui-kit/lib/utils";
 import { Skeleton } from "@/ui-kit/components/ui/skeleton";
 import { useMediaQuery } from "@/ui-kit/hooks/useMediaQuery";
+import type { AdminScrollTable } from "@/ui-kit/lib/intendedScrollers";
+
+/** The ids the lists give their row-selection checkbox column; a phone card hoists it to its own row. */
+const SELECT_COLUMN_IDS = ["select", "__select"];
 
 // Merges with the app's existing ColumnMeta augmentation in
 // components/data/data-table.tsx, which already supplies `fixed` and `pinned`.
@@ -71,11 +75,28 @@ export interface DataTableProps<TData, TValue> {
   /** Stable row identity - required for selection to survive sorting or paging. */
   getRowId?: (row: TData, index: number) => string;
   isLoading?: boolean;
+  /**
+   * A background refetch is in flight - distinct from `isLoading`, which (for
+   * a caller using TanStack Query's `placeholderData: keepPreviousData`) is
+   * only true on the very first load. Pass the query's own `isFetching` so a
+   * page/page-size change shows the footer spinner instead of nothing: the
+   * old rows staying on screen with no signal at all reads as the click not
+   * having registered. Ignored entirely when `page` (server-side paging) is
+   * not passed.
+   */
+  isFetching?: boolean;
   /** Rendered in place of the body when there are no rows. */
   empty?: React.ReactNode;
   /** Receives the table instance so a parent can render toolbars and bulk bars. */
   children?: (table: TanstackTable<TData>) => React.ReactNode;
   onRowClick?: (row: TData) => void;
+  /**
+   * Opt-in keyboard access for `onRowClick`: every clickable row becomes a tab stop and Enter opens it. Off by
+   * default so no existing list gains tab stops it did not ask for.
+   */
+  rowsFocusable?: boolean;
+  /** A row that answers false is not clickable, focusable or stretched-linked (a row the viewer may not open). */
+  isRowClickable?: (row: TData) => boolean;
   initialPageSize?: number;
   className?: string;
   /**
@@ -95,6 +116,8 @@ export interface DataTableProps<TData, TValue> {
   /** Rows per page. Controlled only alongside `page`. */
   pageSize?: number;
   onPageSizeChange?: (pageSize: number) => void;
+  /** Hide the rows-per-page control, for a list whose page size is fixed. */
+  hidePageSize?: boolean;
   /** Total matching rows on the server - the "of N" in the footer readout. */
   rowCount?: number;
 
@@ -138,6 +161,23 @@ export interface DataTableProps<TData, TValue> {
    * layout moves until it asks for it.
    */
   mobileCards?: boolean;
+
+  /**
+   * Render pagination controls above the table in addition to below it.
+   * Off by default so only tables that explicitly request top pagination show it.
+   */
+  topPagination?: boolean;
+
+  /**
+   * A wide admin table (mobile slice 17): the table scrolls sideways inside its
+   * own box and its identifying column stays put. Names the box on the mobile
+   * gate's exemption list (`ui-kit/lib/intendedScrollers.ts`); see `Table`'s
+   * `scrollBox`. The identifying column is pinned for the caller when it has
+   * not pinned one: the first column, or the first one after a leading
+   * checkbox column. With `mobileCards`, phones still get cards; the box is
+   * the table layout's behaviour wherever the table renders.
+   */
+  scrollBox?: AdminScrollTable;
 
   /**
    * NOT HERE: row virtualization.
@@ -222,13 +262,13 @@ function useTableState<T>(
  *   </DataTable>
  */
 function DataTable<TData, TValue>({
-  columns, data, getRowId, isLoading, empty, children, onRowClick,
+  columns, data, getRowId, isLoading, isFetching, empty, children, onRowClick, rowsFocusable = false, isRowClickable,
   initialPageSize = 25, className,
-  page, pageCount, onPageChange, pageSize, onPageSizeChange, rowCount,
+  page, pageCount, onPageChange, pageSize, onPageSizeChange, hidePageSize, rowCount,
   sorting: sortingProp, onSortingChange, manualSorting,
   rowSelection: rowSelectionProp, onRowSelectionChange,
   columnVisibility: columnVisibilityProp, onColumnVisibilityChange, defaultColumnVisibility,
-  enableColumnResizing = false, mobileCards = false,
+  enableColumnResizing = false, mobileCards = false, scrollBox, topPagination = false,
 }: DataTableProps<TData, TValue>) {
   const [sorting, setSorting] = useTableState<SortingState>(sortingProp, onSortingChange, []);
   const [rowSelection, setRowSelection] = useTableState<RowSelectionState>(
@@ -256,6 +296,7 @@ function DataTable<TData, TValue>({
     if (next.pageIndex !== pagination.pageIndex) onPageChange?.(next.pageIndex + 1);
     if (next.pageSize !== pagination.pageSize) onPageSizeChange?.(next.pageSize);
   }, [pagination, onPageChange, onPageSizeChange]);
+
 
   const table = useReactTable({
     data,
@@ -292,6 +333,7 @@ function DataTable<TData, TValue>({
   const visibleColumns = table.getVisibleLeafColumns().length;
   const rows = table.getRowModel().rows;
 
+  const cardIdBase = React.useId();
   const isMobile = useMediaQuery("(max-width: 767px)");
   const showCards = mobileCards && isMobile;
 
@@ -544,12 +586,19 @@ function DataTable<TData, TValue>({
    */
   const pinnedIds = React.useMemo(() => {
     const ids: string[] = [];
-    for (const column of table.getVisibleLeafColumns()) {
+    const columns = table.getVisibleLeafColumns();
+    for (const column of columns) {
       if (!column.columnDef.meta?.pinned) break;
       ids.push(column.id);
     }
+    // A scroll box always keeps its identifying column in view. When the caller
+    // pinned nothing, or only the leading checkbox, the next column is it.
+    if (scrollBox && !ids.some((id) => id !== "select")) {
+      const next = columns[ids.length];
+      if (next) ids.push(next.id);
+    }
     return ids;
-  }, [table, columnVisibility]);
+  }, [table, columnVisibility, scrollBox]);
 
   /**
    * What the pinned columns actually RENDER at, read back from the DOM.
@@ -615,7 +664,7 @@ function DataTable<TData, TValue>({
       const rendered = renderedWidths[column.id];
       const colWidth = rendered && rendered > 0 ? rendered : layout[column.id] ?? column.getSize();
 
-      if (inPinnedRun && column.columnDef.meta?.pinned) {
+      if (inPinnedRun && pinnedIds.includes(column.id)) {
         pOffsets[column.id] = running;
         pinnedTotal = running + colWidth;
       } else {
@@ -624,7 +673,7 @@ function DataTable<TData, TValue>({
       running += colWidth;
     }
     return { pinnedOffsets: pOffsets, totalPinnedWidth: pinnedTotal, columnLeftOffsets: cOffsets };
-  }, [table, layout, renderedWidths]);
+  }, [table, layout, renderedWidths, pinnedIds]);
 
   const pinnedStyle = (columnId: string, zIndex: number): React.CSSProperties =>
     pinnedOffsets[columnId] === undefined
@@ -661,35 +710,63 @@ function DataTable<TData, TValue>({
       ) : rows.length === 0 ? (
         <div className="px-4 py-3">{empty}</div>
       ) : (
-        rows.map((row) => (
+        rows.map((row) => {
+          const labelOf = (cell: Cell<TData, unknown>) => {
+            const header = cell.column.columnDef.header;
+            return cell.column.columnDef.meta?.label ?? (typeof header === "string" ? header : "");
+          };
+          const visible = row.getVisibleCells();
+          // The selection checkbox is not a labelled detail: it gets its own row at the top.
+          const selectCell = visible.find((cell) => SELECT_COLUMN_IDS.includes(cell.column.id));
+          const details = visible.filter((cell) => cell !== selectCell);
+          // The card is named for its first labelled detail (the text a sighted user reads first).
+          const nameCell = details.find((cell) => cell.column.id !== "actions" && labelOf(cell));
+          const nameId = nameCell ? `${cardIdBase}-${row.id}-${nameCell.id}` : undefined;
+          return (
           <div
             key={row.id}
             data-slot="table-card"
             data-state={row.getIsSelected() ? "selected" : undefined}
-            onClick={onRowClick ? () => onRowClick(row.original) : undefined}
             className={cn(
-              "border-b px-4 py-3 last:border-b-0",
+              // `relative` anchors the stretched open button; the card has no click handler.
+              "relative border-b px-4 py-3 last:border-b-0",
               "data-[state=selected]:bg-selected",
-              onRowClick && "cursor-pointer",
             )}
           >
-            <dl className="space-y-1.5">
-              {row.getVisibleCells().map((cell) => {
-                const meta = cell.column.columnDef.meta;
-                const header = cell.column.columnDef.header;
-                const label = meta?.label ?? (typeof header === "string" ? header : "");
+            {/* One named button covers the card: a screen reader reaches the row as a single
+                control and a tap anywhere on it opens the record. The checkbox, links and the
+                actions menu sit above it (z-10) so they keep their own taps. */}
+            {onRowClick && (isRowClickable?.(row.original) ?? true) && (
+              <button
+                type="button"
+                data-slot="table-card-open"
+                data-stretched-link=""
+                aria-labelledby={nameId}
+                aria-label={nameId ? undefined : "Open record"}
+                onClick={() => onRowClick(row.original)}
+                className="focus-visible:ring-ring absolute inset-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset"
+              />
+            )}
+            {selectCell && (
+              <div className="relative z-10 mb-2 flex items-center">
+                {flexRender(selectCell.column.columnDef.cell, selectCell.getContext())}
+              </div>
+            )}
+            <dl className="space-y-1.5 [&_a]:relative [&_a]:z-10 [&_button]:relative [&_button]:z-10 [&_[role=button]]:relative [&_[role=button]]:z-10 [&_input]:relative [&_input]:z-10">
+              {details.map((cell) => {
+                const label = labelOf(cell);
                 const value = flexRender(cell.column.columnDef.cell, cell.getContext());
                 if (!label) {
                   return (
-                    <dd key={cell.id} className="flex justify-end">{value}</dd>
+                    <dd key={cell.id} className="relative z-10 flex justify-end">{value}</dd>
                   );
                 }
                 return (
                   <div key={cell.id} className="flex items-start justify-between gap-3">
-                    <dt className="text-muted-foreground shrink-0 text-[11.5px] font-semibold">
+                    <dt className="text-muted-foreground shrink-0 text-[0.71875rem] font-semibold">
                       {label}
                     </dt>
-                    <dd className="min-w-0 flex-1 text-right text-[13px] break-words">
+                    <dd id={`${cardIdBase}-${row.id}-${cell.id}`} className="min-w-0 flex-1 text-right text-[0.8125rem] break-words">
                       {value}
                     </dd>
                   </div>
@@ -697,7 +774,8 @@ function DataTable<TData, TValue>({
               })}
             </dl>
           </div>
-        ))
+          );
+        })
       )}
     </div>
   ) : (
@@ -718,7 +796,11 @@ function DataTable<TData, TValue>({
      * opposite case, where the distribution has not been measured yet.
      */
     <Table
-      containerClassName="w-full"
+      // A scroll box is the size container its empty state measures itself against (`w-[100cqw]`).
+      // It is `w-full`, so inline-size containment changes nothing about its own width.
+      containerClassName={cn("w-full", scrollBox && "[container-type:inline-size]")}
+      scrollBox={scrollBox}
+      scrollMarker={scrollBox ? undefined : "record-list"}
       ref={containerRef}
       className="table-fixed min-w-full"
       style={{ width: tableWidth }}
@@ -828,19 +910,38 @@ function DataTable<TData, TValue>({
           ))
         ) : rows.length === 0 ? (
           <TableRow className="hover:bg-kit-card">
-            <TableCell colSpan={visibleColumns} padding="none">{empty}</TableCell>
+            <TableCell colSpan={visibleColumns} padding="none">
+              {scrollBox ? (
+                // In a scroll box the one cell spans the whole (wider) table, so a centred message
+                // sat half out of view. Pin it to the box's left edge at the box's own width
+                // (`cqw` of the box, which is the size container - see the Table below).
+                <div className="sticky left-0 w-[100cqw]">{empty}</div>
+              ) : (
+                empty
+              )}
+            </TableCell>
           </TableRow>
         ) : (
-          rows.map((row) => (
+          rows.map((row) => {
+            const clickable = Boolean(onRowClick) && (isRowClickable?.(row.original) ?? true);
+            return (
             <TableRow
               key={row.id}
               data-state={row.getIsSelected() ? "selected" : undefined}
-              onClick={onRowClick ? () => onRowClick(row.original) : undefined}
-              className={cn(onRowClick && "cursor-pointer")}
+              onClick={clickable ? () => onRowClick!(row.original) : undefined}
+              tabIndex={clickable && rowsFocusable ? 0 : undefined}
+              onKeyDown={clickable && rowsFocusable
+                ? (event) => {
+                    // Enter on the row itself, not on a link or button inside it.
+                    if (event.key === "Enter" && event.target === event.currentTarget) onRowClick!(row.original);
+                  }
+                : undefined}
+              className={cn(clickable && "cursor-pointer")}
             >
               {row.getVisibleCells().map(renderCell)}
             </TableRow>
-          ))
+            );
+          })
         )}
       </TableBody>
     </Table>
@@ -849,8 +950,11 @@ function DataTable<TData, TValue>({
   return (
     <div className={cn("bg-kit-card overflow-hidden rounded-lg border shadow-sm", className)}>
       {children?.(table)}
+      {topPagination && (
+        <DataTablePagination table={table} isFetching={isFetching} placement="top" hidePageSize={hidePageSize} />
+      )}
       {body}
-      <DataTablePagination table={table} />
+      <DataTablePagination table={table} isFetching={isFetching} hidePageSize={hidePageSize} />
     </div>
   );
 }

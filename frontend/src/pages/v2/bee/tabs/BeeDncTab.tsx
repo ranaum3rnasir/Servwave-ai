@@ -135,6 +135,7 @@ export const BeeDncTab: React.FC = () => {
                   <div className="flex justify-end">
                     <Button
                       size="icon"
+                      aria-label="Remove from DNC registry"
                       variant="ghost"
                       tone="danger"
                       className="h-7 w-7 text-text-muted hover:text-danger hover:bg-danger/10"

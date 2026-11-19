@@ -116,7 +116,7 @@ export const BeeDateRangeFilter: React.FC<BeeDateRangeFilterProps> = ({
           <DatePicker
             value={value.from || ''}
             max={value.to || undefined}
-            onChange={(from) => onChange({ ...value, from })}
+            onChange={(from: string) => onChange({ ...value, from })}
             placeholder="From"
             className="w-[8.5rem]"
             inputClassName="h-9 text-xs"
@@ -125,7 +125,7 @@ export const BeeDateRangeFilter: React.FC<BeeDateRangeFilterProps> = ({
           <DatePicker
             value={value.to || ''}
             min={value.from || undefined}
-            onChange={(to) => onChange({ ...value, to })}
+            onChange={(to: string) => onChange({ ...value, to })}
             placeholder="To"
             className="w-[8.5rem]"
             inputClassName="h-9 text-xs"

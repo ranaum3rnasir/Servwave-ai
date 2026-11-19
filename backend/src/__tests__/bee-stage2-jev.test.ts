@@ -1,19 +1,21 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Prisma } from '@prisma/client';
 import { BeeService } from '../services/bee/beeService';
-import { JevCallClassifier } from '../services/bee/classifier/jevClassifier';
+import { JevCallClassifier, MEANINGFUL_BUSINESS_OUTCOMES } from '../services/bee/classifier/jevClassifier';
 import { prisma } from '../lib/prisma';
 import { ALPHA_ORG_ID } from './helpers';
 
-vi.mock('../services/bee/classifier/jevClassifier', () => {
+vi.mock('../services/bee/classifier/jevClassifier', async (importOriginal) => {
+  const actual: any = await importOriginal();
   return {
+    ...actual,
     JevCallClassifier: vi.fn(),
   };
 });
 
 const mockPrisma = prisma as any;
 
-describe('Bee Stage 2 Jev Outcome Classifier & Cost Accumulator', () => {
+describe('Bee AI Calling — Redesigned Call Outcomes, Jev Classification & Fallback', () => {
   const orgId = ALPHA_ORG_ID;
   const mockCallId = '11111111-2222-3333-4444-555555555555';
 
@@ -21,351 +23,485 @@ describe('Bee Stage 2 Jev Outcome Classifier & Cost Accumulator', () => {
     vi.clearAllMocks();
   });
 
-  describe('1. Monetary Parsing and Precision Arithmetic', () => {
-    it('accurately parses monetary values from various formats', () => {
-      expect(BeeService.parseCost('$0.000420')).toBe(0.00042);
-      expect(BeeService.parseCost('0.025000')).toBe(0.025);
-      expect(BeeService.parseCost('$12.50')).toBe(12.5);
-      expect(BeeService.parseCost(0.045)).toBe(0.045);
-      expect(BeeService.parseCost(null)).toBe(0);
-      expect(BeeService.parseCost(undefined)).toBe(0);
-      expect(BeeService.parseCost('')).toBe(0);
-      expect(BeeService.parseCost('invalid')).toBe(0);
-    });
-
-    it('accumulates costs via micro-dollars without floating point inaccuracies', () => {
-      // AddMonetaryValues precision check
-      const total = BeeService.addMonetaryValues(0.025, 0.00042);
-      expect(total).toBe(0.02542);
-      expect(total.toFixed(6)).toBe('0.025420');
-
-      // Vapi $0.025000 + Jev $0.000420 = total $0.025420
-      const promptExample = BeeService.addMonetaryValues(
-        BeeService.parseCost('0.025000'),
-        BeeService.parseCost('$0.000420')
-      );
-      expect(promptExample.toFixed(6)).toBe('0.025420');
-    });
-
-    it('handles zero or missing Jev cost safely', () => {
-      const vapiOnly = BeeService.addMonetaryValues(0.035, 0);
-      expect(vapiOnly).toBe(0.035);
-      expect(vapiOnly.toFixed(6)).toBe('0.035000');
-    });
-  });
-
-  describe('2. Outcome Merging and Deduplication', () => {
-    it('merges Stage 1 and Jev outcomes cleanly (Prompt Example)', () => {
-      // Example from prompt:
-      // Stage 1 = ANSWERED; Jev = INTERESTED_WARRANTY, CALLBACK_REQUESTED, COMPLAINT;
-      // final = ANSWERED, INTERESTED_WARRANTY, CALLBACK_REQUESTED, COMPLAINT
-      const stage1 = 'ANSWERED';
-      const jevApplicable = ['INTERESTED_WARRANTY', 'CALLBACK_REQUESTED', 'COMPLAINT'];
-      const merged = BeeService.mergeStageOutcomes(stage1, jevApplicable);
-
-      expect(merged).toBe('ANSWERED,INTERESTED_WARRANTY,CALLBACK_REQUESTED,COMPLAINT');
-    });
-
-    it('preserves Stage 1 primary outcome at index 0 even when Jev has a different primary outcome', () => {
-      const stage1 = 'ANSWERED';
-      const jevApplicable = ['COMPLAINT', 'HANDOFF_HUMAN'];
-      const merged = BeeService.mergeStageOutcomes(stage1, jevApplicable);
-
-      const tokens = merged.split(',');
-      expect(tokens[0]).toBe('ANSWERED');
-      expect(tokens).toContain('COMPLAINT');
-      expect(tokens).toContain('HANDOFF_HUMAN');
-    });
-
-    it('deduplicates outcomes across both stages', () => {
-      const stage1 = 'ANSWERED,INTERESTED_WARRANTY';
-      const jevApplicable = ['INTERESTED_WARRANTY', 'CALLBACK_REQUESTED'];
-      const merged = BeeService.mergeStageOutcomes(stage1, jevApplicable);
-
-      expect(merged).toBe('ANSWERED,INTERESTED_WARRANTY,CALLBACK_REQUESTED');
-      const warrantyCount = merged.split(',').filter((t) => t === 'INTERESTED_WARRANTY').length;
-      expect(warrantyCount).toBe(1);
-    });
-
-    it('is strictly idempotent on repeated merges and retries', () => {
-      const stage1 = 'ANSWERED,INTERESTED_WARRANTY,CALLBACK_REQUESTED';
-      const jevApplicable = ['INTERESTED_WARRANTY', 'CALLBACK_REQUESTED', 'COMPLAINT'];
-
-      const pass1 = BeeService.mergeStageOutcomes(stage1, jevApplicable);
-      const pass2 = BeeService.mergeStageOutcomes(pass1, jevApplicable);
-      const pass3 = BeeService.mergeStageOutcomes(pass2, jevApplicable);
-
-      expect(pass1).toBe('ANSWERED,INTERESTED_WARRANTY,CALLBACK_REQUESTED,COMPLAINT');
-      expect(pass2).toBe(pass1);
-      expect(pass3).toBe(pass1);
-    });
-
-    it('handles no extra outcomes when Jev applicable outcomes are empty or identical', () => {
-      expect(BeeService.mergeStageOutcomes('ANSWERED', [])).toBe('ANSWERED');
-      expect(BeeService.mergeStageOutcomes('NO_ANSWER', ['NO_ANSWER'])).toBe('NO_ANSWER');
-    });
-  });
-
-  describe('3. Stage 2 Classification Persistence & Idempotency', () => {
-    it('successfully classifies, accumulates costs, and persists Jev results', async () => {
-      const mockCallLog = {
-        id: mockCallId,
-        organization_id: orgId,
-        customer_id: 'cust-1',
-        customer_name: 'John Doe',
-        customer_phone: '+15551234567',
-        outcome: 'ANSWERED',
-        transcript: [
-          { speaker: 'agent', text: 'Hi John, calling about your warranty.' },
-          { speaker: 'customer', text: 'Yes, I want to renew the warranty and also get a quote for a new AC.' },
-        ],
-        ai_summary: 'Customer wants warranty renewal and new AC quote.',
-        vapi_cost: new Prisma.Decimal('0.025000'),
-        total_cost: new Prisma.Decimal('0.025000'),
-        cost_estimate: new Prisma.Decimal('0.025000'),
-        jev_status: 'pending',
-      };
-
-      mockPrisma.beeCallLog.findFirst.mockResolvedValueOnce(mockCallLog);
-      mockPrisma.beeCallLog.update.mockImplementationOnce((args: any) =>
-        Promise.resolve({ ...mockCallLog, ...args.data })
-      );
-
-      const mockClassifierInstance = {
-        classify: vi.fn().mockResolvedValue({
-          primaryOutcome: 'INTERESTED_WARRANTY',
-          applicableOutcomes: ['INTERESTED_WARRANTY', 'INTERESTED_NEW_WORK'],
-          sentiment: 'POSITIVE',
-          confidence: 0.88,
-          latencyMs: 350,
-          analysisCost: '$0.000420',
-        }),
-      };
-      (JevCallClassifier as any).mockImplementation(function() {
-        return mockClassifierInstance;
+  describe('1. Stage 1 Gating & Determination of Answered vs Unanswered', () => {
+    it('NO_ANSWER skips Jev, preserves Stage 1 outcome, marks NOT_REQUIRED, zero Jev cost, no OTHER', async () => {
+      const result = BeeService.deriveStageOneCallFacts({
+        endedReason: 'customer-did-not-answer',
+        durationSeconds: 0,
+        transcript: [],
       });
 
-      const result = await BeeService.classifyCallStageTwo(mockCallId, orgId);
+      expect(result.isAnswered).toBe(false);
+      expect(result.primaryOutcome).toBe('NO_ANSWER');
+      expect(result.outcomeTags).toEqual(['NO_ANSWER']);
+      expect(result.outcomeTags).not.toContain('OTHER');
+      expect(result.outcomeTags).not.toContain('ANSWERED');
 
-      expect(result).toBeDefined();
-      expect(mockClassifierInstance.classify).toHaveBeenCalledTimes(1);
-      expect(mockPrisma.beeCallLog.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: { id: mockCallId },
-          data: expect.objectContaining({
-            outcome: 'ANSWERED,INTERESTED_WARRANTY,INTERESTED_NEW_WORK',
-            jev_primary_outcome: 'INTERESTED_WARRANTY',
-            jev_applicable_outcomes: ['INTERESTED_WARRANTY', 'INTERESTED_NEW_WORK'],
-            jev_sentiment: 'POSITIVE',
-            jev_status: 'completed',
-            vapi_cost: new Prisma.Decimal('0.025000'),
-            jev_cost: new Prisma.Decimal('0.000420'),
-            total_cost: new Prisma.Decimal('0.025420'),
-            cost_estimate: new Prisma.Decimal('0.025420'),
-          }),
-        })
-      );
-    });
-
-    it('does not re-classify or re-accumulate costs on already completed calls without forceRetry', async () => {
-      const completedCallLog = {
-        id: mockCallId,
-        organization_id: orgId,
-        outcome: 'ANSWERED,INTERESTED_WARRANTY',
-        jev_status: 'completed',
-        vapi_cost: new Prisma.Decimal('0.025000'),
-        jev_cost: new Prisma.Decimal('0.000420'),
-        total_cost: new Prisma.Decimal('0.025420'),
-      };
-
-      mockPrisma.beeCallLog.findFirst.mockResolvedValueOnce(completedCallLog);
-      const mockClassifierInstance = { classify: vi.fn() };
-      (JevCallClassifier as any).mockImplementation(function() {
-        return mockClassifierInstance;
-      });
-
-      const result = await BeeService.classifyCallStageTwo(mockCallId, orgId);
-
-      expect(result).toEqual(completedCallLog);
-      expect(mockClassifierInstance.classify).not.toHaveBeenCalled();
-      expect(mockPrisma.beeCallLog.update).not.toHaveBeenCalled();
-    });
-
-    it('gracefully handles missing transcript/summary by marking jev_status as skipped', async () => {
-      const emptyCall = {
+      // Now verify classifyCallStageTwo skips Jev if call is marked unanswered
+      const unansweredCall = {
         id: mockCallId,
         organization_id: orgId,
         outcome: 'NO_ANSWER',
+        is_answered: false,
+        duration_seconds: 0,
         transcript: [],
-        ai_summary: '',
-        jev_status: 'pending',
+        vapi_cost: new Prisma.Decimal('0.005000'),
+        jev_cost: new Prisma.Decimal('0.000000'),
+        total_cost: new Prisma.Decimal('0.005000'),
       };
-
-      mockPrisma.beeCallLog.findFirst.mockResolvedValueOnce(emptyCall);
-      mockPrisma.beeCallLog.update.mockImplementationOnce((args: any) =>
-        Promise.resolve({ ...emptyCall, ...args.data })
+      mockPrisma.beeCallLog.findFirst.mockResolvedValueOnce(unansweredCall);
+      mockPrisma.beeCallLog.update.mockImplementation((args: any) =>
+        Promise.resolve({ ...unansweredCall, ...args.data })
       );
 
-      const mockClassifierInstance = { classify: vi.fn() };
-      (JevCallClassifier as any).mockImplementation(function() {
-        return mockClassifierInstance;
+      const mockClassifier = { classify: vi.fn() };
+      (JevCallClassifier as any).mockImplementation(function () {
+        return mockClassifier;
       });
 
-      const result = await BeeService.classifyCallStageTwo(mockCallId, orgId);
-
-      expect(mockClassifierInstance.classify).not.toHaveBeenCalled();
+      const res = await BeeService.classifyCallStageTwo(mockCallId, orgId);
+      expect(mockClassifier.classify).not.toHaveBeenCalled();
       expect(mockPrisma.beeCallLog.update).toHaveBeenCalledWith(
         expect.objectContaining({
           where: { id: mockCallId },
           data: expect.objectContaining({
-            jev_status: 'skipped',
+            jev_status: 'NOT_REQUIRED',
+            jev_cost: new Prisma.Decimal('0.000000'),
           }),
         })
       );
     });
 
-    it('preserves historical calls without Jev data and sets Vapi cost as total', async () => {
-      const historicalCall = {
-        id: mockCallId,
-        organization_id: orgId,
-        outcome: 'ANSWERED',
-        transcript: [{ speaker: 'customer', text: 'Hello, please remove me from your list.' }],
-        ai_summary: 'Customer wants DNC.',
-        cost_estimate: new Prisma.Decimal('0.015000'),
-        vapi_cost: null,
-        jev_cost: null,
-        total_cost: null,
-        jev_status: null,
-      };
-
-      mockPrisma.beeCallLog.findFirst.mockResolvedValueOnce(historicalCall);
-      mockPrisma.beeCallLog.update.mockImplementationOnce((args: any) =>
-        Promise.resolve({ ...historicalCall, ...args.data })
-      );
-
-      const mockClassifierInstance = {
-        classify: vi.fn().mockResolvedValue({
-          primaryOutcome: 'DNC_REQUESTED',
-          applicableOutcomes: ['DNC_REQUESTED'],
-          sentiment: 'ANGRY_OR_FRUSTRATED',
-          confidence: 0.95,
-          latencyMs: 250,
-          analysisCost: '$0.000300',
-        }),
-      };
-      (JevCallClassifier as any).mockImplementation(function() {
-        return mockClassifierInstance;
+    it('VOICEMAIL skips Jev, preserves Stage 1 outcome, marks NOT_REQUIRED', async () => {
+      const facts = BeeService.deriveStageOneCallFacts({
+        endedReason: 'machine_detected',
+        durationSeconds: 12,
+        transcript: [],
       });
 
-      const result = await BeeService.classifyCallStageTwo(mockCallId, orgId);
+      expect(facts.isAnswered).toBe(false);
+      expect(facts.primaryOutcome).toBe('NO_ANSWER,VOICEMAIL');
+      expect(facts.outcomeTags).not.toContain('OTHER');
+    });
 
-      expect(mockPrisma.beeCallLog.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: { id: mockCallId },
-          data: expect.objectContaining({
-            outcome: 'ANSWERED,DNC_REQUESTED',
-            vapi_cost: new Prisma.Decimal('0.015000'),
-            jev_cost: new Prisma.Decimal('0.000300'),
-            total_cost: new Prisma.Decimal('0.015300'),
-            cost_estimate: new Prisma.Decimal('0.015300'),
-            jev_status: 'completed',
-          }),
-        })
-      );
+    it('FAILED and WRONG_NUMBER skip Jev and do not apply OTHER', async () => {
+      const failedFacts = BeeService.deriveStageOneCallFacts({
+        status: 'failed',
+        endedReason: 'sip-gateway-error',
+        durationSeconds: 0,
+      });
+      expect(failedFacts.isAnswered).toBe(false);
+      expect(failedFacts.primaryOutcome).toBe('FAILED');
+      expect(failedFacts.outcomeTags).not.toContain('OTHER');
+
+      const wrongNumberFacts = BeeService.deriveStageOneCallFacts({
+        endedReason: 'wrong-number',
+        endedMessage: 'unallocated number',
+        durationSeconds: 2,
+      });
+      expect(wrongNumberFacts.isAnswered).toBe(false);
+      expect(wrongNumberFacts.primaryOutcome).toBe('WRONG_NUMBER');
+      expect(wrongNumberFacts.outcomeTags).not.toContain('OTHER');
+    });
+
+    it('determines answered when customer speaks or call duration >= 5s', () => {
+      const answeredTurns = BeeService.deriveStageOneCallFacts({
+        endedReason: 'customer-hung-up',
+        durationSeconds: 4,
+        transcript: [{ speaker: 'customer', text: 'Hello, who is this?' }],
+      });
+      expect(answeredTurns.isAnswered).toBe(true);
+      expect(answeredTurns.primaryOutcome).toBe('OTHER'); // provisional until Stage 2
+
+      const answeredDuration = BeeService.deriveStageOneCallFacts({
+        endedReason: 'assistant-ended-call',
+        durationSeconds: 15,
+        transcript: [],
+      });
+      expect(answeredDuration.isAnswered).toBe(true);
     });
   });
 
-  describe('4. Reliability, Error Handling & Safe Retries', () => {
-    it('retains Stage 1 results, marks jev_status as failed, and does NOT throw on Jev failure', async () => {
-      const mockCallLog = {
-        id: mockCallId,
-        organization_id: orgId,
-        outcome: 'ANSWERED',
-        transcript: [{ speaker: 'agent', text: 'Hello' }],
-        ai_summary: 'Call connected',
-        cost_estimate: new Prisma.Decimal('0.020000'),
-        vapi_cost: new Prisma.Decimal('0.020000'),
-        total_cost: new Prisma.Decimal('0.020000'),
-        jev_status: 'pending',
-      };
-
-      mockPrisma.beeCallLog.findFirst.mockResolvedValueOnce(mockCallLog);
-      mockPrisma.beeCallLog.update.mockImplementationOnce((args: any) =>
-        Promise.resolve({ ...mockCallLog, ...args.data })
-      );
-
-      const mockClassifierInstance = {
-        classify: vi.fn().mockRejectedValue(new Error('Connection timeout to TypeSafe API (15000ms)')),
-      };
-      (JevCallClassifier as any).mockImplementation(function() {
-        return mockClassifierInstance;
-      });
-
-      // Should not throw!
-      const result = await BeeService.classifyCallStageTwo(mockCallId, orgId);
-
-      expect(result).toBeDefined();
-      expect(mockPrisma.beeCallLog.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: { id: mockCallId },
-          data: expect.objectContaining({
-            jev_status: 'failed',
-            jev_error: 'Connection timeout to TypeSafe API (15000ms)',
-          }),
-        })
-      );
-      // Outcome and costs were NOT erased or altered
-      expect(mockCallLog.outcome).toBe('ANSWERED');
+  describe('2. Outcome Merging, Priority, and Stripping of ANSWERED', () => {
+    it('stops adding ANSWERED to final user-facing outcomes (ANSWERED + INTERESTED_WARRANTY -> INTERESTED_WARRANTY)', () => {
+      const merged = BeeService.mergeStageOutcomes('ANSWERED', ['INTERESTED_WARRANTY']);
+      expect(merged).toBe('INTERESTED_WARRANTY');
+      expect(merged).not.toContain('ANSWERED');
+      expect(merged).not.toContain('OTHER');
     });
 
-    it('permits safe retry after failure with forceRetry: true', async () => {
-      const failedCallLog = {
+    it('applies all applicable business outcomes when multiple are returned', () => {
+      const merged = BeeService.mergeStageOutcomes('OTHER', [
+        'INTERESTED_WARRANTY',
+        'INTERESTED_NEW_WORK',
+        'CALLBACK_REQUESTED',
+      ]);
+      expect(merged).toBe('INTERESTED_WARRANTY,INTERESTED_NEW_WORK,CALLBACK_REQUESTED');
+      expect(merged).not.toContain('ANSWERED');
+      expect(merged).not.toContain('OTHER');
+    });
+
+    it('applies OTHER when Jev returns no applicable business outcomes', () => {
+      const merged = BeeService.mergeStageOutcomes('OTHER', []);
+      expect(merged).toBe('OTHER');
+    });
+
+    it('never applies OTHER alongside meaningful business outcomes', () => {
+      const merged = BeeService.mergeStageOutcomes('OTHER', ['COMPLAINT']);
+      expect(merged).toBe('COMPLAINT');
+      expect(merged.split(',')).not.toContain('OTHER');
+    });
+
+    it('deduplicates outcomes idempotently across retries', () => {
+      const pass1 = BeeService.mergeStageOutcomes('INTERESTED_WARRANTY', ['INTERESTED_WARRANTY', 'COMPLAINT']);
+      const pass2 = BeeService.mergeStageOutcomes(pass1, ['INTERESTED_WARRANTY', 'COMPLAINT']);
+      expect(pass1).toBe('INTERESTED_WARRANTY,COMPLAINT');
+      expect(pass2).toBe(pass1);
+    });
+  });
+
+  describe('3. Internal Classification Status and Fallback Handling', () => {
+    it('marks SUCCESS and applies business outcomes when Jev succeeds', async () => {
+      const callLog = {
         id: mockCallId,
         organization_id: orgId,
-        outcome: 'ANSWERED',
-        transcript: [{ speaker: 'agent', text: 'Hello' }, { speaker: 'customer', text: 'Call me back tomorrow.' }],
-        ai_summary: 'Callback requested',
-        cost_estimate: new Prisma.Decimal('0.020000'),
+        is_answered: true,
+        outcome: 'OTHER',
+        transcript: [{ speaker: 'customer', text: 'I am interested in extending my warranty.' }],
+        ai_summary: 'Customer wants warranty extension.',
         vapi_cost: new Prisma.Decimal('0.020000'),
-        total_cost: new Prisma.Decimal('0.020000'),
-        jev_status: 'failed',
-        jev_error: 'Network glitch',
+        cost_estimate: new Prisma.Decimal('0.020000'),
+        jev_status: 'PENDING',
       };
 
-      mockPrisma.beeCallLog.findFirst.mockResolvedValueOnce(failedCallLog);
-      mockPrisma.beeCallLog.update.mockImplementationOnce((args: any) =>
-        Promise.resolve({ ...failedCallLog, ...args.data })
+      mockPrisma.beeCallLog.findFirst.mockResolvedValue(callLog);
+      mockPrisma.beeCallLog.update.mockImplementation((args: any) =>
+        Promise.resolve({ ...callLog, ...args.data })
       );
 
-      const mockClassifierInstance = {
+      const mockClassifier = {
         classify: vi.fn().mockResolvedValue({
-          primaryOutcome: 'CALLBACK_REQUESTED',
-          applicableOutcomes: ['CALLBACK_REQUESTED'],
-          sentiment: 'NEUTRAL',
-          confidence: 0.9,
-          latencyMs: 310,
-          analysisCost: '$0.000350',
+          primaryOutcome: 'INTERESTED_WARRANTY',
+          applicableOutcomes: ['INTERESTED_WARRANTY'],
+          sentiment: 'POSITIVE',
+          confidence: 0.95,
+          latencyMs: 320,
+          analysisCost: '$0.000420',
         }),
       };
-      (JevCallClassifier as any).mockImplementation(function() {
-        return mockClassifierInstance;
+      (JevCallClassifier as any).mockImplementation(function () {
+        return mockClassifier;
       });
 
-      const retried = await BeeService.classifyCallStageTwo(mockCallId, orgId, { forceRetry: true });
+      const result = await BeeService.classifyCallStageTwo(mockCallId, orgId);
 
-      expect(retried).toBeDefined();
-      expect(mockClassifierInstance.classify).toHaveBeenCalledTimes(1);
       expect(mockPrisma.beeCallLog.update).toHaveBeenCalledWith(
         expect.objectContaining({
           where: { id: mockCallId },
           data: expect.objectContaining({
-            outcome: 'ANSWERED,CALLBACK_REQUESTED',
-            jev_status: 'completed',
-            jev_error: null,
-            total_cost: new Prisma.Decimal('0.020350'),
+            outcome: 'INTERESTED_WARRANTY',
+            jev_status: 'SUCCESS',
+            is_answered: true,
+            vapi_cost: new Prisma.Decimal('0.020000'),
+            jev_cost: new Prisma.Decimal('0.000420'),
+            total_cost: new Prisma.Decimal('0.020420'),
           }),
         })
       );
+    });
+
+    it('marks SUCCESS_NO_MATCH and applies user-facing OTHER when Jev succeeds with no business match', async () => {
+      const callLog = {
+        id: mockCallId,
+        organization_id: orgId,
+        is_answered: true,
+        outcome: 'OTHER',
+        transcript: [{ speaker: 'customer', text: 'Who is this? Okay, whatever, bye.' }],
+        ai_summary: 'Short conversation with no specific intent.',
+        vapi_cost: new Prisma.Decimal('0.015000'),
+        cost_estimate: new Prisma.Decimal('0.015000'),
+      };
+
+      mockPrisma.beeCallLog.findFirst.mockResolvedValue(callLog);
+      mockPrisma.beeCallLog.update.mockImplementation((args: any) =>
+        Promise.resolve({ ...callLog, ...args.data })
+      );
+
+      const mockClassifier = {
+        classify: vi.fn().mockResolvedValue({
+          primaryOutcome: 'OTHER',
+          applicableOutcomes: [],
+          sentiment: 'NEUTRAL',
+          confidence: 0.70,
+          latencyMs: 280,
+          analysisCost: '$0.000210',
+        }),
+      };
+      (JevCallClassifier as any).mockImplementation(function () {
+        return mockClassifier;
+      });
+
+      await BeeService.classifyCallStageTwo(mockCallId, orgId);
+
+      expect(mockPrisma.beeCallLog.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: mockCallId },
+          data: expect.objectContaining({
+            outcome: 'OTHER',
+            jev_status: 'SUCCESS_NO_MATCH',
+            is_answered: true,
+            total_cost: new Prisma.Decimal('0.015210'),
+          }),
+        })
+      );
+    });
+
+    it('applies OTHER + FAILED on Jev API failure without inventing costs', async () => {
+      const callLog = {
+        id: mockCallId,
+        organization_id: orgId,
+        is_answered: true,
+        outcome: 'OTHER',
+        transcript: [{ speaker: 'customer', text: 'Hello' }],
+        ai_summary: 'Connected',
+        vapi_cost: new Prisma.Decimal('0.012000'),
+        cost_estimate: new Prisma.Decimal('0.012000'),
+      };
+
+      mockPrisma.beeCallLog.findFirst.mockResolvedValue(callLog);
+      mockPrisma.beeCallLog.findUnique.mockResolvedValue(callLog);
+      mockPrisma.beeCallLog.update.mockImplementation((args: any) =>
+        Promise.resolve({ ...callLog, ...args.data })
+      );
+
+      const mockClassifier = {
+        classify: vi.fn().mockRejectedValue(new Error('500 Internal Server Error from Jev API')),
+      };
+      (JevCallClassifier as any).mockImplementation(function () {
+        return mockClassifier;
+      });
+
+      await BeeService.classifyCallStageTwo(mockCallId, orgId);
+
+      expect(mockPrisma.beeCallLog.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: mockCallId },
+          data: expect.objectContaining({
+            outcome: 'OTHER',
+            jev_status: 'FAILED',
+            jev_error: '500 Internal Server Error from Jev API',
+            jev_cost: new Prisma.Decimal('0.000000'),
+            total_cost: new Prisma.Decimal('0.012000'),
+          }),
+        })
+      );
+    });
+
+    it('applies OTHER + TIMEOUT when Jev times out', async () => {
+      const callLog = {
+        id: mockCallId,
+        organization_id: orgId,
+        is_answered: true,
+        outcome: 'OTHER',
+        transcript: [{ speaker: 'customer', text: 'Hello' }],
+        ai_summary: 'Connected',
+        vapi_cost: new Prisma.Decimal('0.012000'),
+        cost_estimate: new Prisma.Decimal('0.012000'),
+      };
+
+      mockPrisma.beeCallLog.findFirst.mockResolvedValue(callLog);
+      mockPrisma.beeCallLog.findUnique.mockResolvedValue(callLog);
+      mockPrisma.beeCallLog.update.mockImplementation((args: any) =>
+        Promise.resolve({ ...callLog, ...args.data })
+      );
+
+      const timeoutError = new Error('The operation was aborted due to timeout');
+      timeoutError.name = 'AbortError';
+
+      const mockClassifier = {
+        classify: vi.fn().mockRejectedValue(timeoutError),
+      };
+      (JevCallClassifier as any).mockImplementation(function () {
+        return mockClassifier;
+      });
+
+      await BeeService.classifyCallStageTwo(mockCallId, orgId);
+
+      expect(mockPrisma.beeCallLog.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: mockCallId },
+          data: expect.objectContaining({
+            outcome: 'OTHER',
+            jev_status: 'TIMEOUT',
+            jev_cost: new Prisma.Decimal('0.000000'),
+            total_cost: new Prisma.Decimal('0.012000'),
+          }),
+        })
+      );
+    });
+
+    it('applies OTHER + INVALID_RESPONSE when Jev returns invalid payload', async () => {
+      const callLog = {
+        id: mockCallId,
+        organization_id: orgId,
+        is_answered: true,
+        outcome: 'OTHER',
+        transcript: [{ speaker: 'customer', text: 'Hello' }],
+        ai_summary: 'Connected',
+        vapi_cost: new Prisma.Decimal('0.012000'),
+        cost_estimate: new Prisma.Decimal('0.012000'),
+      };
+
+      mockPrisma.beeCallLog.findFirst.mockResolvedValue(callLog);
+      mockPrisma.beeCallLog.findUnique.mockResolvedValue(callLog);
+      mockPrisma.beeCallLog.update.mockImplementation((args: any) =>
+        Promise.resolve({ ...callLog, ...args.data })
+      );
+
+      const mockClassifier = {
+        classify: vi.fn().mockResolvedValue({
+          invalidField: true, // missing primaryOutcome and applicableOutcomes
+        }),
+      };
+      (JevCallClassifier as any).mockImplementation(function () {
+        return mockClassifier;
+      });
+
+      await BeeService.classifyCallStageTwo(mockCallId, orgId);
+
+      expect(mockPrisma.beeCallLog.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: mockCallId },
+          data: expect.objectContaining({
+            outcome: 'OTHER',
+            jev_status: 'INVALID_RESPONSE',
+            jev_cost: new Prisma.Decimal('0.000000'),
+            total_cost: new Prisma.Decimal('0.012000'),
+          }),
+        })
+      );
+    });
+
+    it('successful retry replaces previously assigned fallback OTHER with actual business outcomes', async () => {
+      const previousFailedCall = {
+        id: mockCallId,
+        organization_id: orgId,
+        is_answered: true,
+        outcome: 'OTHER',
+        transcript: [{ speaker: 'customer', text: 'I need to complain about my repair.' }],
+        ai_summary: 'Customer unhappy with repair work.',
+        vapi_cost: new Prisma.Decimal('0.020000'),
+        jev_cost: new Prisma.Decimal('0.000000'),
+        total_cost: new Prisma.Decimal('0.020000'),
+        cost_estimate: new Prisma.Decimal('0.020000'),
+        jev_status: 'FAILED',
+        jev_error: 'Connection timeout',
+      };
+
+      mockPrisma.beeCallLog.findFirst.mockResolvedValue(previousFailedCall);
+      mockPrisma.beeCallLog.update.mockImplementation((args: any) =>
+        Promise.resolve({ ...previousFailedCall, ...args.data })
+      );
+
+      const mockClassifier = {
+        classify: vi.fn().mockResolvedValue({
+          primaryOutcome: 'COMPLAINT',
+          applicableOutcomes: ['COMPLAINT'],
+          sentiment: 'ANGRY_OR_FRUSTRATED',
+          confidence: 0.95,
+          latencyMs: 310,
+          analysisCost: '$0.000300',
+        }),
+      };
+      (JevCallClassifier as any).mockImplementation(function () {
+        return mockClassifier;
+      });
+
+      const result = await BeeService.classifyCallStageTwo(mockCallId, orgId, { forceRetry: true });
+
+      expect(mockPrisma.beeCallLog.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: mockCallId },
+          data: expect.objectContaining({
+            outcome: 'COMPLAINT', // OTHER was replaced by COMPLAINT!
+            jev_status: 'SUCCESS',
+            jev_error: null,
+            jev_cost: new Prisma.Decimal('0.000300'),
+            total_cost: new Prisma.Decimal('0.020300'),
+          }),
+        })
+      );
+    });
+
+    it('stale failed attempt does not overwrite an already successful classification', async () => {
+      const alreadySuccessful = {
+        id: mockCallId,
+        organization_id: orgId,
+        is_answered: true,
+        outcome: 'INTERESTED_WARRANTY',
+        jev_status: 'SUCCESS',
+        vapi_cost: new Prisma.Decimal('0.020000'),
+        jev_cost: new Prisma.Decimal('0.000400'),
+        total_cost: new Prisma.Decimal('0.020400'),
+      };
+
+      mockPrisma.beeCallLog.findFirst.mockResolvedValue(alreadySuccessful);
+      mockPrisma.beeCallLog.findUnique.mockResolvedValue(alreadySuccessful);
+
+      const mockClassifier = {
+        classify: vi.fn().mockRejectedValue(new Error('Delayed network failure')),
+      };
+      (JevCallClassifier as any).mockImplementation(function () {
+        return mockClassifier;
+      });
+
+      const res = await BeeService.classifyCallStageTwo(mockCallId, orgId);
+      expect(res.jev_status).toBe('SUCCESS');
+      expect(res.outcome).toBe('INTERESTED_WARRANTY');
+    });
+  });
+
+  describe('4. Cost Accumulation and Precision', () => {
+    it('calculates total call cost = Vapi cost + Jev cost from stored values and never double-counts', () => {
+      const vapiCost = 0.0149;
+      const jevCost = 0.000047;
+      const total = BeeService.addMonetaryValues(vapiCost, jevCost);
+      expect(total).toBe(0.014947);
+      expect(total.toFixed(6)).toBe('0.014947');
+
+      // Retry calculation recalculates from stored vapiCost + current jevCost, NOT total + jevCost
+      const recalculatedTotal = BeeService.addMonetaryValues(vapiCost, jevCost);
+      expect(recalculatedTotal).toBe(0.014947);
+    });
+
+    it('unanswered calls have zero Jev cost', () => {
+      const vapiCost = 0.0085;
+      const jevCost = 0;
+      const total = BeeService.addMonetaryValues(vapiCost, jevCost);
+      expect(total).toBe(0.0085);
+    });
+  });
+
+  describe('5. Backward Compatibility & Parsing', () => {
+    it('safely handles historical records that only have ANSWERED without crashing', () => {
+      const parsed = BeeService.parseOutcomeTags('ANSWERED');
+      expect(parsed.isAnswered).toBe(true);
+      expect(parsed.tags).toEqual(['ANSWERED']);
+      expect(parsed.primaryLegacyCode).toBe('ANSWERED');
+    });
+
+    it('strips ANSWERED when any meaningful outcome is present', () => {
+      const parsed = BeeService.parseOutcomeTags('ANSWERED,INTERESTED_WARRANTY');
+      expect(parsed.isAnswered).toBe(true);
+      expect(parsed.tags).toEqual(['INTERESTED_WARRANTY']);
+      expect(parsed.tags).not.toContain('ANSWERED');
+    });
+
+    it('parses OTHER correctly as answered', () => {
+      const parsed = BeeService.parseOutcomeTags('OTHER');
+      expect(parsed.isAnswered).toBe(true);
+      expect(parsed.tags).toEqual(['OTHER']);
+      expect(parsed.primaryLegacyCode).toBe('OTHER');
     });
   });
 });

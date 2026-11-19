@@ -11,6 +11,10 @@ datasource db {
 model User {
   id                          String                @id @default(uuid()) @db.Uuid
   email                       String                @unique
+  // Sign-in lives at the identity provider, not here. This column holds the person's LIVE INVITE MARK (security finding H2):
+  // 'invite:v1:<sha256 of the live link's id>' while an invite is out, 'invite:used:<sha256>' while a link is being used, and ''
+  // otherwise. Revoke, deactivate and erase blank it, which expires every invite link. See lib/invite-link.ts. Never a password.
+  // While a revoke waits on the identity provider it holds that revoke's own 'revoking:<uuid>' (user.controller revokeLogin).
   password_hash               String                @default("")
   first_name                  String
   last_name                   String
@@ -20,7 +24,13 @@ model User {
   role                        Role
   custom_role_id              String?               @db.Uuid
   custom_role                 CustomRole?           @relation(fields: [custom_role_id], references: [id], onDelete: SetNull)
+  // Roles & Permissions P15: whether a person is an Admin is this flag, never a role name. An Admin holds full access
+  // whatever role or custom role they carry; every "is this an admin" check reads it (lib/permissions/effectiveRole.ts).
+  is_admin                    Boolean               @default(false)
   is_active                   Boolean               @default(true)
+  // Roles & Permissions P19: set when an Admin erased this deactivated person's personal data (name, email, phone, photo,
+  // credentials). The row and every link to it stay. An erased person cannot sign in or be reactivated.
+  erased_at                   DateTime?
   has_login                   Boolean               @default(true)
   mfa_email_enrolled          Boolean               @default(false)
   enforce_clock_in_location   Boolean               @default(true)
@@ -41,17 +51,19 @@ model User {
   cancelled_visits            Visit[]               @relation("VisitCancelledBy")
   visit_milestone_events      VisitMilestoneLog[]   @relation("VisitMilestoneLogActor")
   created_notes               Note[]                @relation("NoteCreatedBy")
+  edited_notes                Note[]                @relation("NoteEditedBy")
   collected_payments          Payment[]             @relation("PaymentCollectedBy")
   timeline_events             TimelineEvent[]       @relation("TimelineCreatedBy")
   refunded_invoices           Invoice[]             @relation("InvoiceRefundedBy")
   table_preferences           UserTablePreference[]
+  dashboard_layout            UserDashboardLayout?
 
   // --- Entity-redesign §8 money model (additive) ---
   issued_refunds  Refund[]  @relation("RefundRefundedBy")
   created_credits Credit[]  @relation("CreditCreatedBy")
   voided_payments Payment[] @relation("PaymentVoidedBy")
 
-  // --- Emanuel inventory/comms unified back-relations ---
+  // --- Inventory/comms unified back-relations ---
   primary_tech_locations    InventoryLocation[] @relation("LocationPrimaryTech")
   stock_movements_performed StockMovement[]     @relation("StockMovementActor")
   assigned_job_stages       JobStage[]          @relation("JobStageAssignedTech")
@@ -83,6 +95,7 @@ model User {
   // the forward side; ON DELETE SET NULL, so deleting a user empties the thread's
   // counterparty rather than deleting the conversation.
   message_threads           MessageThread[]     @relation("UserMessageThreads")
+  sent_messages             Message[]           @relation("MessageSentBy")
 
   // --- Logistic Orders: four distinct actor seats on the same document ---
   logistic_orders_created   LogisticOrder[] @relation("LogisticOrderCreatedBy")
@@ -94,9 +107,16 @@ model User {
   lead_crew_memberships  LeadAssignee[]  @relation("LeadAssigneeUser")
   visit_assignments      VisitAssignee[] @relation("VisitAssigneeUser")
   commission_owned_leads Lead[]          @relation("LeadCommissionOwner")
+  dispatched_leads       Lead[]          @relation("LeadDispatcher")
   created_jobs           Job[]           @relation("JobCreator")
+  record_contact_entries_made    RecordContactEntry[] @relation("RecordContactEntryCreator")
+  record_contact_entries_edited  RecordContactEntry[] @relation("RecordContactEntryEditor")
+  job_reviews_finished           JobReview[]          @relation("JobReviewFinisher")
+  job_review_item_checks         JobReviewItemCheck[]
+  job_review_customer_decisions  JobReviewCustomerDecision[]
   dispatched_jobs        Job[]           @relation("JobDispatcher")
   jobs_as_salesperson    Job[]           @relation("JobSalesperson")
+  jobs_closed            Job[]           @relation("JobClosedBy")
   // --- Creator tracking back-relations (audit only; nothing reads them for authorization) ---
   created_leads          Lead[]          @relation("LeadCreator")
   // Back-relation for the hand-set contact correction (spec #1751 D5) — audit only, like the
@@ -105,6 +125,8 @@ model User {
   created_invoices       Invoice[]       @relation("InvoiceCreator")
   created_customers      Customer[]      @relation("CustomerCreator")
   created_payments       Payment[]       @relation("PaymentCreator")
+  payment_resolutions    PaymentAttentionResolution[] @relation("PaymentAttentionResolvedBy")
+  disputes_submitted     Dispute[]                    @relation("DisputeEvidenceSubmittedBy")
   created_attachments    Attachment[]    @relation("AttachmentCreator")
   // --- Service Plans ---
   service_plans_sold     ServicePlan[]   @relation("ServicePlanSoldBy")
@@ -116,8 +138,16 @@ model User {
   // --- Email-OTP 2FA ---
   mfa_email_challenges MfaEmailChallenge[] @relation("MfaChallengeUser")
 
-  // --- Per-user permission overrides (allow/deny on top of the role grant) ---
-  permission_overrides UserPermissionOverride[] @relation("UserPermissionOverrideUser")
+  // Roles & Permissions M2: this person's own switch values, and the role they were last given
+  // (a built-in role name or a custom role key). See lib/permissions/switches.
+  switch_values        PermissionUserSwitch[]
+  based_on_role_key    String?
+
+  // --- Per-user mailboxes (PRD 10): the mailbox issued to this person, and mailboxes they hold ---
+  issued_mailboxes Mailbox[] @relation("MailboxIssuedTo")
+  held_mailboxes   Mailbox[] @relation("MailboxHolder")
+  mailbox_reads    MailboxReader[] @relation("MailboxReaderPerson")
+  mailbox_links    MailboxReader[] @relation("MailboxReaderLinkedBy")
 
   // --- Tasks module ---
   tasks_created Task[] @relation("TaskCreatedBy")
@@ -130,7 +160,12 @@ model User {
 
   organization_id String       @db.Uuid
   organization    Organization @relation(fields: [organization_id], references: [id])
+  // Roles & Permissions AL-16 (M11): the company this person is the Owner of. At most one (organizations.owner_user_id is
+  // unique), and only their own company: the reference is the pair (company, person).
+  owned_organizations Organization[] @relation("OrganizationOwner")
 
+  // The target of the Owner reference above: (organization_id, id) is unique because id is.
+  @@unique([organization_id, id], map: "users_organization_id_id_key")
   @@index([custom_role_id])
   @@index([department_id])
   @@index([location_id])
@@ -266,6 +301,8 @@ model Location {
   country         String?  @default("US") @db.VarChar(2)
   timezone        String?  @db.VarChar(64)
   phone           String?  @db.VarChar(50)
+  // SRVW-54 - optional extension paired with `phone`, same shape as User.phone_ext.
+  phone_ext       String?
   manager_id      String?  @db.Uuid
   created_at      DateTime @default(now())
   updated_at      DateTime @updatedAt
@@ -345,7 +382,7 @@ model Customer {
   bill_to           Customer?         @relation("CustomerBillTo", fields: [bill_to_customer_id], references: [id], onDelete: SetNull)
   billed_customers  Customer[]        @relation("CustomerBillTo")
 
-  // --- Emanuel comms/inventory unified back-relations ---
+  // --- Comms/inventory unified back-relations ---
   membership_tier       String?
   sla_profile           String?
   call_sessions         CallSession[]
@@ -359,11 +396,9 @@ model Customer {
   job_stages            JobStage[]
   stock_approvals       StockApproval[]
   logistic_orders       LogisticOrder[]       @relation("LogisticOrderCustomer")
-  spider_alert_logs     SpiderAlertLog[]
   // Entries logged directly ON the customer (#2021) - NOT the roll-up, which reaches a
   // lead-anchored or job-anchored entry through its own anchor.
   manual_communication_logs ManualCommunicationLog[] @relation("CustomerManualCommunicationLogs")
-
 
   // --- Creator tracking (audit only). NOTHING reads these for authorization. ---
   // Immutable, written once at create. Same shape and rationale as Job (see that model for the full
@@ -383,9 +418,13 @@ model Customer {
   @@index([created_by_id])
   @@index([email])
   @@index([phone])
+  // #3015: the fixed-order customer pick for a phone number reads the second phone too.
+  @@index([organization_id, secondary_phone])
   @@index([organization_id])
   @@index([parent_id])
   @@index([bill_to_customer_id])
+  // V7-03: serves the lead-source used-by count and the rename rewrite on Customer.ad_source.
+  @@index([organization_id, ad_source])
   @@map("customers")
 }
 
@@ -422,6 +461,8 @@ model CustomerPhone {
   customer    Customer @relation(fields: [customer_id], references: [id], onDelete: Cascade)
 
   @@index([customer_id])
+  // #3015: the fixed-order customer pick for a phone number reads the phone list by number.
+  @@index([phone])
   @@map("customer_phones")
 }
 
@@ -461,10 +502,19 @@ model Lead {
   service_request                String
   // --- Lead stage clocks (spec #1751) --------------------------------------------------------
   // `contacted_at` predates them and keeps its name and its meaning: the FIRST human-originated
-  // outbound touch. D5 finally gives it writers - until then the only writer anywhere in the
-  // product was the demo seeder, which is why the dashboard's "needs follow-up" tile equals the
-  // open-lead count on every real org.
+  // outbound touch still on the lead. D5 finally gives it writers - until then the only writer
+  // anywhere in the product was the demo seeder, which is why the dashboard's "needs follow-up"
+  // tile equals the open-lead count on every real org. Cleared by D7 (SPEC-4, Ran 24 Oct): when a
+  // person takes a Contacted lead's last outbound contact away, `reconsiderLeadContact` moves the
+  // lead back to New and clears it.
   contacted_at                   DateTime?
+  // D7: when the lead last moved back to New because no outbound contact was left on it. Written
+  // only by `reconsiderLeadContact` (services/lead-contact.service.ts), in the same statement as the
+  // status and the cleared `contacted_at`. RE-ANCHORS on each move back (like
+  // last_visit_completed_at). Null for a lead that never moved back. Spider's New stay starts here
+  // when it is set, else at created_at (services/spider/config.ts spiderStageOf). No index: it is
+  // only ever read off a lead row already being loaded.
+  returned_to_new_at             DateTime?
   contacted_note                 String?
   // Who set contacted_at BY HAND, null when the automatic detection set it. D5 ratifies a human
   // correction door, and an anonymous correction is not auditable.
@@ -535,7 +585,8 @@ model Lead {
   // owner's metric is "how long until the salesperson sent an estimate", asked once.
   first_estimate_sent_at         DateTime?
   // The lead-side twin of lost_at / cancelled_at, which already exist. Its absence is why
-  // time-to-close is inferred today from `updated_at`, a value any unrelated edit moves.
+  // time-to-close is inferred today from `updated_at`, a value any unrelated edit moves. It is the day the
+  // lead LAST closed as Won: a reopened lead that wins again is stamped again.
   won_at                         DateTime?
   notes                          String?
   lost_at                        DateTime?
@@ -590,7 +641,16 @@ model Lead {
   // --- Scheduler redesign: assignment M2M spine (legacy assigned_to/walkthrough_assigned_to dropped in TG7) ---
   commission_owner_id String?         @db.Uuid
   commission_owner    User?           @relation("LeadCommissionOwner", fields: [commission_owner_id], references: [id])
+  // The lead's Dispatcher (Roles & Permissions, PRD 3): who books the walkthrough and assigns its crew.
+  // Emptied when the user is deleted, like the job's Dispatcher. A lead holds a person here only through
+  // the Assign people to leads switch and slot eligibility; existing leads start with none.
+  dispatcher_id       String?         @db.Uuid
+  dispatcher          User?           @relation("LeadDispatcher", fields: [dispatcher_id], references: [id], onDelete: SetNull)
   lead_assignees      LeadAssignee[]
+  // --- Spider lead watcher (#2619): one alert-log row per status visit it alerted on ---
+  spider_alerts       SpiderAlert[]
+  // The lead's own phones, emails and name changes (Roles & Permissions, PRD 5): never written to the customer.
+  record_contact_entries RecordContactEntry[]
   // --- Logistic Orders ---
   logistic_orders     LogisticOrder[] @relation("LogisticOrderLead")
 
@@ -610,14 +670,13 @@ model Lead {
   organization_id String       @db.Uuid
   organization    Organization @relation(fields: [organization_id], references: [id])
 
-  spider_alert_logs SpiderAlertLog[]
-
   @@unique([organization_id, lead_number])
   @@index([created_by_id])
   @@index([status])
   @@index([customer_id])
   @@index([service_location_id])
   @@index([commission_owner_id])
+  @@index([dispatcher_id])
   @@index([organization_id])
   // The date-anchor sweep runs every minute, per org, per registered anchor, and selects on
   // exactly these pairs. Without them each tick is a full scan of `leads` per automation.
@@ -626,6 +685,8 @@ model Lead {
   // last_visit_completed_at, not walkthrough_first_completed_at: the estimate SLA anchors on the
   // re-anchoring clock, so that is the column candidatesForAnchor sweeps once a minute per org.
   @@index([organization_id, last_visit_completed_at])
+  // V7-03: serves the job-type used-by count and the rename rewrite on Lead.job_type.
+  @@index([organization_id, job_type])
   @@map("leads")
 }
 
@@ -821,6 +882,11 @@ model Estimate {
   signature_at           DateTime?
   terms_accepted         Boolean                   @default(false) // #21 — server-enforced T&C acknowledgment
   terms_accepted_at      DateTime? // #21 — set together with terms_accepted
+  // #2980 - the customer's current deposit method and when it was picked: set at signing and on
+  // every later pick (the approval retry, or card/bank through the deposit's own checkout). Null on
+  // rows that predate it and on estimates no method was ever picked for.
+  deposit_method         PaymentMethod?
+  deposit_method_at      DateTime?
   valid_until            DateTime?
   snapshot_terms         String?                   @db.Text
   snapshot_notes         String?                   @db.Text
@@ -855,7 +921,6 @@ model Estimate {
   // is what keeps skipping the question exactly as cheap as declining was before it existed.
   lost_reason_note       String?                   @db.Text
   // ── Estimate workspace redesign (2026-07-03) ──
-  // ── Estimate workspace redesign (2026-07-03) ──
   name                   String?
   version                Int                       @default(1)
   modified_after_send    Boolean                   @default(false)
@@ -869,6 +934,8 @@ model Estimate {
   labor_hours            Decimal?                  @db.Decimal(8, 2)
   overhead_mode          DepositDefaultType?
   overhead_value         Decimal?                  @db.Decimal(12, 2)
+  // Payments go-live slice 19: per-estimate deposit-policy override; null = the org's deposit_policy.
+  deposit_policy         DepositPolicy?
   scope_name             String?
   send_config            EstimateSendConfig?
   line_items             EstimateLineItem[]
@@ -965,7 +1032,7 @@ model EstimateLineItem {
   line_total         Decimal                 @db.Decimal(12, 2)
   price_book_item_id String?                 @db.Uuid
   unit_cost          Decimal?                @db.Decimal(12, 2)
-  markup_percent     Decimal?                @db.Decimal(8, 2)
+  markup_percent     Decimal?                @db.Decimal(311, 2)
   discount_type      DiscountType?
   discount_value     Decimal?                @db.Decimal(12, 2)
   discount_amount    Decimal                 @default(0) @db.Decimal(12, 2)
@@ -1142,8 +1209,16 @@ model Job {
   custom_fields           Json                @default("{}")
   job_type                String?
   completed_at            DateTime?
+  // Mark Done (Roles & Permissions, PRD 6): when the job was marked Done and by whom. Null until then; Reopen clears both.
+  closed_at               DateTime?
+  closed_by_id            String?             @db.Uuid
   cancelled_at            DateTime?
+  /// The optional note beside the cancel reason (the written reason field this column always was).
   cancelled_reason        String?
+  /// The code of the reason picked from the org's job cancel-reasons list (S06.15). The label is read at read time, so a
+  /// rename shows everywhere and a turned-off reason still shows on the jobs that used it. Null on a job cancelled before
+  /// the list existed: it shows its written reason alone.
+  cancel_reason_code      String?
   started_at              DateTime?
   estimated_duration      Int?
   completion_notes        String?
@@ -1181,7 +1256,7 @@ model Job {
   lead                    Lead?               @relation("JobLead", fields: [lead_id], references: [id], onDelete: SetNull)
   service_location        ServiceLocation     @relation(fields: [service_location_id], references: [id])
 
-  // --- Emanuel inventory/comms unified back-relations ---
+  // --- Inventory/comms unified back-relations ---
   purchase_orders       PurchaseOrder[]
   rfqs                  Rfq[]
   estimate_reservations EstimateReservation[]
@@ -1197,11 +1272,12 @@ model Job {
   // --- Demo widget: dispatcher attribution (dispatch scoreboard) ---
   dispatcher_id                    String?           @db.Uuid
   dispatcher                       User?             @relation("JobDispatcher", fields: [dispatcher_id], references: [id], onDelete: SetNull)
-  // --- Automation Center: audience model. Nullable/writer-less for now (Ran will populate
-  // when leadless jobs get a mandatory salesperson); until then the resolver falls back to
-  // the linked lead's owner. ---
+  // --- The job's stored Sold By (Roles & Permissions, PRD 3). Empty means nobody is credited. The
+  // 20261010090000 backfill filled it once from the lead's Owner (service plan visit jobs from the
+  // plan's "Sold by"); access and the Team card read this column, not the lead the job came from. ---
   salesperson_id                   String?           @db.Uuid
   salesperson                      User?             @relation("JobSalesperson", fields: [salesperson_id], references: [id], onDelete: SetNull)
+  closed_by                        User?             @relation("JobClosedBy", fields: [closed_by_id], references: [id], onDelete: SetNull)
   // --- Creator tracking. CREATION CONFERS CONTROL - created_by_id IS an authorization input. ---
   // A user who creates a job has full control over it - read, edit the money, reassign, delete -
   // permanently, even after a dispatcher hands the work to someone else. There is deliberately no
@@ -1224,6 +1300,10 @@ model Job {
   created_by_name                  String?
   created_by_source                CreatedBySource   @default(UNKNOWN)
   creator                          User?             @relation("JobCreator", fields: [created_by_id], references: [id], onDelete: SetNull)
+  // The job's own phones, emails and name changes (Roles & Permissions, PRD 5): never written to the customer.
+  record_contact_entries           RecordContactEntry[]
+  // Office review rounds (Roles & Permissions, PRD 6): one row per round, opened by the job-level complete.
+  reviews                          JobReview[]
   // --- Service Plans ---
   source_plan_id                   String?           @db.Uuid
   // Restrict (not SetNull): a plan with materialized visit-jobs must not be deletable out from
@@ -1265,7 +1345,10 @@ model Job {
   @@index([source_plan_id])
   @@index([dispatcher_id])
   @@index([salesperson_id])
+  @@index([closed_by_id])
   @@index([organization_id])
+  // V7-03: serves the job-type used-by count and the rename rewrite on Job.job_type.
+  @@index([organization_id, job_type])
   @@map("jobs")
 }
 
@@ -1343,6 +1426,65 @@ model LostReasonOption {
   @@map("lost_reason_options")
 }
 
+/// The per-org job cancel-reasons list: the job twin of LostReasonOption, with the same mechanics. An org with no rows
+/// reads the six built-ins in code; its first edit writes all six as its own copy. The code is the stable key a cancelled
+/// job stores (S06.15); the label is the renameable half. Nothing is deleted - a reason is turned off.
+model JobCancelReasonOption {
+  id         String   @id @default(uuid()) @db.Uuid
+  /// The stored value. Immutable after create - a cancelled job holds this string.
+  code       String
+  /// The words the cancel dialogs show. Renameable; renaming rewrites no job.
+  label      String
+  /// Turned off, never deleted - history stays readable on the jobs that used it.
+  is_active  Boolean  @default(true)
+  sort_order Int      @default(0)
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  organization_id String       @db.Uuid
+  organization    Organization @relation(fields: [organization_id], references: [id])
+
+  @@unique([organization_id, code])
+  @@index([organization_id, sort_order])
+  @@map("job_cancel_reason_options")
+}
+
+/// V7-03: the per-org job type list as rows (it was the `Organization.job_type_options` JSON array, which stays for the
+/// deploy overlap). Archived, never deleted while a record carries the name; records store the TEXT, not this id.
+/// Case-insensitive name uniqueness is enforced in code inside the write transaction (no raw lower(name) index).
+model JobType {
+  id          String    @id @default(uuid()) @db.Uuid
+  name        String    @db.VarChar(50)
+  sort_order  Int       @default(0)
+  archived_at DateTime? @db.Timestamptz(6)
+  created_at  DateTime  @default(now())
+  updated_at  DateTime  @updatedAt
+
+  organization_id String       @db.Uuid
+  organization    Organization @relation(fields: [organization_id], references: [id])
+
+  @@unique([organization_id, name])
+  @@index([organization_id, sort_order])
+  @@map("job_types")
+}
+
+/// V7-03: the per-org lead/customer source list as rows (twin of JobType; was `Organization.source_options`).
+model LeadSource {
+  id          String    @id @default(uuid()) @db.Uuid
+  name        String    @db.VarChar(50)
+  sort_order  Int       @default(0)
+  archived_at DateTime? @db.Timestamptz(6)
+  created_at  DateTime  @default(now())
+  updated_at  DateTime  @updatedAt
+
+  organization_id String       @db.Uuid
+  organization    Organization @relation(fields: [organization_id], references: [id])
+
+  @@unique([organization_id, name])
+  @@index([organization_id, sort_order])
+  @@map("lead_sources")
+}
+
 model Invoice {
   id                     String        @id @default(uuid()) @db.Uuid
   invoice_number         String
@@ -1381,6 +1523,10 @@ model Invoice {
   net_collected     Decimal             @default(0) @db.Decimal(12, 2)
   tip               Decimal             @default(0) @db.Decimal(12, 2)
   scopes            Json?
+  // Payments go-live slice 19: per-invoice payment options. payment_methods_override is an array
+  // of PaymentMethod strings (null = the org default); allow_partial_payment null = off.
+  payment_methods_override Json?
+  allow_partial_payment    Boolean?
   // R3b (2026-07-21) — cost model (D2/D8/D18), same shape as Estimate's. Nullable — null means
   // "use org default". Copied from the source Job on conversion via the PRIMARY create() path
   // (invoice.controller.ts) only — job.controller.ts's createInvoiceFromJob() (partial/progress
@@ -1400,6 +1546,8 @@ model Invoice {
   payments                     Payment[]
   line_items                   InvoiceLineItem[]
   refunds                      Refund[]
+  disputes                     Dispute[]
+  unapplied_captures           UnappliedCapture[]
   credits                      Credit[]
   applied_credits              DepositCreditApplication[] @relation("DepositInvoiceApplications")
   received_credit_applications DepositCreditApplication[] @relation("TargetInvoiceApplications")
@@ -1454,7 +1602,7 @@ model InvoiceLineItem {
   // --- SERV10X-38: job-owned items — optional pointer back to the JobLineItem this invoice
   // line was generated from, plus the markup applied at invoice time. ---
   job_line_item_id String?      @db.Uuid
-  markup_percent   Decimal?     @db.Decimal(8, 2)
+  markup_percent   Decimal?     @db.Decimal(311, 2)
   source_job_line  JobLineItem? @relation(fields: [job_line_item_id], references: [id], onDelete: SetNull)
 
   stock_location  InventoryLocation? @relation("InvoiceLineStockLocation", fields: [stock_location_id], references: [id], onDelete: SetNull)
@@ -1477,7 +1625,7 @@ model JobLineItem {
   quantity           Decimal            @db.Decimal(10, 2)
   unit_price         Decimal            @db.Decimal(12, 2)
   unit_cost          Decimal?           @db.Decimal(12, 2)
-  markup_percent     Decimal?           @db.Decimal(8, 2)
+  markup_percent     Decimal?           @db.Decimal(311, 2)
   is_taxable         Boolean            @default(true)
   line_total         Decimal            @db.Decimal(12, 2)
   discount_type      DiscountType?
@@ -1671,6 +1819,16 @@ model Refund {
   reason                 String?
   reason_category        RefundCategory
   stripe_refund_id       String?        @unique
+  // Payments go-live slice 04: a card refund is SUCCEEDED on creation; a bank refund stays
+  // PENDING until the processor confirms it. A FAILED refund gave no money back. Every refund
+  // that existed before this column was backfilled to SUCCEEDED.
+  state                  RefundState    @default(SUCCEEDED)
+  // Payments go-live slice 11: money sent back from "Payments needing attention" that sat on this
+  // payment (never the invoice's money). Marks the row for the refund maths; the reason text is
+  // what a person reads and is never compared.
+  from_unapplied_capture Boolean        @default(false)
+  // Payments go-live P2: the processor's code for why a refund failed; shown only through describeFailure.
+  failure_code           String?
   refunded_by            String         @db.Uuid
   created_at             DateTime       @default(now())
 
@@ -1685,6 +1843,195 @@ model Refund {
   @@index([payment_id])
   @@index([organization_id])
   @@map("refunds")
+}
+
+// Payments go-live slice 09 (PRD Module 4): a customer's dispute of an online payment, one row per
+// processor dispute id. A late bank return (a bank debit returned after it cleared) arrives as a
+// dispute too and is marked is_bank_return. Written only by the payment event reconciler.
+model Dispute {
+  id                String        @id @default(uuid()) @db.Uuid
+  organization_id   String        @db.Uuid
+  invoice_id        String        @db.Uuid
+  payment_id        String        @db.Uuid
+  stripe_dispute_id String        @unique
+  status            DisputeStatus
+  // The processor's reason code (fraudulent, product_not_received, ...), for the money screens.
+  reason            String?
+  amount            Decimal       @db.Decimal(12, 2)
+  evidence_due_by   DateTime?
+  is_bank_return    Boolean       @default(false)
+  closed_at         DateTime?
+  created_at        DateTime      @default(now())
+  updated_at        DateTime      @updatedAt
+
+  // Payments go-live P10: answering the dispute inside ServWave. The draft text (a JSON map of the text fields), a
+  // version for the optimistic lock, when the draft was last sent to the processor as a draft, and who submitted the
+  // evidence (final). The files are the dispute_evidence_items rows.
+  evidence_text              Json?
+  evidence_version           Int       @default(0)
+  evidence_staged_at         DateTime? @db.Timestamptz(6)
+  evidence_submitted_at      DateTime? @db.Timestamptz(6)
+  evidence_submitted_by      String?   @db.Uuid
+  evidence_submitted_by_name String?
+  evidence_submission_count  Int       @default(0)
+
+  organization   Organization          @relation(fields: [organization_id], references: [id])
+  invoice        Invoice               @relation(fields: [invoice_id], references: [id], onDelete: Restrict)
+  payment        Payment               @relation(fields: [payment_id], references: [id], onDelete: Restrict)
+  submitter      User?                 @relation("DisputeEvidenceSubmittedBy", fields: [evidence_submitted_by], references: [id], onDelete: SetNull)
+  evidence_items DisputeEvidenceItem[]
+
+  @@index([organization_id])
+  @@index([invoice_id])
+  @@index([payment_id])
+  @@map("disputes")
+}
+
+// Payments go-live P10: one file in one evidence slot of a dispute (one file per evidence field). The file itself is an
+// Attachment on the dispute's invoice (RESTRICT: it cannot be deleted while it is attached here). The snapshot columns
+// are what was sent. processor_file_id is the processor's single-use file token: server-only, never in a response.
+model DisputeEvidenceItem {
+  id                String    @id @default(uuid()) @db.Uuid
+  organization_id   String    @db.Uuid
+  dispute_id        String    @db.Uuid
+  evidence_field    String
+  attachment_id     String    @db.Uuid
+  file_name         String
+  mime              String
+  size_bytes        Int
+  page_count        Int
+  sha256            String
+  processor_file_id String?
+  staged_at         DateTime? @db.Timestamptz(6)
+  submitted_at      DateTime? @db.Timestamptz(6)
+  created_at        DateTime  @default(now())
+  updated_at        DateTime  @default(now()) @updatedAt
+
+  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  dispute      Dispute      @relation(fields: [dispute_id], references: [id], onDelete: Cascade)
+  attachment   Attachment   @relation(fields: [attachment_id], references: [id], onDelete: Restrict)
+
+  @@unique([dispute_id, evidence_field])
+  @@index([organization_id])
+  @@index([attachment_id])
+  @@map("dispute_evidence_items")
+}
+
+// Payments go-live slice 11: money the processor captured that ServWave could not apply to an
+// invoice (or a refund that went out for a payment ServWave never recorded). Listed under
+// the Payments page as a Needs-attention item; a person refunds or attaches it, never the system.
+// One row per captured money (source_key), however many events or deliveries it sends.
+model UnappliedCapture {
+  id                         String                 @id @default(uuid()) @db.Uuid
+  organization_id            String                 @db.Uuid
+  // The invoice the money was for, when it is one of this org's; null = on the org itself.
+  invoice_id                 String?                @db.Uuid
+  // UnappliedCaptureReason (lib/unapplied-capture.ts): INVOICE_NOT_PAYABLE, WRONG_ORG, ...
+  reason                     String
+  // The money not applied, in dollars (the whole capture, or the excess of an overpayment).
+  amount                     Decimal?               @db.Decimal(12, 2)
+  stripe_payment_intent_id   String?
+  stripe_checkout_session_id String?
+  // The connected account the money sits in, so the refund goes out of the right one.
+  stripe_account_id          String?
+  // The refund that sent the money back (or, for REFUND_UNMATCHED, the refund that went out).
+  stripe_refund_id           String?                @unique
+  // Refunds sent for this record that failed: never mark it REFUNDED (events arrive in any order).
+  failed_refund_ids          String[]               @default([])
+  // V7-09b: dollars of this record already sent back (a partial refund leaves it OPEN with amount - refunded_amount), and
+  // the refunds counted into it, so one refund reported twice (the staff door and its event, a replay) counts once.
+  refunded_amount            Decimal                @default(0) @db.Decimal(12, 2)
+  counted_refund_ids         String[]               @default([])
+  // V7-09b: when a refund of this record last went out to the processor; attaching it to an invoice waits while it is fresh.
+  refund_started_at          DateTime?              @db.Timestamptz(6)
+  source_key                 String
+  status                     UnappliedCaptureStatus @default(OPEN)
+  refunded_at                DateTime?
+  // Who closed it, when and why (V7-05b). Written by the resolve and refund doors; null for old rows and for
+  // closes by the reconciler, which knows no user. resolved_by is a plain uuid, no foreign key.
+  resolved_at                DateTime?
+  resolved_by                String?                @db.Uuid
+  resolved_by_name           String?
+  resolution_note            String?
+  created_at                 DateTime               @default(now())
+  updated_at                 DateTime               @updatedAt
+
+  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  invoice      Invoice?     @relation(fields: [invoice_id], references: [id], onDelete: SetNull)
+
+  @@unique([organization_id, source_key])
+  @@index([organization_id, status])
+  @@index([invoice_id])
+  @@map("unapplied_captures")
+}
+
+// Payments go-live slice P2: one row per payout of a company's money to its bank, kept by the payout
+// sync (payout.* events, the nightly reconcile and the backfill script). status is a text column with
+// a TypeScript union (PayoutStatus in lib/payout-sync.ts), deliberately not an enum.
+model Payout {
+  id                   String    @id @default(uuid()) @db.Uuid
+  organization_id      String    @db.Uuid
+  stripe_payout_id     String    @unique
+  status               String // PENDING | IN_TRANSIT | PAID | FAILED | CANCELED
+  amount               Decimal   @db.Decimal(12, 2)
+  arrival_date         DateTime? @db.Date
+  processor_created_at DateTime? @db.Timestamptz(6)
+  is_automatic         Boolean   @default(true)
+  destination_label    String?
+  failure_code         String?
+  created_at           DateTime  @default(now())
+  updated_at           DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  payments     Payment[]
+
+  @@index([organization_id, arrival_date(sort: Desc)])
+  @@index([organization_id, status])
+  @@map("payouts")
+}
+
+// Payments go-live slice P2: a person marked a failed payment / refund / payout as resolved.
+// item_key is failed_payment:<id>, failed_refund:<id> or failed_payout:<id>. Disputes and unapplied
+// captures keep their own status columns and are not written here.
+model PaymentAttentionResolution {
+  id               String   @id @default(uuid()) @db.Uuid
+  organization_id  String   @db.Uuid
+  item_key         String
+  resolution       String
+  note             String?
+  resolved_by      String?  @db.Uuid
+  resolved_by_name String
+  resolved_at      DateTime @default(now())
+
+  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  resolver     User?        @relation("PaymentAttentionResolvedBy", fields: [resolved_by], references: [id], onDelete: SetNull)
+
+  @@unique([organization_id, item_key])
+  @@map("payment_attention_resolutions")
+}
+
+// Payments go-live slice 37: one row per org per nightly reconcile of the processor's charges,
+// refunds and disputes against ServWave's ledger. "Zero drift for seven nights" (the go-live
+// definition of done) is read from these rows. status is CLEAN (nothing differed), DRIFT (findings
+// were alerted) or ERROR (the org could not be read; nothing was compared). counts maps each drift
+// kind to how many were found; repaired maps each self-repair (a refund id backfilled, a stuck
+// refund hold completed or released) to how many.
+model PaymentReconcileRun {
+  id              String   @id @default(uuid()) @db.Uuid
+  organization_id String   @db.Uuid
+  started_at      DateTime @default(now())
+  window_start    DateTime
+  window_end      DateTime
+  status          String
+  drift_count     Int      @default(0)
+  counts          Json     @default("{}")
+  repaired        Json     @default("{}")
+  error           String?
+
+  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@index([organization_id, started_at])
+  @@map("payment_reconcile_runs")
 }
 
 // Entity-redesign §8: Credit lowers the bill (no money moves); method-agnostic, audited.
@@ -1751,6 +2098,20 @@ model Payment {
   refunded_at                   DateTime?
   refunded_amount               Decimal?           @db.Decimal(12, 2)
   created_at                    DateTime           @default(now())
+  // Payments go-live slice 04: where the money is. Only SUCCEEDED counts toward amount paid,
+  // invoice status and "Collected"; a bank debit sits in PROCESSING until it clears or fails.
+  // Every payment that existed before this column was backfilled to SUCCEEDED.
+  state                         PaymentState       @default(SUCCEEDED)
+  // How the customer paid, captured from the processor's charge, for display only.
+  wallet                        PaymentWallet? // NULL = no wallet (a plain card, or not a card)
+  card_brand                    String?
+  card_last4                    String?
+  bank_name                     String? // ACH only
+  bank_last4                    String? // ACH only
+  // The processor's charge and checkout session, so every later event resolves its payment directly.
+  // UNIQUE: one charge / one checkout session is only ever one payment (see the migration).
+  stripe_charge_id              String?            @unique
+  stripe_checkout_session_id    String?            @unique
   // --- Entity-redesign §8: void-payment (involuntary; never deletes — audit) ---
   voided_at                     DateTime?
   voided_reason                 String?
@@ -1760,6 +2121,12 @@ model Payment {
   voided_by_user                User?              @relation("PaymentVoidedBy", fields: [voided_by], references: [id])
   invoice                       Invoice            @relation(fields: [invoice_id], references: [id], onDelete: Restrict)
   refunds                       Refund[]
+  disputes                      Dispute[]
+  // Payments go-live P2: the payout this payment was paid out in (set by the payout sync), and the
+  // processor's code for why a bank payment failed (stored as it arrives, shown only through describeFailure).
+  payout_id                     String?            @db.Uuid
+  payout                        Payout?            @relation(fields: [payout_id], references: [id], onDelete: SetNull)
+  failure_code                  String?
 
   // --- Creator tracking (audit only). NOTHING reads these for authorization. ---
   // Immutable, written once at create. Same shape and rationale as Job - see that model.
@@ -1775,6 +2142,7 @@ model Payment {
 
   @@index([invoice_id])
   @@index([created_by_id])
+  @@index([payout_id])
   @@map("payments")
 }
 
@@ -1791,7 +2159,11 @@ model Attachment {
   description  String            @default("")
   uploaded_by  String            @db.Uuid
   created_at   DateTime          @default(now())
+  // Which screen created the file (V7-10a). 'PAYMENTS_DOCUMENTS' = uploaded from the Payments page's Documents
+  // tab; NULL = an ordinary attachment. The Documents list filters on it (partial index, see the migration).
+  source       String?
   uploader     User              @relation("AttachmentUploadedBy", fields: [uploaded_by], references: [id])
+  dispute_evidence_items DisputeEvidenceItem[]
 
   // --- Creator tracking (audit only). NOTHING reads these for authorization. ---
   // Immutable, written once at create. Same shape and rationale as Job - see that model.
@@ -1822,6 +2194,15 @@ model Note {
   created_by  String     @db.Uuid
   created_at  DateTime   @default(now())
   creator     User       @relation("NoteCreatedBy", fields: [created_by], references: [id])
+
+  // #3104: true marks a lead's GENERAL note, the one the new-lead form's Notes box writes and the Edit lead form edits in
+  // place; null on every other note. At most one per record: the partial unique index notes_one_general_per_record, which
+  // lives only in its migration (Prisma's schema cannot express a partial index).
+  is_general Boolean?
+  // Who last edited the note and when (#3104; only the general note is editable). Null on a note never edited.
+  edited_by  String?   @db.Uuid
+  edited_at  DateTime?
+  editor     User?     @relation("NoteEditedBy", fields: [edited_by], references: [id], onDelete: SetNull)
 
   organization_id String       @db.Uuid
   organization    Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
@@ -2073,6 +2454,22 @@ model UserTablePreference {
   @@map("user_table_preferences")
 }
 
+// Roles & Permissions S09.4: one saved home-page layout per person (PRD 9). `layout` is the ordered list of tile ids,
+// each with whether it shows, its size and its time-range choice. Keyed by the person, so it goes with the person and,
+// through the company, with the company purge.
+model UserDashboardLayout {
+  user_id         String       @id @db.Uuid
+  organization_id String       @db.Uuid
+  layout          Json
+  created_at      DateTime     @default(now())
+  updated_at      DateTime     @updatedAt
+  organization    Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  user            User         @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([organization_id])
+  @@map("user_dashboard_layouts")
+}
+
 enum Role {
   ADMIN
   SALES
@@ -2080,6 +2477,11 @@ enum Role {
   TECHNICIAN
 }
 
+// A lead closes one way, as Lost (S05.18). CANCELLED is retired for leads: the migration
+// 20261012140000_lead_cancelled_to_lost moved every Cancelled lead to Lost and made the database refuse the value
+// (leads_status_not_cancelled). The Postgres type still carries the label, on purpose - dropping it while the previous
+// backend is still serving would fail that backend's status lists - so the label is gone from this schema and from every
+// list in the code, and a later migration rebuilds the type. "Cancelled" is a job and visit word only.
 enum LeadStatus {
   NEW
   CONTACTED
@@ -2088,7 +2490,6 @@ enum LeadStatus {
   ESTIMATED
   WON
   LOST
-  CANCELLED
 }
 
 // Multi-visit D22: ONE shared status for both purposes. EN_ROUTE / ON_SITE / IN_PROGRESS are
@@ -2189,6 +2590,11 @@ enum JobStatus {
   SCHEDULED
   IN_PROGRESS
   COMPLETED
+  // Close-out (Roles & Permissions, PRD 6): a completed job lands in OFFICE_REVIEW at once, then READY_TO_CLOSE once the
+  // review is finished, then DONE. Placed before CANCELLED, which stays last (job-status-order.ts).
+  OFFICE_REVIEW
+  READY_TO_CLOSE
+  DONE
   CANCELLED
 }
 
@@ -2202,6 +2608,38 @@ enum InvoiceStatus {
   // --- Entity-redesign §8 (added in _redesign_02_enum_values) ---
   PARTIALLY_REFUNDED
   DISPUTED
+}
+
+// Payments go-live slice 04: a payment's money state. No invoice status mirrors it: an invoice
+// with a PROCESSING payment stays SENT/PARTIAL and shows a "Processing" badge instead.
+enum PaymentState {
+  PROCESSING
+  SUCCEEDED
+  FAILED
+}
+
+// Payments go-live slice 04: whether a refund's money has actually gone back to the customer.
+enum RefundState {
+  PENDING
+  SUCCEEDED
+  FAILED
+}
+
+// Payments go-live slice 09: where a customer's dispute of an online payment stands. NEEDS_RESPONSE
+// and UNDER_REVIEW are open (the invoice reads DISPUTED); WON, LOST and CLOSED are final. CLOSED is
+// an inquiry that closed without becoming a chargeback: no money was taken, as with WON.
+enum UnappliedCaptureStatus {
+  OPEN
+  REFUNDED
+  RESOLVED
+}
+
+enum DisputeStatus {
+  NEEDS_RESPONSE
+  UNDER_REVIEW
+  WON
+  LOST
+  CLOSED
 }
 
 enum PaymentMethod {
@@ -2218,6 +2656,16 @@ enum PaymentMethod {
   VENMO
   CASH_APP
   OTHER
+  // Payments go-live slice 04: an ONLINE bank debit through ServWave Payments. BANK_TRANSFER keeps
+  // meaning a transfer staff recorded by hand. ADD VALUE: nothing in its migration uses it.
+  ACH
+}
+
+// Payments go-live slice 04: the wallet a card payment came through. NULL on the payment = none.
+enum PaymentWallet {
+  APPLE_PAY
+  GOOGLE_PAY
+  LINK
 }
 
 // --- Entity-redesign §2/§6/§8 enums (additive) ---
@@ -2347,6 +2795,14 @@ enum DepositDefaultType {
   FIXED
 }
 
+// Payments go-live slice 19 (PRD Module 6): when an estimate's deposit is paid.
+// REQUIRED_BEFORE_APPROVAL is today's behaviour (sign, then pay the deposit, in one step);
+// PAY_LATER lets the customer approve now and pay the deposit from the same link later.
+enum DepositPolicy {
+  REQUIRED_BEFORE_APPROVAL
+  PAY_LATER
+}
+
 // Editable record IDs (Workiz dual-run) — which container minted a container-style estimate
 // number (`L00005-1`/`C00010-1`/`J00007-1`, SERV10X-61). See Estimate.container_kind.
 enum EstimateContainerKind {
@@ -2382,8 +2838,8 @@ enum Plan {
 /// to its own id; this row is now the DEMO org (is_demo = true).
 /// Referenced directly by the DB DEFAULT on organization_id columns
 /// so unscoped inserts (tests, seeders, existing controllers) route here
-/// transparently.
-///   DEMO_ORG_ID = '00000000-0000-0000-0000-000000000001'
+/// transparently until we onboard tenant #2.
+///   ALPHA_ORG_ID = '00000000-0000-0000-0000-000000000001'
 
 model Organization {
   id                       String    @id @db.Uuid
@@ -2395,9 +2851,11 @@ model Organization {
   state                    String    @db.VarChar(50)
   postal_code              String    @db.VarChar(20)
   country                  String    @default("US") @db.VarChar(2)
-  timezone                 String?   @default("America/New_York") @db.VarChar(64) // IANA tz for server-side date rendering (emails/PDFs). Nullable: ServWave shares the staging DB and created this column nullable; code falls back to DEFAULT_TIMEZONE. See lib/timezone.ts. VarChar(64) matches the live staging column (org_settings migration created it 64; the idempotent Lakeside migration's VARCHAR(50) ADD COLUMN IF NOT EXISTS no-op'd).
+  timezone                 String?   @default("America/New_York") @db.VarChar(64) // IANA tz for server-side date rendering (emails/PDFs). Nullable: ServWave shares the staging DB and created this column nullable; code falls back to DEFAULT_TIMEZONE. See lib/timezone.ts. VarChar(64) matches the live staging column (org_settings migration created it 64; the idempotent B&G migration's VARCHAR(50) ADD COLUMN IF NOT EXISTS no-op'd).
   email                    String    @db.VarChar(200)
   phone                    String?   @db.VarChar(50)
+  // SRVW-54 - optional extension paired with `phone`.
+  phone_ext                String?
   website                  String?   @db.VarChar(200)
   logo_url                 String?   @db.Text
   brand_color              String    @default("#242424") @db.VarChar(7)
@@ -2411,13 +2869,17 @@ model Organization {
   stripe_account_id        String? // null = no Stripe capability; set after Connect onboarding (9C2). Doubles as the gate: orgs without this cannot have CARD in accepted_payment_methods.
   stripe_charges_enabled   Boolean   @default(false) // real CARD gate (replaces "is stripe_account_id set")
   stripe_payouts_enabled   Boolean   @default(false) // drives the connect-your-bank nudge
+  // Payments go-live P2: { interval, weekly_anchor, delay_days, bank_label }, written by the account sync.
+  payout_summary           Json?
+  // V7-02a: { business_details, owner_identity, bank_account, tax_id } each verified|pending|not_started|action_needed|restricted. Null until the first account sync.
+  stripe_verification      Json?
   stripe_details_submitted Boolean   @default(false) // finished the first onboarding pass
   stripe_requirements_due  Json      @default("[]") // requirements.currently_due → "action needed"
   stripe_disabled_reason   String? // requirements.disabled_reason (restricted/rejected/paused)
-  platform_fee_bps         Int       @default(50) // per-org platform fee, bps (50 = 0.5%); support-only knob. Card payments no longer use it - it survives as the disclosed_fee_bps written onto a TermsAcceptance.
+  platform_fee_bps         Int       @default(50) // RETIRED (payments go-live, D9): ServWave charges no payment fee. Nothing reads this column; terms acceptances record disclosed_fee_bps = 0.
   // NOTE: there is deliberately NO card-service-fee column. Paying by card always carries the
   // card service fee, so it has no per-org switch; the RATE is the CARD_SERVICE_FEE_BPS constant.
-  ctm_account_id           String?   @unique // CTM sub-account id ("500001"); null = phone module not connected. UNIQUE = claim-jack guard across orgs.
+  ctm_account_id           String?   @unique // CTM sub-account id ("596375"); null = phone module not connected. UNIQUE = claim-jack guard across orgs.
   ctm_sms_ready            Boolean   @default(false) // A2P campaign approved on the CTM side — gates outbound SMS.
   accepted_payment_methods Json      @default("[]") // §4.5: array of PaymentMethod strings (CARD, EXTERNAL_CARD, BANK_TRANSFER, CHECK, CASH). Pre-fills Send Estimate modal + filters public estimate/invoice pages.
   source_options           Json      @default("[\"Google\",\"Referral\",\"Facebook\",\"Instagram\",\"Yelp\",\"Direct Mail\",\"Door Hanger\",\"Other\"]")
@@ -2428,6 +2890,12 @@ model Organization {
   // orgs (false) only ever see DB-backed reports — never fabricated data.
   // Surfaced on the /api/auth/me + login payloads as user.org_is_demo.
   is_demo                  Boolean   @default(false)
+  // Roles & Permissions AL-16 (M11, H5): the company's one Owner, the person no one can remove. Unique, so a person owns at
+  // most one company, and the reference is the pair (this company, the person), so the Owner is always one of this
+  // company's own people. Null only for a company that has none yet: nothing treats anyone else as the Owner then.
+  // NoAction: the Owner's row cannot be deleted while it is the Owner (a purge clears this first).
+  owner_user_id            String?   @unique @db.Uuid
+  owner                    User?     @relation("OrganizationOwner", fields: [id, owner_user_id], references: [organization_id, id], onDelete: NoAction, onUpdate: NoAction, map: "organizations_owner_same_company_fkey")
   plan                     Plan      @default(STARTER)
   trial_ends_at            DateTime?
   feature_overrides        Json      @default("{}")
@@ -2502,15 +2970,13 @@ model Organization {
   // - a column default never rewrites them - so this flips no org that is
   // already sending. See migration 20260809031000.
   email_sending_enabled   Boolean @default(false)
-  // The string before the `@` in this org's business From address. The domain
-  // half is always the shared env.EMAIL_FROM_BUSINESS one and is never an org
-  // choice. NULL means "derive it from `name`" - both the default and the
-  // behaviour that predates this column, deliberately NOT backfilled, so
-  // renaming a company still moves its sending address unless the org has
-  // opted out by setting an explicit value. UNIQUE among the orgs that HAVE
-  // set one: two companies sending as the same address on one shared domain
-  // would confuse any recipient who replied to the From rather than the
-  // Reply-To.
+  // The org's FROZEN company part: the string before the `@` in its main mailbox address, and the
+  // `company` in every user's `first.last.company`. The domain half is the environment's mailbox domain
+  // and is never an org choice. Filled for every org by the mailbox register migration (PRD 10, S10.1)
+  // and at creation for every new org, so renaming a company no longer moves its sending address. The
+  // register (`mailbox_addresses`) is what the From header is resolved from; this column keeps the part
+  // that main address was issued from. NULL only for an org that predates the register and has not been
+  // through its migration. UNIQUE across all orgs.
   email_sender_local_part String? @unique
   // Org-wide kill switch for outgoing SMS (automations + Communication module
   // sends). Distinct from ctm_sms_ready (A2P approval, not a panic switch).
@@ -2544,6 +3010,21 @@ model Organization {
   // --- Estimate workspace redesign (2026-07-03) ---
   lock_on_send Boolean @default(false)
 
+  // --- Payments go-live slice 19 (PRD Module 6): org payment defaults. Read ONLY through
+  // lib/payment-options.ts; nothing else reads them raw. ---
+  // Tips are org-level only (PRD call 6). Presets are whole percentages of the pre-tax amount
+  // being paid, three values, each 1-50.
+  tips_enabled               Boolean       @default(false)
+  // Story 24: Card / Bank is offered by default (true) or only on a document that lists it (false).
+  // CARD and ACH inside accepted_payment_methods are server-owned capability facts (= the account
+  // can take cards / bank payments), so the owner's default offer of each lives here.
+  card_offered_by_default    Boolean       @default(true)
+  bank_offered_by_default    Boolean       @default(true)
+  tip_presets                Int[]         @default([10, 15, 20])
+  deposit_policy             DepositPolicy @default(REQUIRED_BEFORE_APPROVAL)
+  // Shown to a customer when BANK_TRANSFER is offered. Recording a transfer stays manual.
+  bank_transfer_instructions String?       @db.Text
+
   // --- R3 (2026-07-21) cost model org defaults (D2/D8) ---
   // labor_rate: $/hour, applied to Estimate.labor_hours. overhead_value's meaning depends on
   // overhead_mode (PERCENTAGE of revenue-excl-tax, or a FIXED dollar amount) — a single
@@ -2574,12 +3055,34 @@ model Organization {
   price_book_items          PriceBookItem[]
   attachments               Attachment[]
   notes                     Note[]
-  role_permissions          RolePermission[]
-  user_permission_overrides UserPermissionOverride[]
+  permission_role_switches  PermissionRoleSwitch[]
+  permission_user_switches  PermissionUserSwitch[]
+  mailboxes                 Mailbox[]
+  mailbox_readers           MailboxReader[]
+  mailbox_addresses         MailboxAddress[]
+  permission_change_log     PermissionChangeLog[]
   custom_roles              CustomRole[]
 
   // --- Entity-redesign §8 money model (additive) ---
   refunds                     Refund[]
+  disputes                    Dispute[]
+  unapplied_captures          UnappliedCapture[]
+  payouts                     Payout[]
+  dispute_evidence_items      DisputeEvidenceItem[]
+  payment_resolutions         PaymentAttentionResolution[]
+  payment_reconcile_runs      PaymentReconcileRun[]
+  job_reviews                 JobReview[]
+  job_review_item_checks      JobReviewItemCheck[]
+  job_review_customer_decisions JobReviewCustomerDecision[]
+
+  // --- Spider lead watcher (#2619) ---
+  spider_settings             SpiderSettings?
+  spider_alerts               SpiderAlert[]
+  spider_summaries            SpiderSummary[]
+  spider_summary_runs         SpiderSummaryRun[]
+  spider_recipient_sets       SpiderRecipientSet[]
+  spider_lead_watch           SpiderLeadWatch[]
+  record_contact_entries      RecordContactEntry[]
   credits                     Credit[]
   deposit_credit_applications DepositCreditApplication[]
 
@@ -2671,7 +3174,6 @@ model Organization {
 
   // --- Notifications ---
   notifications Notification[]
-  spider_alert_logs SpiderAlertLog[]
 
   // --- Automation Center ---
   automation_rules AutomationRule[]
@@ -2691,33 +3193,41 @@ model Organization {
   // --- Custom Fields (SRVW-114) ---
   custom_field_definitions CustomFieldDefinition[]
 
-  spider_watcher_config SpiderWatcherConfig?
-
-  // --- Bee Agent (AI Warranty Upseller) ---
-  bee_settings        BeeSetting?
-  bee_warranty_plans  BeeWarrantyPlan[]
-  bee_voice_agents    BeeVoiceAgent[]
-  bee_warranty_records BeeWarrantyRecord[]
-  bee_queue_items     BeeQueueItem[]
-  bee_call_logs       BeeCallLog[]
-  bee_dnc_entries     BeeDncEntry[]
-
   // --- Manual Communication Log ---
   manual_communication_logs ManualCommunicationLog[]
 
   // --- Decline-reasons slice B: the per-org estimate decline reason list ---
   lost_reason_options LostReasonOption[]
 
+  // --- Roles & Permissions, PRD 6: the per-org job cancel-reasons list ---
+  job_cancel_reason_options JobCancelReasonOption[]
+
+  // --- V7-03: the two Lists-page lists as rows (job types, lead/customer sources) ---
+  job_types    JobType[]
+  lead_sources LeadSource[]
+
+  // Roles & Permissions S09.4: each person's saved home-page layout.
+  user_dashboard_layouts UserDashboardLayout[]
 
   @@index([stripe_account_id])
   @@index([default_inventory_location_id])
-  @@map("organizations")
+  
+  // --- Bee Agent (AI Warranty Upseller) ---
+  bee_settings         BeeSetting?
+  bee_warranty_plans   BeeWarrantyPlan[]
+  bee_voice_agents     BeeVoiceAgent[]
+  bee_warranty_records BeeWarrantyRecord[]
+  bee_queue_items      BeeQueueItem[]
+  bee_call_logs        BeeCallLog[]
+  bee_dnc_entries      BeeDncEntry[]
+
+@@map("organizations")
 }
 
-// SRVW-138 - an org-defined role. Its `key` is written into RolePermission.role, the
+// SRVW-138 - an org-defined role. Its `key` is the role_key of the role's switch rows, in the
 // same column the four system role names use, so keys are validated against those
 // (effectiveRole.ts isReservedRoleKey) and are immutable once created: changing a key
-// would orphan every grant row pointing at it. Renames therefore touch `label` only.
+// would orphan every switch row pointing at it. Renames therefore touch `label` only.
 //
 // `base_role` is the system role whose CODE-level behaviour this role inherits - the
 // value copied onto users.role. ADMIN is permitted: such a role is seeded with an
@@ -2730,6 +3240,12 @@ model CustomRole {
   label           String
   description     String       @default("")
   base_role       Role
+  // Roles & Permissions M2: a role made from blank has no built-in preset to fall back on, so a
+  // switch it holds no stored value for resolves to off (its narrowest value).
+  made_from_blank Boolean      @default(false)
+  // Roles & Permissions M2: the key of the role this one was made from (Save as role records the role the person was
+  // based on); null for a role made before this was recorded, and for one made from blank.
+  made_from_role_key String?
   archived_at     DateTime?
   created_at      DateTime     @default(now())
   updated_at      DateTime     @updatedAt
@@ -2741,46 +3257,68 @@ model CustomRole {
   @@map("custom_roles")
 }
 
-model RolePermission {
+// Roles & Permissions M2 - the per-person switch store. A switch is a named capability held in the
+// switch catalog (lib/permissions/switches/catalog.ts). A role holds one value per switch it was
+// given, a person holds their own, and a switch with no stored value resolves from the role the
+// person is based on, then from the built-in preset. `role_key` is a built-in role name or a custom
+// role's key, the same convention custom_roles.key uses.
+model PermissionRoleSwitch {
   id              String       @id @default(uuid()) @db.Uuid
   organization_id String       @db.Uuid
-  role            String
-  action          String
-  subject         String
-  conditions      Json?
+  role_key        String
+  switch_key      String
+  value           Json
   created_at      DateTime     @default(now())
   updated_at      DateTime     @updatedAt
   organization    Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
 
-  @@unique([organization_id, role, action, subject])
-  @@index([organization_id, role])
-  @@map("role_permissions")
+  @@unique([organization_id, role_key, switch_key], map: "permission_role_switches_org_role_switch_key")
+  @@index([organization_id, role_key])
+  @@map("permission_role_switches")
 }
 
-// Per-user permission override (Phase 2 of the RBAC model). Layers on top of the
-// user's role grant: `effect=allow` grants a capability the role lacks; `effect=deny`
-// revokes a capability the role grants. Capability-level only (no row-scope) in v1.
-// ADMIN is `manage all` in code and is never affected by overrides.
-model UserPermissionOverride {
+model PermissionUserSwitch {
   id              String       @id @default(uuid()) @db.Uuid
   organization_id String       @db.Uuid
   user_id         String       @db.Uuid
-  action          String
-  subject         String
-  effect          String // 'allow' | 'deny'
+  switch_key      String
+  value           Json
   created_at      DateTime     @default(now())
   updated_at      DateTime     @updatedAt
   organization    Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
-  user            User         @relation("UserPermissionOverrideUser", fields: [user_id], references: [id], onDelete: Cascade)
+  user            User         @relation(fields: [user_id], references: [id], onDelete: Cascade)
 
-  @@unique([user_id, action, subject])
-  @@index([user_id])
+  @@unique([user_id, switch_key])
   @@index([organization_id])
-  @@map("user_permission_overrides")
+  @@map("permission_user_switches")
+}
+
+// Append-only: one row per switch value that changed on a role or a person. Rows are only ever
+// inserted; nothing updates or deletes them except the organization's own removal.
+model PermissionChangeLog {
+  id              String       @id @default(uuid()) @db.Uuid
+  organization_id String       @db.Uuid
+  // 'ROLE' (target_id is the role key) or 'USER' (target_id is the user id)
+  target_type     String
+  target_id       String
+  // Null on the one row a save as role writes for the event itself.
+  switch_key      String?
+  from_value      Json?
+  to_value        Json?
+  actor_id        String?      @db.Uuid
+  // manual | role assigned | reset | save as role | migration
+  reason          String
+  // The role a 'role assigned' or 'save as role' row refers to, by the name it had then.
+  role_label      String?
+  created_at      DateTime     @default(now())
+  organization    Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@index([organization_id, target_type, target_id, created_at], map: "permission_change_log_org_target_idx")
+  @@map("permission_change_log")
 }
 
 // ============================================================================
-// EMANUEL INTEGRATION — INVENTORY MODULE
+// INVENTORY MODULE INTEGRATION
 // ============================================================================
 
 model Brand {
@@ -2866,6 +3404,8 @@ model Vendor {
   contact_person_name String?
   contact_email       String?
   contact_phone       String?
+  // SRVW-54 - optional extension paired with `contact_phone`.
+  contact_phone_ext   String?
   account_number      String?
   website             String?
   pickup_address      String?
@@ -2915,6 +3455,8 @@ model VendorContact {
   name       String?
   email      String?
   phone      String?
+  // SRVW-54 - optional extension paired with `phone`.
+  phone_ext  String?
   role       String?
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
@@ -2934,6 +3476,8 @@ model Branch {
   code         String?
   address      String?
   phone        String?
+  // SRVW-54 - optional extension paired with `phone`.
+  phone_ext    String?
   manager_name String?
   timezone     String?
   notes        String?
@@ -3397,6 +3941,13 @@ model JobStage {
   staged_location_id String?   @db.Uuid
   staged_area        String?
   notes              String?
+  // The pickup (Roles & Permissions S07.6): who took the parts off the shelf, who recorded it (the same person
+  // for "Taken by me"), and when. Names ride beside the ids so the record outlives a renamed or removed user.
+  taken_by_id        String?   @db.Uuid
+  taken_by_name      String?
+  recorded_by_id     String?   @db.Uuid
+  recorded_by_name   String?
+  taken_at           DateTime?
   created_at         DateTime  @default(now())
   updated_at         DateTime  @updatedAt
 
@@ -3455,7 +4006,7 @@ model JobStageAttachment {
   kind             String
   data_url         String   @db.Text
   // P5: Supabase Storage key — canonical when set (data_url stays required, '' for
-  // Storage rows). Legacy emanuel-era rows keep their base64 data-URI in data_url.
+  // Storage rows). Legacy rows from the original inventory build keep their base64 data-URI in data_url.
   storage_path     String?
   mime_type        String?
   caption          String?
@@ -3674,6 +4225,13 @@ model LogisticOrder {
   // Optional by design — the deliberate asymmetry against the REQUIRED manual
   // adjustment reason (spec §12 rec 7).
   cancelled_reason String?   @db.Text
+  // The pickup (Roles & Permissions S07.11): once Processed, who took the parts off the shelf, who recorded it (the
+  // same person for "Taken by me"), and when. Names ride beside the ids so the record outlives a renamed or removed user.
+  taken_by_id      String?   @db.Uuid
+  taken_by_name    String?
+  recorded_by_id   String?   @db.Uuid
+  recorded_by_name String?
+  taken_at         DateTime?
   created_at       DateTime  @default(now())
   updated_at       DateTime  @updatedAt
 
@@ -3740,7 +4298,7 @@ model LogisticOrderLine {
 }
 
 // ============================================================================
-// EMANUEL INTEGRATION — COMMUNICATION MODULE
+// COMMUNICATION MODULE INTEGRATION
 // ============================================================================
 
 model CallSession {
@@ -3781,12 +4339,17 @@ model CallSession {
   /// record. The pair is how post-call enrichment finds the row directly.
   call_tracking_provider CallTrackingProvider?
   vendor_call_id         String?
+  /// The company number this call went through (inbound: the number called;
+  /// outbound: the number it went out from). Null when the number is not one
+  /// of the organization's own (roles & permissions S08.1).
+  phone_number_id    String?  @db.Uuid
   created_at         DateTime @default(now())
   updated_at         DateTime @updatedAt
 
   customer Customer? @relation(fields: [customer_id], references: [id])
   job      Job?      @relation(fields: [job_id], references: [id])
   agent    User?     @relation("CallSessionAgent", fields: [agent_id], references: [id])
+  phone_number PhoneNumber? @relation("CallSessionPhoneNumber", fields: [phone_number_id], references: [id], onDelete: SetNull)
   lead     Lead?     @relation("LeadCallSessions", fields: [lead_id], references: [id])
   vendor   Vendor?   @relation("VendorCallSessions", fields: [vendor_id], references: [id])
 
@@ -3800,6 +4363,7 @@ model CallSession {
   @@index([lead_id])
   @@index([vendor_id])
   @@index([call_tracking_provider, vendor_call_id])
+  @@index([phone_number_id])
   @@map("call_sessions")
 }
 
@@ -3994,6 +4558,14 @@ model MessageThread {
   archived      Boolean? @default(false)
   title         String?
   subtitle      String?
+  // #3019: an SMS conversation with a customer or an unknown number is the pair of numbers - the
+  // other party's (normalized E.164) and ours (normalized E.164; null when the company has no
+  // number). Both null on staff, vendor and group conversations, and on a customer conversation the
+  // split script (scripts/sms-conversation-pair-split.ts) has not keyed yet; such a conversation is
+  // read exactly as before. One conversation per pair is kept by lib/ctm/smsThread.ts, not by a
+  // unique rule.
+  other_party_e164 String?
+  our_number_e164  String?
   created_at    DateTime @default(now())
   updated_at    DateTime @updatedAt
 
@@ -4019,6 +4591,7 @@ model MessageThread {
   @@index([lead_id])
   @@index([vendor_id])
   @@index([user_id])
+  @@index([organization_id, other_party_e164, our_number_e164])
   @@map("message_threads")
 }
 
@@ -4043,12 +4616,28 @@ model Message {
   // Communication ↔ Leads: per-message attribution, mirrors job_id (full job-parity ruling, 2026-07-22)
   lead_id       String?  @db.Uuid
   ctm_sms_id    String?  @unique // CTM message id ("MSG…") — webhook upsert key
+  // The company number this text went through (inbound: the number the customer
+  // texted; outbound: the number it was sent from). Null on a text the number
+  // could not be placed for (roles & permissions S08.1).
+  phone_number_id String? @db.Uuid
+  // The OTHER party's number, normalized E.164 (+1XXXXXXXXXX): where an outbound
+  // text went, or where an inbound text came from. It sits beside the company
+  // number above, so "the latest text we sent to this number" can be asked (#3014).
+  // Null on a text whose other side is no single phone number (a group thread)
+  // and on older texts the fill-in (scripts/text-other-party-number-fill-in.ts)
+  // could not place.
+  other_party_e164 String?
+  // The person who sent a text from the app. Null on inbound texts, automated
+  // texts, texts sent from outside the app, and app-sent texts from before S08.1.
+  sent_by_user_id String? @db.Uuid
   created_at    DateTime @default(now())
   updated_at    DateTime @updatedAt
 
   thread MessageThread @relation(fields: [thread_id], references: [id], onDelete: Cascade)
   job    Job?          @relation("JobMessages", fields: [job_id], references: [id], onDelete: SetNull)
   lead   Lead?         @relation("LeadMessages", fields: [lead_id], references: [id], onDelete: SetNull)
+  phone_number PhoneNumber? @relation("MessagePhoneNumber", fields: [phone_number_id], references: [id], onDelete: SetNull)
+  sent_by      User?        @relation("MessageSentBy", fields: [sent_by_user_id], references: [id], onDelete: SetNull)
 
   organization_id String       @db.Uuid
   organization    Organization @relation(fields: [organization_id], references: [id])
@@ -4057,6 +4646,9 @@ model Message {
   @@index([organization_id])
   @@index([job_id])
   @@index([lead_id])
+  @@index([phone_number_id])
+  @@index([sent_by_user_id])
+  @@index([organization_id, other_party_e164, ts])
   @@map("messages")
 }
 
@@ -4385,6 +4977,23 @@ model Email {
   // Resend's Received Emails API by provider_message_id, so a second column
   // would be write-only.
   inbound_auth           InboundAuthVerdict?
+  // PRD 10 (S10.17): true while a RECEIVED message still has attachments to bring over from the mail provider. Set in the
+  // same write that stores the message (it names attachments), cleared once every one of them is either stored or
+  // permanently skipped (a type or size the compose path would refuse too). The message shows either way; this only says
+  // that files are still on their way. A sweep retries a pending row, a fixed number of times at most.
+  attachments_pending    Boolean              @default(false)
+  // How many times bringing the attachments over has been tried, the first try included.
+  attachment_attempts    Int                  @default(0)
+  // PRD 10 (S10.18): a received message held in a mailbox's Needs review list instead of delivered. Null on every other row.
+  //   review_reason       why it is held: failed_authentication | automatic | sender_mismatch | unknown_reply
+  //   review_mailbox_id   the mailbox it is filed under (the list it shows in); a held message has no conversation of its own
+  //   review_thread_id    the conversation the reply token it arrived on belongs to, when it has one: what decides who may see
+  //                       a held reply to a record (an invoice's, an estimate's)
+  // Linking the message to a conversation clears all three. A held message also sits in the folder "needs_review", so no inbox
+  // list, unread count or search reads it by accident.
+  review_reason          String?
+  review_mailbox_id      String?              @db.Uuid
+  review_thread_id       String?              @db.Uuid
   created_at             DateTime             @default(now())
   updated_at             DateTime             @updatedAt
 
@@ -4397,6 +5006,8 @@ model Email {
   // ON DELETE SET NULL, not Cascade: revoking or pruning a token must never
   // delete the customer's actual message.
   arrived_on_token ReplyToken?  @relation("ReplyTokenInbound", fields: [reply_token], references: [token], onDelete: SetNull)
+  review_mailbox   Mailbox?     @relation("EmailReviewMailbox", fields: [review_mailbox_id], references: [id], onDelete: SetNull)
+  review_thread    EmailThread? @relation("EmailReviewThread", fields: [review_thread_id], references: [id], onDelete: SetNull)
 
   // Real uploaded files on a human-composed send (email slice 7) - distinct from
   // the legacy `attachments` Json column above, which only ever carried
@@ -4425,6 +5036,12 @@ model Email {
   // that did not resolve" - filters on exactly this pair.
   @@index([organization_id, inbound_match])
   @@index([reply_token])
+  // The retry sweep's only query: received mail whose attachments are still on their way.
+  @@index([attachments_pending])
+  // The Needs review list and its counts (S10.18): a mailbox's held messages, newest first.
+  @@index([review_mailbox_id, ts])
+  // Who may see a held reply to a record asks which conversations have held replies (S10.18).
+  @@index([review_thread_id])
   @@map("emails")
 }
 
@@ -4468,6 +5085,29 @@ model EmailThread {
   // Unassigned again, same as the live is_active=false case above.
   assigned_to User?   @relation("EmailThreadAssignee", fields: [assigned_to_user_id], references: [id], onDelete: SetNull)
   emails      Email[]
+  // Held replies that arrived on this conversation's reply address (PRD 10, S10.18).
+  review_items Email[] @relation("EmailReviewThread")
+
+  // Per-user mailboxes (PRD 10, S10.4): every conversation belongs to exactly one mailbox, and says how
+  // it got there. NULLABLE only so that a row written by code that predates this column (during a
+  // deploy) is not refused; the migration places every existing row and every writer states its own.
+  // Loose system email has no thread, so it belongs to no mailbox.
+  mailbox_id  String?  @db.Uuid
+  mailbox     Mailbox? @relation("ThreadMailbox", fields: [mailbox_id], references: [id], onDelete: SetNull)
+  // The mailbox a "moved" conversation came in from (S10.21); a record conversation keeps origin "record" and carries it too.
+  moved_from_mailbox_id String?  @db.Uuid
+  moved_from            Mailbox? @relation("ThreadMovedFrom", fields: [moved_from_mailbox_id], references: [id], onDelete: SetNull)
+  // How it came to be in that mailbox: "started" (started here by a person), "migrated" (there before
+  // go-live), "moved" (moved in from another mailbox), "record" (opened by a send to a customer about
+  // one record). The origin decides what a mailbox lists.
+  origin      String   @default("started")
+  // The record a "record" conversation belongs to (estimate | invoice | job | lead | customer, the same
+  // vocabulary as ReplyToken.entity_type). Its job, lead or customer tie is worked out from this record
+  // each time it is read, so it follows a lead into its job. Empty for every other origin.
+  record_type String?
+  // A bare id: it names a row of whichever table record_type says, so no relation and no foreign key can describe it
+  // (four of them on one column could never all hold). The record's people are found by lib/communication/recordPeopleThreads.ts.
+  record_id   String?  @db.Uuid
 
   organization_id String       @db.Uuid
   organization    Organization @relation(fields: [organization_id], references: [id])
@@ -4475,6 +5115,10 @@ model EmailThread {
 
   @@index([organization_id])
   @@index([assigned_to_user_id])
+  @@index([mailbox_id])
+  @@index([moved_from_mailbox_id])
+  // The record's people read starts from the person's records and asks for their conversations (S10.9).
+  @@index([record_type, record_id])
   @@map("email_threads")
 }
 
@@ -4658,6 +5302,10 @@ model EmailAttachment {
   file_size    Int
   storage_path String
   position     Int      @default(0)
+  // PRD 10 (S10.17): the mail provider's id for this attachment on a RECEIVED message; null on a file attached by a person
+  // when composing. Unique within its email, so bringing the same attachment over twice (a retry, a run that overlaps another)
+  // can never store it twice. Nulls never collide.
+  provider_attachment_id String?
   created_at   DateTime @default(now())
 
   email Email @relation(fields: [email_id], references: [id], onDelete: Cascade)
@@ -4665,6 +5313,7 @@ model EmailAttachment {
   organization_id String       @db.Uuid
   organization    Organization @relation(fields: [organization_id], references: [id])
 
+  @@unique([email_id, provider_attachment_id])
   @@index([email_id])
   @@index([organization_id])
   @@map("email_attachments")
@@ -4794,6 +5443,8 @@ model PhoneNumber {
 
   call_flow  CallFlow?         @relation(fields: [call_flow_id], references: [id])
   user_links UserPhoneNumber[]
+  calls      CallSession[]     @relation("CallSessionPhoneNumber")
+  messages   Message[]         @relation("MessagePhoneNumber")
 
   organization_id String       @db.Uuid
   organization    Organization @relation(fields: [organization_id], references: [id])
@@ -5858,58 +6509,444 @@ model WorkflowStepRun {
   @@map("workflow_step_runs")
 }
 
-model SpiderAlertLog {
-  id               String   @id @default(uuid()) @db.Uuid
-  organization_id  String   @db.Uuid
-  lead_id          String?  @db.Uuid
-  lead_number      String
-  customer_id      String?  @db.Uuid
-  customer_name    String
-  company_name     String?
-  service_request  String?  @db.Text
-  service_location String?  @db.Text
-  stage_name       String
-  inactive_days    Int      @default(0)
-  inactive_unit    String   @default("Day")
-  channels         Json     // { email: boolean, sms: boolean, inApp: boolean, redFrame: boolean }
-  recipients       Json     // Array<{ id, name, role, email, phone, type }>
-  email_subject    String?
-  email_body       String?  @db.Text
-  sms_message      String?  @db.Text
-  in_app_message   String?  @db.Text
-  dedupe_key       String?  @unique
-  status           String   @default("SENT") // SENT, FAILED, PARTIAL
-  created_at       DateTime @default(now())
+// ─── Per-user mailboxes (PRD 10) ─────────────────────────────────────────────
 
-  organization     Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
-  lead             Lead?        @relation(fields: [lead_id], references: [id], onDelete: SetNull)
-  customer         Customer?    @relation(fields: [customer_id], references: [id], onDelete: SetNull)
+/// A mailbox: the main mailbox of a company (kind "main", one per org) or, from a later slice, the
+/// mailbox issued to one user (kind "user"). Status is "active" until a later slice adds the others.
+model Mailbox {
+  id              String   @id @default(uuid()) @db.Uuid
+  organization_id String   @db.Uuid
+  kind            String // "main" | "user"
+  user_id         String?  @db.Uuid // the user it was issued to; empty for main
+  holder_user_id  String?  @db.Uuid // the current holder (who sees it); empty for main
+  status          String   @default("active") // "active" | "address_needed" | "handed" | "merged"
+  // For a merged mailbox: the mailbox it was merged into (S10.21). Its addresses stay on it and deliver there.
+  merged_into_mailbox_id String? @db.Uuid
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
 
-  @@index([organization_id, created_at])
-  @@index([lead_id])
-  @@map("spider_alert_logs")
+  organization Organization     @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  user         User?            @relation("MailboxIssuedTo", fields: [user_id], references: [id], onDelete: SetNull)
+  holder       User?            @relation("MailboxHolder", fields: [holder_user_id], references: [id], onDelete: SetNull)
+  merged_into  Mailbox?         @relation("MailboxMergedInto", fields: [merged_into_mailbox_id], references: [id], onDelete: SetNull)
+  merged_from  Mailbox[]        @relation("MailboxMergedInto")
+  addresses    MailboxAddress[]
+  threads      EmailThread[]    @relation("ThreadMailbox")
+  moved_threads EmailThread[]   @relation("ThreadMovedFrom")
+  readers      MailboxReader[]
+  // The held messages filed under this mailbox's Needs review list (PRD 10, S10.18).
+  review_emails Email[]      @relation("EmailReviewMailbox")
+
+  // One main mailbox per org is a partial unique index the schema cannot express:
+  //   CREATE UNIQUE INDEX "mailboxes_one_main_per_org" ON "mailboxes"("organization_id") WHERE "kind" = 'main'
+  @@index([organization_id])
+  @@map("mailboxes")
 }
 
-model SpiderWatcherConfig {
-  id                    String   @id @default(uuid()) @db.Uuid
-  organization_id       String   @unique @db.Uuid
-  is_active             Boolean  @default(false)
-  auto_enroll_all_leads Boolean  @default(true)
-  selected_lead_ids     Json     @default("[]")
-  stage_thresholds      Json     @default("{}")
-  notifications         Json     @default("{}")
-  assignments           Json     @default("{}")
-  created_at            DateTime @default(now())
-  updated_at            DateTime @updatedAt
+/// The people a holder of Company settings links to a mailbox to read it (PRD 10, S10.8): today only the company's main
+/// mailbox has readers. Empty at release. A row says who handles one mailbox, as a company number's links do; it is not a
+/// switch. A deactivated person's row stays and is ignored while they are inactive (every read joins `users.is_active`).
+model MailboxReader {
+  id                String   @id @default(uuid()) @db.Uuid
+  organization_id   String   @db.Uuid
+  mailbox_id        String   @db.Uuid
+  user_id           String   @db.Uuid
+  linked_by_user_id String?  @db.Uuid
+  created_at        DateTime @default(now())
 
-  organization          Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  mailbox      Mailbox      @relation(fields: [mailbox_id], references: [id], onDelete: Cascade)
+  user         User         @relation("MailboxReaderPerson", fields: [user_id], references: [id], onDelete: Cascade)
+  linked_by    User?        @relation("MailboxReaderLinkedBy", fields: [linked_by_user_id], references: [id], onDelete: SetNull)
 
+  @@unique([mailbox_id, user_id])
   @@index([organization_id])
-  @@map("spider_watcher_configs")
+  @@index([user_id])
+  @@map("mailbox_readers")
+}
+
+/// The mailbox address register (M11a): every address ever issued, globally unique, never deleted.
+/// Keyed by LOCAL PART: each environment has its own database and exactly one mailbox domain
+/// (lib/mailbox/register.ts), so the local part is unique exactly when the address is. The register's
+/// API speaks in full addresses and refuses any other domain. "reserved" rows are the local parts that
+/// can never be issued (postmaster, abuse, bounce, bounces, no-reply, noreply) and belong to nobody.
+/// "purged" rows are a purged company's addresses: `local_part` holds `purged:` plus the keyed hash
+/// (HMAC-SHA256, key outside the database) of the address, never the address, and the row belongs to
+/// no company or mailbox. They exist only so the address is never issued again.
+model MailboxAddress {
+  id              String   @id @default(uuid()) @db.Uuid
+  local_part      String   @unique
+  kind            String   @default("issued") // "issued" | "reserved" | "purged"
+  organization_id String?  @db.Uuid
+  mailbox_id      String?  @db.Uuid
+  is_primary      Boolean  @default(false)
+  issued_at       DateTime @default(now())
+
+  organization Organization? @relation(fields: [organization_id], references: [id], onDelete: SetNull)
+  mailbox      Mailbox?      @relation(fields: [mailbox_id], references: [id], onDelete: SetNull)
+
+  // At most one primary address per mailbox is a partial unique index the schema cannot express:
+  //   CREATE UNIQUE INDEX "mailbox_addresses_one_primary" ON "mailbox_addresses"("mailbox_id") WHERE "is_primary"
+  @@index([organization_id])
+  @@index([mailbox_id])
+  @@map("mailbox_addresses")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Bee Agent (AI Warranty Upseller & New-Work Finder) — Dedicated Models
+// Spider lead watcher (#2619)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// One row per company: what Spider watches and who it alerts. Admin-configured; the server is the
+// only source of truth (the screen never keeps its own copy).
+model SpiderSettings {
+  id                String    @id @default(uuid()) @db.Uuid
+  organization_id   String    @unique @db.Uuid
+  is_active         Boolean   @default(false)
+  // Set every time Spider is switched on. Time in a stage counts from when the lead entered it, not
+  // from this (#2794): the starting summary is what stops switching on from alerting every old lead.
+  activated_at      DateTime?
+  // Per open status: { [LeadStatus]: { enabled, value, unit } }. Units: services/spider/config.ts.
+  status_limits     Json      @default("{}")
+  // { in_app, red_frame, email, text } booleans.
+  channels          Json      @default("{}")
+  // { roles: Role[], user_ids: uuid[], lead_owner: boolean }.
+  recipients        Json      @default("{}")
+  // Neither read nor written since #3436 (the exclusion list below replaced them; the settings save ignores them). Dropped
+  // by #3437.
+  watch_all_leads   Boolean   @default(true)
+  selected_lead_ids String[]  @default([]) @db.Uuid
+  // The leads Spider does NOT watch (#3434, Ran 3 Nov): every open lead of the company is watched, new ones included,
+  // except these. A lead that closes drops out by itself; one excluded and reopened stays excluded.
+  excluded_lead_ids String[]  @default([]) @db.Uuid
+  // The latest starting trigger (#2794) not yet acted on: Spider switched on, a stage switched on, a
+  // limit shortened, or more leads brought under watch. The sweep turns the backlog that is already
+  // past its limit into one starting summary once the settings have been quiet for a sweep
+  // interval, then clears it. NULL when nothing is waiting.
+  summary_trigger_at   DateTime?
+  // SWITCHED_ON | STAGE_ADDED | LIMIT_SHORTENED | SCOPE_WIDENED | SETTINGS_CHANGED (several kinds coalesced).
+  summary_trigger_kind String?
+  // When the waiting trigger first started waiting. Later saves move summary_trigger_at on, never this:
+  // the sweep acts at most 10 minutes after it, and gives up retrying a failed summary then.
+  summary_trigger_since DateTime?
+  // Set to the activation moment when Spider was activated with "Skip them" (#3431); NULL after "Send one starting
+  // summary".
+  backlog_skipped_at DateTime? @db.Timestamptz(6)
+  // The stays already past their limit at that Activate, "<lead id>|<stage>|<entered ms>" (sweep.ts skippedStayKey): the
+  // sweep never reports them, per lead or in a later summary. Every other stay alerts as normal. Emptied on "Send".
+  backlog_skipped_stays String[] @default([])
+  created_at        DateTime  @default(now())
+  updated_at        DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@map("spider_settings")
+}
+
+// Spider's starting summary (#2794): the backlog already past its limit when Spider started watching
+// something new, reported once per recipient instead of one alert per lead. One CURRENT summary per company: a
+// partial unique index on organization_id where status is not SUPERSEDED (migration 20261105110000; Prisma cannot
+// express a partial index, so the schema carries no @unique). Its leads are the alert-log rows that point at it.
+//   status BUILDING: its claims are still being written (#3108, services/spider/summaryRuns.ts); nobody can read it.
+//   status READY:    complete and delivered; the only summary staff and History read. Rows from before #3108 are READY.
+//   status SUPERSEDED: replaced by a newer switch-on or trigger (or given up on); kept for good, never deleted.
+model SpiderSummary {
+  id              String   @id @default(uuid()) @db.Uuid
+  organization_id String   @db.Uuid
+  created_at      DateTime @default(now())
+  // When the starting trigger happened, and which kind (spider_settings.summary_trigger_kind).
+  triggered_at    DateTime
+  trigger_kind    String
+  lead_count      Int      @default(0)
+  recipient_count Int      @default(0)
+  // Per channel, in plain words: { in_app: {outcome}, email: {outcome, recipients:[{user_id,outcome}]}, text: {...} }.
+  // { state: 'SENDING' } from the moment delivery starts until its outcome is recorded: delivery starts at most once.
+  delivery        Json     @default("{}")
+  // BUILDING | READY | SUPERSEDED. Nullable, defaulting to READY: every row that exists comes out READY, and a row with no
+  // status reads as READY (services/spider/summaryRuns.ts is the only writer).
+  status          String?  @default("READY")
+
+  organization Organization       @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  alerts       SpiderAlert[]
+
+  @@map("spider_summaries")
+}
+
+// One go at making a starting summary (#3108): the summary is written in small saved pieces, so a run that stops
+// resumes where it was, and one that keeps failing gives up. `attempts` is counted and saved BEFORE any work starts;
+// `cursor` is the last lead id whose claim is saved; `next_attempt_at` is when the next attempt may start (2, then 8,
+// then 30 minutes after the attempt began). RUNNING | DONE | ABANDONED. One RUNNING run per company (partial unique
+// index in the migration). Services/spider/summaryRuns.ts.
+model SpiderSummaryRun {
+  id              String    @id @default(uuid()) @db.Uuid
+  organization_id String    @db.Uuid
+  summary_id      String    @unique @db.Uuid
+  status          String    @default("RUNNING")
+  attempts        Int       @default(0)
+  cursor          String?   @db.Uuid
+  last_error      String?
+  next_attempt_at DateTime?
+  created_at      DateTime  @default(now())
+  updated_at      DateTime  @default(now()) @updatedAt
+  finished_at     DateTime?
+
+  // summary_id has its foreign key (ON DELETE CASCADE) in the migration only: a relation here would add a field to
+  // SpiderSummary, whose generated types every file of the backend carries (the backend's typecheck runs close to its memory
+  // limit). The organization relation is declared: the company purge (lib/purge.ts) reads the schema for what cascades.
+  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@map("spider_summary_runs")
+}
+
+// The Spider alert log: one row per lead per status visit per switched-on period Spider alerted
+// on (an alert, or a starting summary's claim). The unique key is the duplicate-prevention claim - the sweep writes this row FIRST and only a
+// successful insert sends. The key includes counted_from, so an off/on lets a still-stuck lead
+// alert once more (D5). The limit is deliberately not part of the key, so editing a limit never
+// re-alerts.
+model SpiderAlert {
+  id                String     @id @default(uuid()) @db.Uuid
+  organization_id   String     @db.Uuid
+  lead_id           String     @db.Uuid
+  status            LeadStatus
+  // The instant the lead entered `status` (its latest STATUS_CHANGE into it, or its creation).
+  entered_status_at DateTime
+  // The later of entered_status_at and the company's activated_at when the row was written: names the
+  // switched-on period, so it is part of the claim key (D5). Time in the stage counts from
+  // entered_status_at (#2794).
+  counted_from      DateTime
+  limit_value       Int
+  limit_unit        String
+  alerted_at        DateTime   @default(now())
+  // User ids only - never emails or phone numbers.
+  recipient_ids     String[]   @default([]) @db.Uuid
+  // Per channel, in plain words: { in_app: {outcome}, email: {outcome, recipients:[{user_id,outcome}]}, text: {...} }.
+  delivery          Json       @default("{}")
+  // Spider texts that went out, so they count toward the company's texting usage.
+  texts_sent        Int        @default(0)
+
+  // A copy taken when the alert went out, for the History tab and its preview drawer (S3). NULL on
+  // alerts raised before these columns existed.
+  lead_number      String?
+  customer_id      String?    @db.Uuid
+  customer_name    String?
+  company_name     String?
+  service_request  String?
+  service_location String?
+  // "New" / "Contacted" / "Walkthrough Completed".
+  stage_name       String?
+  // Time in the stage when the alert went out, in the limit's unit (MINUTE / HOUR / DAY).
+  elapsed_value    Int?
+  elapsed_unit     String?
+  // { email: {enabled, status: SENT|FAILED|SKIPPED, sent, skipped, failed, error, skip_reason, from}, sms: {...}, in_app: {enabled, status} }.
+  channels         Json?
+  // [{ id, name, email, role, type: owner|user|admin }] - never a phone number.
+  recipients       Json?
+  email_subject    String?
+  email_body       String?
+  sms_message      String?
+  in_app_message   String?
+
+  // ALERTED (one alert of its own) or SUMMARIZED (reported in a starting summary instead, #2794).
+  // Either way the row is the claim for the stage visit, so it never alerts separately.
+  kind       String  @default("ALERTED")
+  // The starting summary it was reported in; cleared when a newer summary replaces that one.
+  summary_id String? @db.Uuid
+  // The list of people this alert told, stored once per distinct list (#3107). Rows written before it keep
+  // their own copy in `recipients` above; a row written since sets this and leaves `recipients` NULL.
+  recipient_set_id String? @db.Uuid
+
+  organization  Organization       @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  lead          Lead               @relation(fields: [lead_id], references: [id], onDelete: Cascade)
+  summary       SpiderSummary?     @relation(fields: [summary_id], references: [id], onDelete: SetNull)
+  // NoAction, not SetNull: a set that vanished must fail loudly, never turn into an alert that lost its people.
+  recipient_set SpiderRecipientSet? @relation(fields: [recipient_set_id], references: [id], onDelete: NoAction)
+
+  // Named explicitly: Prisma's default name for this key truncates to the old 4-column key's name.
+  @@unique([organization_id, lead_id, status, entered_status_at, counted_from], map: "spider_alerts_visit_activation_key")
+  @@index([organization_id, alerted_at])
+  @@index([organization_id, customer_id])
+  @@index([lead_id])
+  @@index([summary_id])
+  @@index([recipient_set_id])
+  @@map("spider_alerts")
+}
+
+// One list of the people a Spider alert told (#3107), stored once however many alerts told exactly that list.
+// `recipients` is the History tab's list ([{ id, name, email, role, type }], in user id order, never a phone number),
+// as the alert-log row used to carry it; `hash` is a stable hash of that list (services/spider/recipientSets.ts), so
+// a list already stored is found again and reused. Unique per company on the hash.
+model SpiderRecipientSet {
+  id              String   @id @default(uuid()) @db.Uuid
+  organization_id String   @db.Uuid
+  hash            String
+  recipients      Json
+  created_at      DateTime @default(now())
+
+  organization Organization  @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  alerts       SpiderAlert[]
+
+  @@unique([organization_id, hash])
+  @@map("spider_recipient_sets")
+}
+
+// Spider's watch list (#3468): one row per lead, kept by the database in the same save as the lead (triggers on leads,
+// migration 20261112090000). `stage` is NEW | CONTACTED | WALKTHROUGH_COMPLETED, or null when the lead is in no Spider
+// stage (plain text with a CHECK, not an enum); `entered_at` is when it entered it, by spiderStageOf's rules
+// (services/spider/config.ts), which the SQL function spider_stage_of repeats. `pending`: no alert or summary claim yet for
+// this stay in the current switched-on period (set by every new stay; cleared by the claim). `changed_at`: when stage or
+// entered_at last changed. The due time is computed by the check, never stored. The partial due index
+// (organization_id, stage, entered_at) WHERE pending AND stage IS NOT NULL lives only in the migration: Prisma cannot express it.
+// lead_id has its foreign key (ON DELETE CASCADE) in the migration only: a relation here would add a field to Lead, whose
+// generated types every file of the backend carries. The organization relation is declared for the company purge.
+model SpiderLeadWatch {
+  lead_id         String    @id @db.Uuid
+  organization_id String    @db.Uuid
+  stage           String?
+  entered_at      DateTime?
+  pending         Boolean   @default(true)
+  changed_at      DateTime  @default(now())
+
+  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@index([organization_id, changed_at])
+  @@map("spider_lead_watch")
+}
+
+// The Spider sweep's lease (#2993): at most one run at a time across servers, with no transaction held for the run.
+// One row per sweep name. A run claims it (insert, or take over a row whose expires_at has passed), renews expires_at
+// while it works, and deletes its row at the end; a killed run's row simply expires. holder is the run's own random id.
+// No company data, so no organization_id and no tenant policy (services/spider/sweepLease.ts).
+model SpiderSweepLease {
+  name       String   @id
+  holder     String
+  claimed_at DateTime @db.Timestamptz(3)
+  expires_at DateTime @db.Timestamptz(3)
+
+  @@map("spider_sweep_leases")
+}
+
+// Roles & Permissions, PRD 5 (S05.7): a job's (or a lead's) own copy of a customer detail. A person with the pencil
+// adds a phone or email that belongs to THIS record only, or (later slices) changes the customer's value for this
+// record; the customer row is never written. The office review (PRD 6) decides what reaches the customer, in its own
+// table keyed to these rows, so an entry carries no review decision. Entries are never hard-deleted: removed_at keeps
+// the history whole. Exactly one of job_id / lead_id is set (a CHECK in the migration; Prisma cannot express it).
+// kind: PHONE | EMAIL | FIRST_NAME | LAST_NAME | COMPANY_NAME. intent: ADDED | CHANGED. Plain text with a CHECK rather
+// than Prisma enums, so the status-registry guard has nothing new to trip over.
+model RecordContactEntry {
+  id                       String               @id @default(uuid()) @db.Uuid
+  organization_id          String               @db.Uuid
+  job_id                   String?              @db.Uuid
+  lead_id                  String?              @db.Uuid
+  kind                     String
+  intent                   String
+  value                    String
+  extension                String?
+  label                    String?              @db.VarChar(50)
+  // intent CHANGED: which customer field (or phone / email row) this entry replaces for the record, and the value the
+  // customer held when the change was made.
+  overridden_field         String?
+  overridden_row_id        String?              @db.Uuid
+  customer_value_at_change String?
+  // Who made it and who last changed it; the names are snapshots that outlive the user row.
+  created_by_id            String?              @db.Uuid
+  created_by_name          String?
+  created_at               DateTime             @default(now())
+  updated_by_id            String?              @db.Uuid
+  updated_by_name          String?
+  updated_at               DateTime             @default(now())
+  removed_at               DateTime?
+  // For a job entry carried over from the lead at conversion: the lead entry it came from.
+  source_entry_id          String?              @db.Uuid
+
+  organization Organization         @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  job          Job?                 @relation(fields: [job_id], references: [id], onDelete: Cascade)
+  lead         Lead?                @relation(fields: [lead_id], references: [id], onDelete: Cascade)
+  creator      User?                @relation("RecordContactEntryCreator", fields: [created_by_id], references: [id], onDelete: SetNull)
+  editor       User?                @relation("RecordContactEntryEditor", fields: [updated_by_id], references: [id], onDelete: SetNull)
+  source_entry RecordContactEntry?  @relation("RecordContactEntryCarried", fields: [source_entry_id], references: [id], onDelete: SetNull)
+  carried      RecordContactEntry[] @relation("RecordContactEntryCarried")
+
+  @@index([organization_id])
+  @@index([job_id])
+  @@index([lead_id])
+  // #3015: a lead's or job's own phone value, read by the fixed-order customer pick for a phone number.
+  @@index([organization_id, kind, value])
+  @@map("record_contact_entries")
+}
+
+/// One office review round on a job (Roles & Permissions, PRD 6, M7/M8). The job-level complete opens a round in the
+/// same write that moves the job to Office review; finishing the review (a later slice) closes it. `window_start` is
+/// where this round's change-set begins: the job's creation for the first round, the previous round's finish for
+/// later ones. `state` is plain text with a CHECK (OPEN | FINISHED), not a Prisma enum.
+model JobReview {
+  id              String    @id @default(uuid()) @db.Uuid
+  organization_id String    @db.Uuid
+  job_id          String    @db.Uuid
+  started_at      DateTime  @default(now())
+  window_start    DateTime
+  state           String    @default("OPEN")
+  finished_by_id  String?   @db.Uuid
+  finished_at     DateTime?
+  created_at      DateTime  @default(now())
+
+  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  job          Job          @relation(fields: [job_id], references: [id], onDelete: Cascade)
+  finished_by  User?        @relation("JobReviewFinisher", fields: [finished_by_id], references: [id], onDelete: SetNull)
+  item_checks  JobReviewItemCheck[]
+  customer_decisions JobReviewCustomerDecision[]
+
+  @@index([organization_id])
+  @@index([job_id, state])
+  @@map("job_reviews")
+}
+
+/// A check on one item of an office review round, the job summary included (Roles & Permissions, PRD 6, S06.10): one
+/// row per item per round. `entry_id` is the job history entry the check was made against (a plain id, no foreign key);
+/// the item is checked only while its latest history entry is that one, so a later change un-checks it with no write.
+model JobReviewItemCheck {
+  id              String   @id @default(uuid()) @db.Uuid
+  organization_id String   @db.Uuid
+  review_id       String   @db.Uuid
+  item_key        String
+  entry_id        String   @db.Uuid
+  checked_by_id   String?  @db.Uuid
+  checked_at      DateTime @default(now())
+
+  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  review       JobReview    @relation(fields: [review_id], references: [id], onDelete: Cascade)
+  checked_by   User?        @relation(fields: [checked_by_id], references: [id], onDelete: SetNull)
+
+  @@unique([review_id, item_key])
+  @@index([organization_id])
+  @@map("job_review_item_checks")
+}
+
+/// The reviewer's decision on one customer item of an office review round (Roles & Permissions, PRD 6, S06.11): one row
+/// per job contact entry per round, written by the reviewer's tick and rewritten by a change of mind. `entry_id` is the
+/// PRD 5 job contact entry (a plain id, no foreign key: the entry is never changed by a decision), `event_id` the job
+/// history entry the tick was made against (the item is ticked only while it is still the entry's latest, so a correction
+/// un-checks it with no write). `choice` is ADD, UPDATE, THIS_JOB_ONLY or NONE (an entry removed before the review).
+/// `applied` is set when Finish review applies it to the customer (S06.12); this slice only records.
+model JobReviewCustomerDecision {
+  id              String    @id @default(uuid()) @db.Uuid
+  organization_id String    @db.Uuid
+  review_id       String    @db.Uuid
+  entry_id        String    @db.Uuid
+  event_id        String    @db.Uuid
+  choice          String
+  decided_by_id   String?   @db.Uuid
+  decided_at      DateTime  @default(now())
+  applied         Boolean   @default(false)
+  applied_at      DateTime?
+
+  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  review       JobReview    @relation(fields: [review_id], references: [id], onDelete: Cascade)
+  decided_by   User?        @relation(fields: [decided_by_id], references: [id], onDelete: SetNull)
+
+  @@unique([review_id, entry_id])
+  @@index([organization_id])
+  @@map("job_review_customer_decisions")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 model BeeSetting {
@@ -6047,6 +7084,7 @@ model BeeCallLog {
   lead_id           String?  @db.Uuid
   task_id           String?  @db.Uuid  // follow-up task created for this call (auto or manual)
   needs_human_alert Boolean  @default(false)
+  is_answered       Boolean  @default(false)
   cost_estimate           Decimal?  @db.Decimal(10, 6)
   vapi_cost               Decimal?  @db.Decimal(10, 6)
   jev_cost                Decimal?  @db.Decimal(10, 6)
@@ -6068,6 +7106,7 @@ model BeeCallLog {
   @@index([organization_id, called_at])
   @@index([organization_id, agent_id, called_at])
   @@index([organization_id, outcome])
+  @@index([organization_id, is_answered])
   @@map("bee_call_logs")
 }
 
@@ -6086,5 +7125,3 @@ model BeeDncEntry {
   @@index([organization_id])
   @@map("bee_dnc_entries")
 }
-
-

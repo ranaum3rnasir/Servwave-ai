@@ -120,22 +120,9 @@ export async function getBeeCallLogs(req: Request, res: Response) {
     }
     if (outcome && outcome !== 'all') {
       if (outcome === 'answered' || outcome === 'ANSWERED') {
-        where.outcome = {
-          notIn: [
-            'no_answer',
-            'voicemail',
-            'No answer/Machine',
-            'Wrong Number',
-            'FAILED',
-            'NO_ANSWER',
-            'VOICEMAIL',
-            'NO_ANSWER,VOICEMAIL',
-            'WRONG_NUMBER',
-            'NEEDS_REVIEW',
-            'CALL_INITIATED',
-            'IN_PROGRESS',
-          ],
-        };
+        where.is_answered = true;
+      } else if (outcome === 'other' || outcome === 'OTHER') {
+        where.outcome = { contains: 'OTHER', mode: 'insensitive' };
       } else if (outcome === 'no_answer' || outcome === 'NO_ANSWER') {
         where.OR = [
           { outcome: { in: ['NO_ANSWER', 'VOICEMAIL', 'NO_ANSWER,VOICEMAIL', 'no_answer', 'voicemail', 'No answer/Machine'] } },
@@ -697,6 +684,7 @@ export async function updateBeeCallOutcome(req: Request, res: Response) {
       where: { id, organization_id: user.organization_id },
       data: {
         outcome: storedOutcome,
+        is_answered: parsed.isAnswered,
         needs_human_alert: parsed.needsHumanAlert,
       },
     });
@@ -961,6 +949,7 @@ export async function triggerCallNow(req: Request, res: Response) {
       lineItemsSummary: queueItem.job_info?.line_items_summary,
       warrantyOfferPitch: agent?.warranty_offer_pitch || undefined,
       newWorkPitch: agent?.new_work_pitch || undefined,
+      flow: agent?.flow,
       conversationFlow: agent?.conversation_flow,
       selectedJobContextFields: agent?.job_context_fields,
       jobContextVariables: queueItem.job_context_variables,
@@ -1211,6 +1200,9 @@ export async function createBeeAgent(req: Request, res: Response) {
     });
 
     const normalizedCreated = BeeService.normalizeAgentRecord(created);
+    if (body.flow && typeof body.flow === 'object') {
+      normalizedCreated.flow = body.flow;
+    }
 
     // Sync agent creation to the active Voice Calling Engine (e.g. Vapi POST /assistant)
     const engineSync = await BeeVoiceAdapter.syncAgentCreate(
@@ -1278,6 +1270,9 @@ export async function updateBeeAgent(req: Request, res: Response) {
     });
 
     const normalizedUpdated = BeeService.normalizeAgentRecord(updated);
+    if (body.flow && typeof body.flow === 'object') {
+      normalizedUpdated.flow = body.flow;
+    }
 
     // Sync agent update (name, persona, voice, conversation flow, and master prompt) to Vapi (PATCH /assistant/:id)
     const engineSync = await BeeVoiceAdapter.syncAgentUpdate(
@@ -1292,6 +1287,7 @@ export async function updateBeeAgent(req: Request, res: Response) {
     ) {
       const packedWithEngineId = BeeService.packAgentMetadata(
         {
+          ...body,
           vapi_assistant_id: engineSync.externalAgentId,
           voice_engine: engineSync.engineType,
         },
@@ -1365,6 +1361,7 @@ export async function triggerTestCall(req: Request, res: Response) {
     agentId,
     conversationFlow,
     selectedJobContextFields,
+    flow,
   } = req.body;
 
   const targetTo = (toNumber || phoneNumber || '').trim();
@@ -1410,6 +1407,7 @@ export async function triggerTestCall(req: Request, res: Response) {
       undefined;
 
     const resolvedFlow = conversationFlow || agent?.conversation_flow;
+    const resolvedAgentFlow = flow || agent?.flow;
     const resolvedFields =
       Array.isArray(selectedJobContextFields) && selectedJobContextFields.length > 0
         ? selectedJobContextFields
@@ -1438,6 +1436,7 @@ export async function triggerTestCall(req: Request, res: Response) {
       tradeFocus: agent?.trade_focus || 'General Service',
       jobType: agent?.trade_focus || 'General Service',
       isTestCall: true,
+      flow: resolvedAgentFlow,
       conversationFlow: resolvedFlow,
       selectedJobContextFields: resolvedFields,
       availablePlans: activePlans.map((p) => ({

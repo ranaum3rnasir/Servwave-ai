@@ -315,6 +315,7 @@ export interface BeeAgentItem {
   version?: number | string;
   override_caller_id?: boolean;
   goal?: string;
+  flow?: any;
   updated_at?: string;
 }
 
@@ -334,6 +335,7 @@ export interface BeeTestCallPayload {
   phoneNumberId?: string;
   agentId?: string;
   jobId?: string;
+  flow?: any;
   conversationFlow?: BeeAgentConversationFlow;
   selectedJobContextFields?: string[];
 }

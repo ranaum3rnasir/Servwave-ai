@@ -6,53 +6,106 @@ export interface DynamicVariableDefinition {
   key: string;
   label: string;
   token: string;
-  category: 'job_context' | 'core';
+  category: 'job' | 'customer' | 'job_context' | 'core';
   description: string;
   sensitive?: boolean;
 }
 
-// ── 1. Job Info Dynamic Context Variables (Extracted from Job Data) ──
-export const JOB_CONTEXT_VARIABLES: DynamicVariableDefinition[] = [
+// ── 1. Customer Dynamic Variables (Contact & Account Profile) ──
+export const CUSTOMER_DYNAMIC_VARIABLES: DynamicVariableDefinition[] = [
+  {
+    key: 'customer_name',
+    label: 'Customer Name',
+    token: '{{customer_name}}',
+    category: 'customer',
+    description: 'Full name of the customer being called',
+  },
+  {
+    key: 'phone',
+    label: 'Phone',
+    token: '{{phone}}',
+    category: 'customer',
+    description: 'Phone number dialed for the customer',
+  },
+  {
+    key: 'company_name',
+    label: 'Company Name',
+    token: '{{company_name}}',
+    category: 'customer',
+    description: 'Your organization or company trading name',
+  },
+  {
+    key: 'service_address',
+    label: 'Service Address',
+    token: '{{service_address}}',
+    category: 'customer',
+    description: 'Customer service address or property location',
+  },
+];
+
+// ── 2. Job Dynamic Variables (Job Details & Service History) ──
+export const JOB_DYNAMIC_VARIABLES: DynamicVariableDefinition[] = [
+  {
+    key: 'job_type',
+    label: 'Job Type',
+    token: '{{job_type}}',
+    category: 'job',
+    description: 'Trade or category of work completed',
+  },
+  {
+    key: 'service_request',
+    label: 'Service Request',
+    token: '{{service_request}}',
+    category: 'job',
+    description: 'Original service request or scope description',
+  },
+  {
+    key: 'service_address',
+    label: 'Service Address',
+    token: '{{service_address}}',
+    category: 'job',
+    description: 'Job site address where service was delivered',
+  },
+  {
+    key: 'warranty_end_date',
+    label: 'Warranty Expiry',
+    token: '{{warranty_end_date}}',
+    category: 'job',
+    description: 'Original warranty coverage expiration date',
+  },
   {
     key: 'assigned_team',
     label: 'Assigned Team',
     token: '{{assigned_team}}',
-    category: 'job_context',
+    category: 'job',
     description: 'Technicians, dispatcher & salesperson on the job',
   },
   {
     key: 'job_notes',
     label: 'Job Notes',
     token: '{{job_notes}}',
-    category: 'job_context',
+    category: 'job',
     description: 'Scope notes, completion notes & estimate notes',
-  },
-  {
-    key: 'invoice_sent',
-    label: 'Invoice Sent',
-    token: '{{invoice_sent}}',
-    category: 'job_context',
-    description: 'Invoice #, status, sent/paid dates, billed & balance due',
   },
   {
     key: 'line_items',
     label: 'Line Items',
     token: '{{line_items}}',
-    category: 'job_context',
+    category: 'job',
     description: 'Itemized qty, description, unit price, discount & total',
   },
   {
     key: 'total_costs',
     label: 'Total Costs',
     token: '{{total_costs}}',
-    category: 'job_context',
+    category: 'job',
     description: 'Subtotal, discounts, tax rate/amount & grand total',
   },
   {
     key: 'internal_costs',
     label: 'Internal Costs',
     token: '{{internal_costs}}',
-    category: 'job_context',
+    category: 'job',
     description: 'Internal unit costs, labor hours & overhead metrics',
     sensitive: true,
   },
@@ -60,27 +113,24 @@ export const JOB_CONTEXT_VARIABLES: DynamicVariableDefinition[] = [
     key: 'visits',
     label: 'Visits',
     token: '{{visits}}',
-    category: 'job_context',
+    category: 'job',
     description: 'Visit history, dates, status, techs & visit notes',
   },
   {
     key: 'communication_history',
     label: 'Communication History',
     token: '{{communication_history}}',
-    category: 'job_context',
+    category: 'job',
     description: 'Recent SMS, emails, prior call logs & timeline events',
   },
 ];
 
-// ── 2. Core Customer & Job Identifiers ──
-export const CORE_DYNAMIC_VARIABLES: DynamicVariableDefinition[] = [
-  {
-    key: 'customer_name',
-    label: 'Customer Name',
-    token: '{{customer_name}}',
-    category: 'core',
-    description: 'Full name of the customer being called',
-  },
+// Backwards-compatible aliases for existing imports
+export const JOB_CONTEXT_VARIABLES: DynamicVariableDefinition[] = JOB_DYNAMIC_VARIABLES;
+export const CORE_DYNAMIC_VARIABLES: DynamicVariableDefinition[] = CUSTOMER_DYNAMIC_VARIABLES;
+
+// ── 3. Supported Aliases and Legacy Variables (recognized by validator for backwards-compatibility) ──
+export const LEGACY_OR_ALIAS_VARIABLES: DynamicVariableDefinition[] = [
   {
     key: 'customer_phone',
     label: 'Customer Phone',
@@ -89,11 +139,18 @@ export const CORE_DYNAMIC_VARIABLES: DynamicVariableDefinition[] = [
     description: 'Phone number dialed for the customer',
   },
   {
-    key: 'company_name',
-    label: 'Company Name',
-    token: '{{company_name}}',
+    key: 'warranty_expiry',
+    label: 'Warranty Expiry',
+    token: '{{warranty_expiry}}',
     category: 'core',
-    description: 'Your organization or company trading name',
+    description: 'Original warranty coverage expiration date alias',
+  },
+  {
+    key: 'invoice_sent',
+    label: 'Invoice Sent',
+    token: '{{invoice_sent}}',
+    category: 'job_context',
+    description: 'Invoice #, status, sent/paid dates, billed & balance due',
   },
   {
     key: 'agent_persona',
@@ -108,34 +165,6 @@ export const CORE_DYNAMIC_VARIABLES: DynamicVariableDefinition[] = [
     token: '{{job_number}}',
     category: 'core',
     description: 'Identifier of the serviced job (e.g. #J00090)',
-  },
-  {
-    key: 'job_type',
-    label: 'Job Type',
-    token: '{{job_type}}',
-    category: 'core',
-    description: 'Trade or category of work completed',
-  },
-  {
-    key: 'service_request',
-    label: 'Service Request',
-    token: '{{service_request}}',
-    category: 'core',
-    description: 'Original service request or scope description',
-  },
-  {
-    key: 'service_address',
-    label: 'Service Address',
-    token: '{{service_address}}',
-    category: 'core',
-    description: 'Physical location where the service was delivered',
-  },
-  {
-    key: 'warranty_end_date',
-    label: 'Warranty Expiry',
-    token: '{{warranty_end_date}}',
-    category: 'core',
-    description: 'Original warranty coverage expiration date',
   },
   {
     key: 'warranty_status',
@@ -158,7 +187,6 @@ export const CORE_DYNAMIC_VARIABLES: DynamicVariableDefinition[] = [
     category: 'core',
     description: 'Early renewal incentive discount or promo offer',
   },
-  // Supported Aliases
   {
     key: 'first_name',
     label: 'First Name',
@@ -196,10 +224,21 @@ export const CORE_DYNAMIC_VARIABLES: DynamicVariableDefinition[] = [
   },
 ];
 
-// Single source of truth for all available variable keys
+// Single source of truth for variables actively displayed in the agent conversation flow (14 unique variables)
+const _shownKeySet = new Set<string>();
+export const ALL_SHOWN_DYNAMIC_VARIABLES: DynamicVariableDefinition[] = [
+  ...CUSTOMER_DYNAMIC_VARIABLES,
+  ...JOB_DYNAMIC_VARIABLES,
+].filter((v) => {
+  if (_shownKeySet.has(v.key)) return false;
+  _shownKeySet.add(v.key);
+  return true;
+});
+
+// Single source of truth for all valid variable keys (shown + legacy/alias)
 export const ALL_DYNAMIC_VARIABLES: DynamicVariableDefinition[] = [
-  ...JOB_CONTEXT_VARIABLES,
-  ...CORE_DYNAMIC_VARIABLES,
+  ...ALL_SHOWN_DYNAMIC_VARIABLES,
+  ...LEGACY_OR_ALIAS_VARIABLES,
 ];
 
 export const AVAILABLE_DYNAMIC_VARIABLE_SET = new Set<string>(
