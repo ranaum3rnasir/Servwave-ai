@@ -90,11 +90,19 @@ export function TagInput(props: TagInputProps) {
   // the list to be clicked again.
   const handleWriteError = (err: unknown, fallbackTitle: string) => {
     const code = (err as { response?: { data?: { code?: string } } })?.response?.data?.code;
+    const status = (err as { response?: { status?: number } })?.response?.status;
 
-    if (code === 'TAG_NOT_FOUND' || code === 'TAG_NOT_ATTACHED') {
+    if (code === 'TAG_NOT_FOUND' || code === 'TAG_NOT_ATTACHED' || status === 409) {
       // Self-heal on the same click that exposed the staleness, so the entry
       // leaves the picker instead of failing identically on the next attempt.
       invalidate();
+      if (status === 409) {
+        // Tag is already attached — invalidate refreshed the host record so the chip appears,
+        // close the picker dropdown, and clear search.
+        setSearch('');
+        setOpen(false);
+        return;
+      }
       toast({
         variant: 'destructive',
         title: 'That tag is no longer available',
@@ -249,7 +257,12 @@ export function TagInput(props: TagInputProps) {
               // not Button-shaped. Deferred.
               <button
                 key={tag.id}
-                className="rounded-full px-2.5 py-0.5 text-xs font-medium text-on-fill hover:opacity-80 transition-opacity"
+                type="button"
+                disabled={addTag.isPending}
+                className={cn(
+                  "rounded-full px-2.5 py-0.5 text-xs font-medium text-on-fill hover:opacity-80 transition-opacity",
+                  addTag.isPending && "opacity-50 cursor-not-allowed"
+                )}
                 style={{ backgroundColor: tag.color }}
                 onClick={() => addTag.mutate({ tag_id: tag.id })}
               >
@@ -281,7 +294,12 @@ export function TagInput(props: TagInputProps) {
               {/* Full-width left-aligned menu-item row - a dropdown-item shape, not
                   Button-shaped. Deferred. */}
               <button
-                className="flex items-center gap-2 w-full px-3 py-2 text-xs text-left text-primary hover:bg-background-light transition-colors"
+                type="button"
+                disabled={addTag.isPending}
+                className={cn(
+                  "flex items-center gap-2 w-full px-3 py-2 text-xs text-left text-primary hover:bg-background-light transition-colors",
+                  addTag.isPending && "opacity-50 cursor-not-allowed"
+                )}
                 onClick={() => addTag.mutate({ name: search.trim(), color })}
               >
                 <Plus className="h-3 w-3" />

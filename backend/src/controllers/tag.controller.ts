@@ -332,16 +332,24 @@ async function attachTagAssignment(
     return { ok: false, status: 409, error: `Tag already attached to this ${entityType.toLowerCase()}` };
   }
 
-  await prisma.tagAssignment.create({
-    data: {
-      tag_id: tagId,
-      entity_type: entityType,
-      entity_id: entityId,
-      organization_id: req.user!.organization_id,
-    },
-  });
+  try {
+    await prisma.tagAssignment.create({
+      data: {
+        tag_id: tagId,
+        entity_type: entityType,
+        entity_id: entityId,
+        organization_id: req.user!.organization_id,
+      },
+    });
 
-  return { ok: true };
+    return { ok: true };
+  } catch (err: any) {
+    if (err?.code === 'P2002') {
+      // Concurrent race condition: another in-flight request already attached this tag
+      return { ok: true };
+    }
+    throw err;
+  }
 }
 
 /**
