@@ -39,7 +39,10 @@ const databaseUrl = process.env.DATABASE_URL;
 const jobsOptions: Prisma.PrismaClientOptions = {
   log: jobsLog,
   ...(databaseUrl ? { datasources: { db: { url: withConnectionLimit(databaseUrl, JOBS_CONNECTION_LIMIT) } } } : {}),
-  transactionOptions: { maxWait: 2000, timeout: 5000 },
+  // Interactive transactions default to maxWait 2s / timeout 5s. The Supabase pooler's cold connect + per-query latency
+  // from a dev machine can push past 2s waiting for a slot on the pooler, killing the background job with P2028.
+  // Match lib/prisma.ts so background cron/spider/automations survive pooler latency without P2028 errors.
+  transactionOptions: { maxWait: 20000, timeout: 30000 },
 };
 
 const base = globalForJobs.prismaJobs || new PrismaClient(jobsOptions);
