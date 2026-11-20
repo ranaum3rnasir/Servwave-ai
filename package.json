@@ -22,7 +22,7 @@
     "node": ">=22.23.4"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.127.0"
+    "@anthropic-ai/sdk": "^1.9.0"
   },
   "devDependencies": {
     "audit-ci": "^7.1.0",
