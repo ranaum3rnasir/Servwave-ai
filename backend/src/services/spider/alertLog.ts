@@ -40,7 +40,9 @@ export async function claimVisits(rows: Prisma.SpiderAlertCreateManyInput[]): Pr
 }
 
 /** The alert-log columns a claim may set: the table's own, never a name built from data. */
-const CLAIM_COLUMNS: ReadonlySet<string> = new Set(Object.values(Prisma.SpiderAlertScalarFieldEnum));
+const CLAIM_COLUMNS: ReadonlySet<string> = new Set(
+  Prisma.SpiderAlertScalarFieldEnum ? Object.values(Prisma.SpiderAlertScalarFieldEnum) : []
+);
 
 /**
  * The check's claim (tick.ts, #3469): writes the claims of one company's due stays and clears their watch rows'
