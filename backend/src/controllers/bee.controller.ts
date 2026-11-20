@@ -1677,6 +1677,7 @@ export async function deleteBeePlan(req: Request, res: Response) {
 export async function getJobTypeWarranties(req: Request, res: Response) {
   const user = req.user!;
   try {
+    await BeeService.seedDemoDataIfEmpty(user.organization_id);
     const jobTypeWarranties = await BeeService.getJobTypeWarranties(user.organization_id);
     res.json({ ok: true, jobTypeWarranties });
   } catch (err: any) {
@@ -1838,6 +1839,7 @@ export async function deleteBeeDnc(req: Request, res: Response) {
 export async function getBeeSettings(req: Request, res: Response) {
   const user = req.user!;
   try {
+    await BeeService.seedDemoDataIfEmpty(user.organization_id);
     let settings = await prisma.beeSetting.findUnique({
       where: { organization_id: user.organization_id },
     });

@@ -17,6 +17,8 @@ import {
   isWithinAllowedCallingWindow,
   formatScheduledTimeInCustomerTimezone,
 } from './timezoneService';
+import { activeListNames } from '../../lib/org-list-rows';
+import { AgentFlow, RETURN } from './agentFlow';
 import {
   JevCallClassifier,
   ClassifierInput,
@@ -1632,10 +1634,19 @@ export class BeeService {
       }
     }
 
-    const hasOrgTypes = Array.isArray(org?.job_type_options) && (org.job_type_options as any[]).length > 0;
-    const allTypes: string[] = hasOrgTypes
-      ? (org!.job_type_options as unknown as string[])
-      : (savedList.length > 0 ? Array.from(new Set(savedList.map((s) => s.job_type))) : defaultJobTypes);
+    let activeTypes: string[] = [];
+    try {
+      activeTypes = await activeListNames(prisma as unknown as Prisma.TransactionClient, orgId, 'job_types');
+    } catch {
+      // fallback
+    }
+
+    const hasOrgTypes = activeTypes.length > 0 || (Array.isArray(org?.job_type_options) && (org.job_type_options as any[]).length > 0);
+    const allTypes: string[] = activeTypes.length > 0
+      ? activeTypes
+      : (hasOrgTypes
+          ? (org!.job_type_options as unknown as string[])
+          : (savedList.length > 0 ? Array.from(new Set(savedList.map((s) => s.job_type))) : defaultJobTypes));
 
     return allTypes.map((jt: string) => {
       const saved = savedMap.get(jt);
@@ -4347,131 +4358,320 @@ export class BeeService {
 
     logger.info(`[BeeService] Initializing default Bee configuration for org ${orgId}`);
 
-    // 1. Settings
-    const defaultJobTypeRules = [
-      { job_type: 'Lock rekey / small repair', included_warranty: '90 days', warranty_days: 90, call_threshold_days: 21 },
-      { job_type: 'Door closer / hardware replacement', included_warranty: '6 months', warranty_days: 180, call_threshold_days: 30 },
-      { job_type: 'New door install', included_warranty: '12 months', warranty_days: 365, call_threshold_days: 45 },
-      { job_type: 'Access control / camera install', included_warranty: '12 months', warranty_days: 365, call_threshold_days: 45 },
-      { job_type: 'Fire door replacement', included_warranty: '12 months', warranty_days: 365, call_threshold_days: 45 },
-      { job_type: 'Automatic door operator', included_warranty: '12 months', warranty_days: 365, call_threshold_days: 45 },
-    ];
+    // 1. Resolve organization's real Job Types and company profile
+    let orgJobTypes: string[] = [];
+    try {
+      orgJobTypes = await activeListNames(prisma as unknown as Prisma.TransactionClient, orgId, 'job_types');
+    } catch {
+      // fallback if job_types table not initialized
+    }
+    if (!orgJobTypes || orgJobTypes.length === 0) {
+      const org = await prisma.organization.findUnique({
+        where: { id: orgId },
+        select: { name: true, job_type_options: true },
+      });
+      if (Array.isArray(org?.job_type_options) && (org.job_type_options as any[]).length > 0) {
+        orgJobTypes = (org.job_type_options as unknown as string[])
+          .filter((s) => typeof s === 'string' && s.trim().length > 0);
+      }
+    }
+    if (!orgJobTypes || orgJobTypes.length === 0) {
+      orgJobTypes = [
+        'HVAC Service',
+        'HVAC Install',
+        'Plumbing',
+        'Electrical',
+        'General Maintenance',
+      ];
+    }
 
-    await prisma.beeSetting.upsert({
-      where: { organization_id: orgId },
-      create: {
-        organization_id: orgId,
-        is_active: true,
-        call_window_start: '10:00',
-        call_window_end: '19:00',
-        timezone: 'America/New_York',
-        max_retries: 2,
-        retry_interval_hours: 48,
-        alert_email: null,
-        voice_provider: 'vapi',
-        voice_provider_api_key: process.env.VAPI_API_KEY?.trim() || null,
-        job_type_warranties: defaultJobTypeRules,
+    const orgRecord = await prisma.organization.findUnique({
+      where: { id: orgId },
+      select: { name: true },
+    });
+    const companyName = orgRecord?.name || 'ServWave';
+    const primaryJobType = orgJobTypes[0] || 'HVAC Service';
+
+    // 2. Build prebuilt conversation flow (AgentFlow) matching the primary job type
+    const prebuiltFlow: AgentFlow = {
+      version: 1,
+      persona: {
+        agentName: 'Sarah',
+        tone: 'warm, consultative, empathetic',
+        language: 'English (US)',
       },
-      update: {
-        job_type_warranties: defaultJobTypeRules,
+      steps: [
+        {
+          id: 'opening',
+          title: 'Opening',
+          mode: 'exact',
+          goal: 'Introduce yourself, state why you are calling, and confirm permission to speak.',
+          line: `Hi {{customer.first_name}}, this is {{agent.name}} from {{company.name}}. I'm calling about the {{job.equipment}} we serviced at {{job.service_address}}. Do you have a quick minute?`,
+          branches: [
+            { id: 'b1', when: 'Says yes or sure', outcome: { type: 'next' } },
+            { id: 'b2', when: 'Is busy right now', outcome: { type: 'callback' } },
+            { id: 'b3', when: 'Is not the account holder', outcome: { type: 'end_call' } },
+          ],
+        },
+        {
+          id: 'checkin',
+          title: 'Check-in',
+          mode: 'guide',
+          goal: 'Confirm the previous visit is operating well before discussing coverage renewal.',
+          line: 'Before anything else, is everything from our visit on {{job.completed_date}} still working well for you?',
+          branches: [
+            { id: 'b1', when: 'Says all good', outcome: { type: 'next' } },
+            { id: 'b2', when: 'Reports a problem', outcome: { type: 'transfer' } },
+          ],
+        },
+        {
+          id: 'offer',
+          title: 'Warranty offer',
+          mode: 'guide',
+          attachPlans: true,
+          goal: 'Explain that standard coverage is ending and walk through the renewal options.',
+          line: `Your parts and labor coverage on the {{job.equipment}} ends on {{warranty.end_date}}. If you renew before then, you get {{offer.early_discount}} off. Can I walk you through the options?`,
+          branches: [
+            { id: 'b1', when: 'Picks a plan', outcome: { type: 'goto', stepId: 'wrap' } },
+            { id: 'b2', when: 'Needs time to think', outcome: { type: 'objection', objectionId: 'needs_time' } },
+            { id: 'b3', when: 'Is not interested', outcome: { type: 'next' } },
+          ],
+        },
+        {
+          id: 'newwork',
+          title: 'New work',
+          mode: 'guide',
+          goal: 'Find any other equipment or projects at the property that need inspection or quote.',
+          line: `While I have you, is there any other equipment or project at the property you'd like our technicians to look at?`,
+          branches: [
+            { id: 'b1', when: 'Mentions a project', outcome: { type: 'next' } },
+            { id: 'b2', when: 'Says nothing right now', outcome: { type: 'next' } },
+          ],
+        },
+        {
+          id: 'wrap',
+          title: 'Wrap-up',
+          mode: 'exact',
+          goal: 'Confirm next steps and end the call warmly.',
+          line: `Perfect. I'll send the details to {{customer.email}} and someone from our office will confirm by tomorrow. Thanks, {{customer.first_name}}!`,
+          branches: [
+            { id: 'b1', when: 'Says goodbye', outcome: { type: 'end_call' } },
+          ],
+        },
+      ],
+      objections: [
+        {
+          id: 'too_expensive',
+          name: 'Too expensive',
+          examples: ["that's a lot", "can't afford it", 'too pricey'],
+          reply: 'Mention flexible monthly payments and note that a single emergency repair usually costs more than an entire year of coverage.',
+          after: { type: 'goto', stepId: RETURN },
+        },
+        {
+          id: 'needs_time',
+          name: 'Needs time',
+          examples: ["I'll think about it", 'need to talk to my partner', 'send me info'],
+          reply: 'No pressure at all. Offer to email the plan details and remind them the early discount is available until {{warranty.end_date}}.',
+          after: { type: 'goto', stepId: 'newwork' },
+        },
+        {
+          id: 'has_coverage',
+          name: 'Already has coverage',
+          examples: ['I have a home warranty', 'already covered elsewhere'],
+          reply: 'Thank them, note the details on their file, and do not push further.',
+          after: { type: 'goto', stepId: 'wrap' },
+        },
+        {
+          id: 'stop_calling',
+          name: 'Stop calling me',
+          examples: ['take me off your list', 'stop calling', 'do not call'],
+          reply: 'Apologise politely and confirm they will not be called again.',
+          after: { type: 'do_not_call' },
+        },
+      ],
+      guardrails: {
+        short_replies: true,
+        only_linked_prices: true,
+        honor_stop: true,
+        disclose_ai: true,
+        handoff_upset: true,
+        hide_internal: true,
+      },
+      customRules: ['Never call before 9am or after 7pm customer time.'],
+    };
+
+    const conversationFlow = {
+      greeting_pitch: `Hi {{customer_name}}, this is Sarah calling from {{company_name}} regarding your recent ${primaryJobType} (Job {{job_number}}). Do you have a quick minute?`,
+      checkin_flow: `Confirm the ${primaryJobType} service is operating smoothly and answer any immediate questions before discussing warranty extension.`,
+      warranty_offer_pitch: `Your complimentary warranty on the ${primaryJobType.toLowerCase()} work is nearing expiration on {{warranty_end_date}}. We'd love to extend your coverage with zero interruption.`,
+      new_work_pitch: `While I have you, is there any other equipment, maintenance, or project at {{service_address}} that our team can look into for you?`,
+      objection_handling: `Address pricing transparently with monthly options. Offer to email details if they need time to review.`,
+      custom_instructions: `Maintain a warm, professional, consultative tone. Keep speaking turns under two sentences. Always identify as an AI assistant if asked.`,
+    };
+
+    const packed = this.packAgentMetadata({
+      name: `Sarah - ${primaryJobType} Specialist`,
+      persona_name: 'Sarah',
+      voice_id: 'friendly_female_1',
+      trade_focus: primaryJobType,
+      trigger_days_before: 30,
+      eligible_job_types: [primaryJobType],
+      job_context_fields: [
+        'assigned_team',
+        'job_notes',
+        'invoice_sent',
+        'line_items',
+        'total_costs',
+        'visits',
+        'communication_history',
+      ],
+      conversation_flow: conversationFlow,
+      warranty_offer_pitch: conversationFlow.warranty_offer_pitch,
+      new_work_pitch: conversationFlow.new_work_pitch,
+      default_from_number: '',
+      default_from_number_id: '',
+      voice_engine: 'vapi',
+      language: 'English (US)',
+      tone: 'Warm, consultative, empathetic',
+      flow: prebuiltFlow,
+    });
+
+    // 3. Create exactly ONE prebuilt Voice Agent for the organization
+    const prebuiltAgent = await prisma.beeVoiceAgent.create({
+      data: {
+        organization_id: orgId,
+        name: `Sarah - ${primaryJobType} Specialist`,
+        persona_name: 'Sarah',
+        voice_id: 'friendly_female_1',
+        trade_focus: primaryJobType,
+        trigger_days_before: 30,
+        eligible_job_types: packed.packedJson as any,
+        warranty_offer_pitch: packed.warranty_offer_pitch,
+        new_work_pitch: packed.new_work_pitch,
+        is_active: true,
       },
     });
 
-    // 2. Warranty Plans
-    const plans = [
-      {
-        name: 'Silver Protection',
-        duration_months: 12,
-        price: 149.0,
-        billing_interval: 'one_time',
-        description: '1-year labor extension on the original work',
-        inclusions: {
-          per: 'job',
-          len: '12 months',
-          covered: '1-year labor extension on the original work',
-          files: [],
-          for: 'All job types',
+    // 4. Warranty Plans
+    const existingPlan = await prisma.beeWarrantyPlan.findFirst({
+      where: { organization_id: orgId },
+    });
+    if (!existingPlan) {
+      const plans = [
+        {
+          name: 'Silver Protection',
+          duration_months: 12,
+          price: 149.0,
+          billing_interval: 'one_time',
+          description: '1-year labor & parts extension on the original work',
+          inclusions: {
+            per: 'job',
+            len: '12 months',
+            covered: '1-year labor & parts extension on the original work',
+            files: [],
+            for: primaryJobType,
+          },
+          eligible_job_types: ['All job types'],
+          is_active: true,
         },
-        eligible_job_types: ['All job types'],
-        is_active: true,
-      },
-      {
-        name: 'Gold Protection',
-        duration_months: 12,
-        price: 349.0,
-        billing_interval: 'one_time',
-        description: 'Labor extension + 1 preventive maintenance visit',
-        inclusions: {
-          per: 'job',
-          len: '12 months',
-          covered: 'Labor extension + 1 preventive maintenance visit',
-          files: [],
-          for: 'All job types',
+        {
+          name: 'Gold Protection',
+          duration_months: 12,
+          price: 349.0,
+          billing_interval: 'one_time',
+          description: 'Labor extension + 1 preventive maintenance tune-up visit',
+          inclusions: {
+            per: 'job',
+            len: '12 months',
+            covered: 'Labor extension + 1 preventive maintenance tune-up visit',
+            files: [],
+            for: primaryJobType,
+          },
+          eligible_job_types: ['All job types'],
+          is_active: true,
         },
-        eligible_job_types: ['All job types'],
-        is_active: true,
-      },
-      {
-        name: 'Commercial Care',
-        duration_months: 12,
-        price: 85.0,
-        billing_interval: 'yearly',
-        description: 'Annual inspection, 4-hour priority response, 10% off parts',
-        inclusions: {
-          per: 'door',
-          len: '12 months',
-          covered: 'Annual inspection, 4-hour priority response, 10% off parts',
-          files: [],
-          for: 'Commercial',
-        },
-        eligible_job_types: ['Commercial'],
-        is_active: true,
-      },
-    ];
+      ];
 
-    for (const plan of plans) {
-      await prisma.beeWarrantyPlan.create({
+      for (const plan of plans) {
+        await prisma.beeWarrantyPlan.create({
+          data: {
+            organization_id: orgId,
+            ...plan,
+          },
+        });
+      }
+    }
+
+    // 5. Settings and Job Type Warranty Rules mapped to the prebuilt agent
+    const defaultJobTypeRules = orgJobTypes.map((jt) => {
+      const isPrimary = jt === primaryJobType;
+      return {
+        job_type: jt,
+        included_warranty: '12 months',
+        warranty_days: 365,
+        call_threshold_days: 30,
+        agent_id: isPrimary ? prebuiltAgent.id : null,
+        phone_number: null,
+        is_active: true,
+      };
+    });
+
+    const defaultSetupConfig = {
+      defaultAgentId: prebuiltAgent.id,
+      warrantyStartsOn: 'Invoice Sent',
+      businessName: companyName,
+      setupDone: [1, 1, 1, 0, 0, 0, 0],
+    };
+
+    const existingSetting = await prisma.beeSetting.findUnique({
+      where: { organization_id: orgId },
+    });
+
+    if (!existingSetting) {
+      await prisma.beeSetting.create({
         data: {
           organization_id: orgId,
-          ...plan,
+          is_active: true,
+          call_window_start: '10:00',
+          call_window_end: '19:00',
+          timezone: 'America/New_York',
+          max_retries: 2,
+          retry_interval_hours: 48,
+          alert_email: null,
+          voice_provider: 'vapi',
+          voice_provider_api_key: process.env.VAPI_API_KEY?.trim() || null,
+          job_type_warranties: defaultJobTypeRules,
+          setup_config: defaultSetupConfig,
+        },
+      });
+    } else {
+      const existingSetupConfig = (existingSetting.setup_config as any) || {};
+      const updatedSetupConfig = {
+        ...existingSetupConfig,
+        defaultAgentId: existingSetupConfig.defaultAgentId || prebuiltAgent.id,
+        businessName: existingSetupConfig.businessName || companyName,
+      };
+
+      let warrantiesToSave = defaultJobTypeRules;
+      if (Array.isArray(existingSetting.job_type_warranties) && (existingSetting.job_type_warranties as any[]).length > 0) {
+        warrantiesToSave = (existingSetting.job_type_warranties as any[]).map((rule) => {
+          if (rule.job_type === primaryJobType && !rule.agent_id) {
+            return { ...rule, agent_id: prebuiltAgent.id };
+          }
+          return rule;
+        });
+      }
+
+      await prisma.beeSetting.update({
+        where: { organization_id: orgId },
+        data: {
+          job_type_warranties: warrantiesToSave,
+          setup_config: updatedSetupConfig,
         },
       });
     }
 
-    // 3. Voice Agents
-    const agents = [
-      {
-        name: 'Emma - Door & Lock Specialist',
-        persona_name: 'Emma',
-        voice_id: 'friendly_female_1',
-        trade_focus: 'Doors & Locks',
-        trigger_days_before: 30,
-        eligible_job_types: ['Door Installation', 'Lock Repair', 'General Hardware'],
-        warranty_offer_pitch: "Hi [Customer Name], this is Emma with our service team. We recently serviced your door hardware! Your warranty coverage is coming to a close next month, and I'm calling to see if you'd like to extend your coverage so you never have to worry about sudden repair costs.",
-        new_work_pitch: "Also, while I have you, many of our clients ask us to inspect their side exits and locks. Do you have any other hardware that needs an upgrade?",
-      },
-      {
-        name: 'Marcus - Commercial Access Specialist',
-        persona_name: 'Marcus',
-        voice_id: 'professional_male_1',
-        trade_focus: 'Access Control & Cameras',
-        trigger_days_before: 45,
-        eligible_job_types: ['Access Control', 'Camera Installation', 'Automatic Doors'],
-        warranty_offer_pitch: "Good morning [Customer Name], Marcus calling regarding your access control installation. Your warranty expires soon and we offer comprehensive ongoing protection that covers parts and priority response.",
-        new_work_pitch: "Are you planning any facility expansions or hardware additions this quarter?",
-      },
-    ];
-
-    for (const agent of agents) {
-      await prisma.beeVoiceAgent.create({
-        data: {
-          organization_id: orgId,
-          ...agent,
-        },
-      });
-    }
-
-    logger.info(`[BeeService] Successfully initialized default Bee configuration for org ${orgId}`);
+    logger.info(`[BeeService] Successfully initialized prebuilt voice agent "${prebuiltAgent.name}" and configuration for org ${orgId}`);
   }
 
   /**
