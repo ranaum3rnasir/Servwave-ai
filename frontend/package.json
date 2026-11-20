@@ -70,7 +70,7 @@
     "cmdk": "^1.1.1",
     "date-fns": "^4.4.0",
     "date-fns-tz": "^3.2.0",
-    "email-reply-parser": "^2.3.9",
+    "email-reply-parser": "^3.0.0",
     "framer-motion": "^13.4.0",
     "heic2any": "^0.0.4",
     "lucide-react": "^1.47.0",
