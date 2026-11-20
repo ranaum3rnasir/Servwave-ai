@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { useAuthStore } from '@/stores/auth.store';
 import { isSpiderAdminUser, spiderAvailableFor } from '@/lib/spider/gate';
 import { useSetSpiderActive, useSpiderStatus } from '@/lib/api/spider';
+import { beeAllowedOrgIds } from '@/lib/useIsBeeAllowed';
 
 /**
  * The status every AI Agentic Farm agent shows, for the signed-in company. Two facts decide it, for
@@ -111,6 +112,33 @@ export interface LiveAgent {
   copy: AgentCopy;
 }
 
+function isBeeAllowedUser(user: AgentUser): boolean {
+  if (!user) return false;
+  if (user.org_is_demo) return true;
+  if (user.org_features && user.org_features.includes('bee')) return true;
+  if ((user as any)?.feature_overrides?.bee === true) return true;
+  const allowed = beeAllowedOrgIds();
+  const orgId = (user as any)?.organization_id;
+  if (orgId && allowed.includes(orgId.toLowerCase())) return true;
+  return false;
+}
+
+const BEE_LIVE_AGENT: LiveAgent = {
+  released: true,
+  isAccessible: isBeeAllowedUser,
+  useActive: () => ({ data: { isActive: true }, isError: false }),
+  useSetActive: () => ({ mutate: () => {}, isPending: false }),
+  canManage: () => true,
+  managePath: '/bee',
+  copy: {
+    notActiveHelp: 'Bee is paused and makes no calls.',
+    deactivateWarning: [
+      'Bee will pause calling your customers for warranty and maintenance follow-ups.',
+      'You can resume at any time from Bee settings.',
+    ],
+  },
+};
+
 /** Every built agent, by catalog id. */
 export const LIVE_AGENTS: Record<string, LiveAgent> = {
   spider: {
@@ -137,6 +165,8 @@ export const LIVE_AGENTS: Record<string, LiveAgent> = {
       ],
     },
   },
+  emily: BEE_LIVE_AGENT,
+  bee: BEE_LIVE_AGENT,
 };
 
 export function agentAccessibleFor(agentId: string | null | undefined, user: AgentUser): boolean {
