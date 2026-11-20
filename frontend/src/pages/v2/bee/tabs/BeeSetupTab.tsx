@@ -168,7 +168,7 @@ export const BeeSetupTab: React.FC = () => {
   };
 
   // Step 2: Warranty terms
-  const [warrantyStartsOn, setWarrantyStartsOn] = useState('Job Complete');
+  const [warrantyStartsOn, setWarrantyStartsOn] = useState('Invoice Sent');
 
   // Step 3: Agent selection & fallbacks
   const [defaultAgentId, setDefaultAgentId] = useState<string>('');
@@ -298,7 +298,13 @@ export const BeeSetupTab: React.FC = () => {
       setBusinessName(cfg.businessName || org?.name || 'Demo Doors & Security');
       setCallerId(cfg.callerId || availableNumbers[0]?.phoneNumber || '');
       setOfficeHours(cfg.officeHours || 'Mon-Fri 8:00 AM - 6:00 PM');
-      const loadedStartsOn = cfg.warrantyStartsOn ? (String(cfg.warrantyStartsOn).toLowerCase().includes('invoice') ? 'Invoice Sent' : 'Job Complete') : 'Job Complete';
+      const loadedStartsOn = cfg.warrantyStartsOn
+        ? String(cfg.warrantyStartsOn).toLowerCase().includes('payment') || String(cfg.warrantyStartsOn).toLowerCase().includes('paid')
+          ? 'Payment Received'
+          : String(cfg.warrantyStartsOn).toLowerCase().includes('invoice')
+            ? 'Invoice Sent'
+            : 'Done'
+        : 'Invoice Sent';
       setWarrantyStartsOn(loadedStartsOn);
       setCallDays(cfg.callDays || ['Mon', 'Tue', 'Wed', 'Thu', 'Fri']);
       setRetryGap(cfg.retryGap || '48 hours');
@@ -1528,8 +1534,9 @@ export const BeeSetupTab: React.FC = () => {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="Job Complete">Job Complete</SelectItem>
                       <SelectItem value="Invoice Sent">Invoice Sent</SelectItem>
+                      <SelectItem value="Payment Received">Payment Received</SelectItem>
+                      <SelectItem value="Done">Done</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>

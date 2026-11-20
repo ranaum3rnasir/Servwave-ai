@@ -1056,7 +1056,11 @@ export const BeeSkippedArchivedTab: React.FC = () => {
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Warranty Started On:</span>
                   <span className="font-medium text-foreground">
-                    {rescheduleTarget.warranty_started_on === 'Invoice Sent' ? 'Invoice Sent' : 'Job Complete'}
+                    {rescheduleTarget.warranty_started_on === 'Payment Received'
+                      ? 'Payment Received'
+                      : rescheduleTarget.warranty_started_on === 'Invoice Sent'
+                        ? 'Invoice Sent'
+                        : 'Done'}
                   </span>
                 </div>
                 <div className="flex justify-between">

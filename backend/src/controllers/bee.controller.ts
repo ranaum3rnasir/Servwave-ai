@@ -329,9 +329,13 @@ export async function getBeeCallLogs(req: Request, res: Response) {
             matchedJob.lead?.job_type ||
             ''
           ).trim();
-          const isCompleted = matchedJob.status === 'COMPLETED' || Boolean(matchedJob.completed_at);
+          const isCompleted =
+            matchedJob.status === 'DONE' ||
+            matchedJob.status === 'COMPLETED' ||
+            Boolean(matchedJob.closed_at) ||
+            Boolean(matchedJob.completed_at);
           const hasSentOrPaidInvoice = Array.isArray(matchedJob.invoices) && matchedJob.invoices.some(
-            (inv: any) => inv.status === 'SENT' || inv.status === 'PAID'
+            (inv: any) => inv.status === 'SENT' || inv.status === 'PAID' || Boolean(inv.sent_at) || Boolean(inv.paid_at)
           );
 
           // If matched job does not have a valid system job type or fulfill criteria, discard it
@@ -844,9 +848,13 @@ export async function getBeeQueue(req: Request, res: Response) {
       const jobType = (jobInfo.job_type || item.warranty_record?.job_type || '').trim();
       if (!jobType || !validJobTypes.has(jobType)) return false;
 
-      const isCompleted = jobInfo.status === 'COMPLETED' || Boolean(jobInfo.completed_at);
+      const isCompleted =
+        jobInfo.status === 'DONE' ||
+        jobInfo.status === 'COMPLETED' ||
+        Boolean(jobInfo.closed_at) ||
+        Boolean(jobInfo.completed_at);
       const hasSentOrPaidInvoice = Array.isArray(jobInfo.invoices) && jobInfo.invoices.some(
-        (inv: any) => inv.status === 'SENT' || inv.status === 'PAID'
+        (inv: any) => inv.status === 'SENT' || inv.status === 'PAID' || Boolean(inv.sent_at) || Boolean(inv.paid_at)
       );
       return isCompleted || hasSentOrPaidInvoice;
     });

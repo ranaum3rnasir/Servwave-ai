@@ -163,6 +163,138 @@ describe('Bee Queue Scheduling, Warranty Start Origin, and Rescheduling', () => 
       expect(createdQueueData.warranty_started_on).toBe('Invoice Sent');
       expect(createdQueueData.scheduled_for).toEqual(expectedScheduled);
     });
+
+    it('schedules newly queued job based on payment received date when warrantyStartsOn is Payment Received', async () => {
+      const invoicePaidAt = new Date('2026-09-10T14:00:00.000Z');
+      const invoiceSentAt = new Date('2026-09-01T12:00:00.000Z');
+
+      vi.mocked(prisma.invoice.findUnique).mockResolvedValueOnce({
+        id: invoiceId,
+        organization_id: orgId,
+        status: 'PAID',
+        sent_at: invoiceSentAt,
+        paid_at: invoicePaidAt,
+        invoice_number: 'INV-103',
+        job_id: jobId,
+        job: {
+          id: jobId,
+          job_number: 'JOB-203',
+          job_type: 'HVAC Service',
+          completed_at: new Date('2026-08-25T10:00:00.000Z'),
+          customer: {
+            id: customerId,
+            first_name: 'Kyle',
+            last_name: 'Reese',
+            email: 'kyle@example.com',
+            phone: '+15554443322',
+          },
+        },
+      } as any);
+
+      vi.mocked(prisma.beeWarrantyRecord.findFirst).mockResolvedValueOnce(null);
+      vi.mocked(prisma.organization.findUnique).mockResolvedValueOnce({ job_type_options: [] } as any);
+      vi.mocked(prisma.beeSetting.findUnique).mockResolvedValueOnce({
+        organization_id: orgId,
+        setup_config: { warrantyStartsOn: 'Payment Received' },
+        job_type_warranties: [
+          { job_type: 'HVAC Service', warranty_days: 90, call_threshold_days: 15, is_active: true },
+        ],
+      } as any);
+      vi.mocked(prisma.beeWarrantyPlan.findMany).mockResolvedValueOnce([]);
+      vi.mocked(emailModule.sendWarrantyEmail).mockResolvedValueOnce({ status: 'sent', messageId: 'msg-3' } as any);
+
+      let createdRecordData: any;
+      (prisma.beeWarrantyRecord.create as any).mockImplementationOnce(async ({ data }: any) => {
+        createdRecordData = data;
+        return { id: 'rec-3', ...data } as any;
+      });
+
+      let createdQueueData: any;
+      (prisma.beeQueueItem.create as any).mockImplementationOnce(async ({ data }: any) => {
+        createdQueueData = data;
+        return { id: 'queue-3', ...data } as any;
+      });
+
+      await BeeService.processInvoiceSent(invoiceId, orgId);
+
+      expect(createdRecordData).toBeDefined();
+      expect(createdRecordData.warranty_start_date).toEqual(invoicePaidAt);
+      expect(createdRecordData.warranty_started_on).toBe('Payment Received');
+
+      const expectedEndDate = new Date(invoicePaidAt.getTime() + 90 * 86400000);
+      expect(createdRecordData.warranty_end_date).toEqual(expectedEndDate);
+
+      const expectedScheduled = new Date(expectedEndDate.getTime() - 15 * 86400000);
+      expect(createdQueueData).toBeDefined();
+      expect(createdQueueData.warranty_started_on).toBe('Payment Received');
+      expect(createdQueueData.scheduled_for).toEqual(expectedScheduled);
+    });
+
+    it('schedules newly queued job based on job closed_at/completed_at date when warrantyStartsOn is Done', async () => {
+      const closedAt = new Date('2026-10-05T16:00:00.000Z');
+      const invoiceSentAt = new Date('2026-10-15T12:00:00.000Z');
+
+      vi.mocked(prisma.invoice.findUnique).mockResolvedValueOnce({
+        id: invoiceId,
+        organization_id: orgId,
+        status: 'SENT',
+        sent_at: invoiceSentAt,
+        invoice_number: 'INV-104',
+        job_id: jobId,
+        job: {
+          id: jobId,
+          job_number: 'JOB-204',
+          job_type: 'HVAC Service',
+          status: 'DONE',
+          closed_at: closedAt,
+          customer: {
+            id: customerId,
+            first_name: 'John',
+            last_name: 'Connor',
+            email: 'jc@example.com',
+            phone: '+15557778899',
+          },
+        },
+      } as any);
+
+      vi.mocked(prisma.beeWarrantyRecord.findFirst).mockResolvedValueOnce(null);
+      vi.mocked(prisma.organization.findUnique).mockResolvedValueOnce({ job_type_options: [] } as any);
+      vi.mocked(prisma.beeSetting.findUnique).mockResolvedValueOnce({
+        organization_id: orgId,
+        setup_config: { warrantyStartsOn: 'Done' },
+        job_type_warranties: [
+          { job_type: 'HVAC Service', warranty_days: 120, call_threshold_days: 20, is_active: true },
+        ],
+      } as any);
+      vi.mocked(prisma.beeWarrantyPlan.findMany).mockResolvedValueOnce([]);
+      vi.mocked(emailModule.sendWarrantyEmail).mockResolvedValueOnce({ status: 'sent', messageId: 'msg-4' } as any);
+
+      let createdRecordData: any;
+      (prisma.beeWarrantyRecord.create as any).mockImplementationOnce(async ({ data }: any) => {
+        createdRecordData = data;
+        return { id: 'rec-4', ...data } as any;
+      });
+
+      let createdQueueData: any;
+      (prisma.beeQueueItem.create as any).mockImplementationOnce(async ({ data }: any) => {
+        createdQueueData = data;
+        return { id: 'queue-4', ...data } as any;
+      });
+
+      await BeeService.processInvoiceSent(invoiceId, orgId);
+
+      expect(createdRecordData).toBeDefined();
+      expect(createdRecordData.warranty_start_date).toEqual(closedAt);
+      expect(createdRecordData.warranty_started_on).toBe('Done');
+
+      const expectedEndDate = new Date(closedAt.getTime() + 120 * 86400000);
+      expect(createdRecordData.warranty_end_date).toEqual(expectedEndDate);
+
+      const expectedScheduled = new Date(expectedEndDate.getTime() - 20 * 86400000);
+      expect(createdQueueData).toBeDefined();
+      expect(createdQueueData.warranty_started_on).toBe('Done');
+      expect(createdQueueData.scheduled_for).toEqual(expectedScheduled);
+    });
   });
 
   describe('3 & 4. Configuration Change & Preservation of Existing Queue Schedules', () => {

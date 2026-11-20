@@ -612,7 +612,15 @@ export const BeeQueueTab: React.FC = () => {
       meta: { label: 'Warranty Started On' },
       cell: ({ row }) => {
         const item = row.original;
-        const origin = item.warranty_started_on === 'Invoice Sent' ? 'Invoice Sent' : 'Job Complete';
+        const raw = item.warranty_started_on;
+        const origin =
+          raw === 'Payment Received'
+            ? 'Payment Received'
+            : raw === 'Invoice Sent'
+              ? 'Invoice Sent'
+              : raw === 'Done' || raw === 'Job Complete'
+                ? 'Done'
+                : 'Invoice Sent';
         return (
           <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium border border-border bg-surface-light text-text-primary whitespace-nowrap">
             {origin}

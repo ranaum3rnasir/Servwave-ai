@@ -76,22 +76,37 @@ export interface ProcessInboundCallResult {
 export class BeeService {
   /**
    * Resolves the configured warranty starts on event from setup config.
-   * Standardized to 'Job Complete' or 'Invoice Sent'.
+   * Standardized to 'Invoice Sent' | 'Payment Received' | 'Done' | 'Job Complete'.
    */
-  static resolveWarrantyStartsOn(setupConfig?: any): 'Job Complete' | 'Invoice Sent' {
+  static resolveWarrantyStartsOn(setupConfig?: any): 'Invoice Sent' | 'Payment Received' | 'Done' | 'Job Complete' {
     const raw = setupConfig?.warrantyStartsOn;
-    if (!raw) return 'Job Complete';
+    if (!raw) return 'Done';
     const s = String(raw).trim().toLowerCase();
     if (
       s === 'invoice sent' ||
       s === 'invoice sent date' ||
-      s === 'invoice paid date' ||
       s === 'invoice_sent' ||
       s.includes('invoice')
     ) {
       return 'Invoice Sent';
     }
-    return 'Job Complete';
+    if (
+      s === 'payment received' ||
+      s === 'payment' ||
+      s === 'payment received date' ||
+      s === 'payment_received' ||
+      s.includes('payment') ||
+      s.includes('paid')
+    ) {
+      return 'Payment Received';
+    }
+    if (s === 'job complete') {
+      return 'Job Complete';
+    }
+    if (s === 'done' || s.includes('done') || s === 'completed' || s.includes('complete')) {
+      return 'Done';
+    }
+    return 'Done';
   }
 
   /**
@@ -1818,8 +1833,8 @@ export class BeeService {
       },
     });
 
-    if (!invoice || invoice.status !== 'SENT') {
-      logger.warn(`[BeeService] Invoice ${invoiceId} is not in SENT status; skipping warranty workflow`);
+    if (!invoice || (invoice.status !== 'SENT' && invoice.status !== 'PAID')) {
+      logger.warn(`[BeeService] Invoice ${invoiceId} is not in SENT or PAID status; skipping warranty workflow`);
       return;
     }
 
@@ -1873,10 +1888,13 @@ export class BeeService {
 
     const now = new Date();
     let warrantyStartDate: Date;
-    if (warrantyStartsOnSetting === 'Job Complete') {
-      warrantyStartDate = job.completed_at || job.created_at || invoice.sent_at || now;
+    if (warrantyStartsOnSetting === 'Payment Received') {
+      warrantyStartDate = invoice.paid_at || invoice.sent_at || invoice.created_at || now;
+    } else if (warrantyStartsOnSetting === 'Invoice Sent') {
+      warrantyStartDate = invoice.sent_at || invoice.created_at || job.closed_at || job.completed_at || now;
     } else {
-      warrantyStartDate = invoice.sent_at || invoice.created_at || job.completed_at || now;
+      // 'Done' or legacy 'Job Complete'
+      warrantyStartDate = job.closed_at || job.completed_at || job.created_at || invoice.sent_at || now;
     }
     const warrantyDurationDays = rule.warranty_days ?? this.parseWarrantyDurationToDays(rule.included_warranty || '12 months');
     const warrantyEndDate = new Date(warrantyStartDate.getTime() + (warrantyDurationDays * 86400000));
@@ -1936,7 +1954,7 @@ export class BeeService {
         job_id: job.id,
         customer_id: customer.id,
         job_type: jobType,
-        job_completed_at: job.completed_at || job.created_at || now,
+        job_completed_at: job.closed_at || job.completed_at || job.created_at || now,
         warranty_start_date: warrantyStartDate,
         warranty_end_date: warrantyEndDate,
         warranty_started_on: warrantyStartsOnSetting,
@@ -3594,10 +3612,10 @@ export class BeeService {
       const warrantyStartedOn =
         (item as any).warranty_started_on ||
         item.warranty_record?.warranty_started_on ||
-        (item.warranty_record?.warranty_start_date && job?.completed_at &&
-         Math.abs(new Date(item.warranty_record.warranty_start_date).getTime() - new Date(job.completed_at).getTime()) < 60000
-          ? 'Job Complete'
-          : (item.warranty_record?.warranty_start_date ? 'Invoice Sent' : 'Job Complete'));
+        (item.warranty_record?.warranty_start_date && (job?.closed_at || job?.completed_at) &&
+         Math.abs(new Date(item.warranty_record.warranty_start_date).getTime() - new Date(job.closed_at || job.completed_at).getTime()) < 60000
+          ? 'Done'
+          : (item.warranty_record?.warranty_start_date ? 'Invoice Sent' : 'Done'));
 
       const isRescheduled = Boolean((item as any).is_rescheduled);
       const originalScheduledFor = (item as any).original_scheduled_for || item.scheduled_for;
@@ -3663,6 +3681,7 @@ export class BeeService {
           completion_notes: completionNotes,
           service_address: serviceAddress,
           completed_at: completedAt,
+          closed_at: job?.closed_at || null,
           line_items: lineItems,
           line_items_summary: lineItemsSummary,
           warranty_start_date: warrantyStartDate,
@@ -3969,12 +3988,34 @@ export class BeeService {
     });
     const currentWarrantyStartsOn = this.resolveWarrantyStartsOn(beeSettings?.setup_config);
 
-    // Find ONLY sent invoices in org that have a linked job
-    const invoices = await prisma.invoice.findMany({
+    // Find qualifying invoices in org that have a linked job
+    const invoices = (await prisma.invoice.findMany({
       where: {
         organization_id: orgId,
-        status: 'SENT',
         job_id: { not: null },
+        ...(currentWarrantyStartsOn === 'Payment Received'
+          ? {
+              OR: [
+                { status: 'PAID' },
+                { paid_at: { not: null } },
+              ],
+            }
+          : currentWarrantyStartsOn === 'Invoice Sent'
+            ? {
+                OR: [
+                  { status: { in: ['SENT', 'PAID'] } },
+                  { sent_at: { not: null } },
+                ],
+              }
+            : {
+                // 'Done' or legacy 'Job Complete'
+                OR: [
+                  { status: { in: ['SENT', 'PAID'] } },
+                  { job: { status: { in: ['DONE', 'COMPLETED'] } } },
+                  { job: { closed_at: { not: null } } },
+                  { job: { completed_at: { not: null } } },
+                ],
+              }),
       },
       include: {
         job: {
@@ -3990,7 +4031,7 @@ export class BeeService {
           },
         },
       },
-    });
+    })) || [];
 
     const now = new Date();
     let recordsUpdated = 0;
@@ -4060,10 +4101,15 @@ export class BeeService {
       } else {
         // New record entering the queue: calculate using the current global setting
         const effectiveStartOn = currentWarrantyStartsOn;
-        const warrantyStartDate =
-          effectiveStartOn === 'Job Complete'
-            ? (job.completed_at || job.created_at || inv.sent_at || inv.created_at || now)
-            : (inv.sent_at || inv.created_at || job.completed_at || job.created_at || now);
+        let warrantyStartDate: Date;
+        if (effectiveStartOn === 'Payment Received') {
+          warrantyStartDate = inv.paid_at || inv.sent_at || inv.created_at || now;
+        } else if (effectiveStartOn === 'Invoice Sent') {
+          warrantyStartDate = inv.sent_at || inv.created_at || job.closed_at || job.completed_at || job.created_at || now;
+        } else {
+          // 'Done' or legacy 'Job Complete'
+          warrantyStartDate = job.closed_at || job.completed_at || job.created_at || inv.sent_at || inv.created_at || now;
+        }
         const warrantyEndDate = new Date(new Date(warrantyStartDate).getTime() + (rule.warranty_days * 86400000));
 
         let status = 'active';
@@ -4079,7 +4125,7 @@ export class BeeService {
             job_id: job.id,
             customer_id: custId,
             job_type: jobType,
-            job_completed_at: job.completed_at || job.created_at || now,
+            job_completed_at: job.closed_at || job.completed_at || job.created_at || now,
             warranty_start_date: warrantyStartDate,
             warranty_end_date: warrantyEndDate,
             warranty_started_on: effectiveStartOn,

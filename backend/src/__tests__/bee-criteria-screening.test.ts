@@ -16,7 +16,11 @@ describe('Bee Call Queue and Call Logs Criteria Screening', () => {
     const jobType = (jobInfo.job_type || item.warranty_record?.job_type || '').trim();
     if (!jobType || !validTypes.has(jobType)) return false;
 
-    const isCompleted = jobInfo.status === 'COMPLETED' || Boolean(jobInfo.completed_at);
+    const isCompleted =
+      jobInfo.status === 'DONE' ||
+      jobInfo.status === 'COMPLETED' ||
+      Boolean(jobInfo.closed_at) ||
+      Boolean(jobInfo.completed_at);
     const hasSentOrPaidInvoice = Array.isArray(jobInfo.invoices) && jobInfo.invoices.some(
       (inv: any) => inv.status === 'SENT' || inv.status === 'PAID'
     );
@@ -43,7 +47,11 @@ describe('Bee Call Queue and Call Logs Criteria Screening', () => {
       validJob = undefined;
     } else if (validJob) {
       const rawJobType = (validJob.job_type || '').trim();
-      const isCompleted = validJob.status === 'COMPLETED' || Boolean(validJob.completed_at);
+      const isCompleted =
+        validJob.status === 'DONE' ||
+        validJob.status === 'COMPLETED' ||
+        Boolean(validJob.closed_at) ||
+        Boolean(validJob.completed_at);
       const hasSentOrPaidInvoice = Array.isArray(validJob.invoices) && validJob.invoices.some(
         (inv: any) => inv.status === 'SENT' || inv.status === 'PAID'
       );
@@ -78,6 +86,17 @@ describe('Bee Call Queue and Call Logs Criteria Screening', () => {
           job_id: 'job-1',
           job_type: 'HVAC Service',
           status: 'COMPLETED',
+        },
+      };
+      expect(screenQueueItem(item, validJobTypes)).toBe(true);
+    });
+
+    it('accepts job with valid type and status DONE', () => {
+      const item = {
+        job_info: {
+          job_id: 'job-done-1',
+          job_type: 'HVAC Service',
+          status: 'DONE',
         },
       };
       expect(screenQueueItem(item, validJobTypes)).toBe(true);

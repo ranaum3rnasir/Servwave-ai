@@ -230,7 +230,7 @@ export interface BeeQueueItem {
   total_amount?: number;
   last_attempted_at?: string | null;
   archived_at?: string | null;
-  warranty_started_on?: 'Job Complete' | 'Invoice Sent' | string | null;
+  warranty_started_on?: 'Invoice Sent' | 'Payment Received' | 'Done' | 'Job Complete' | string | null;
   original_scheduled_for?: string | null;
   is_rescheduled?: boolean;
   rescheduled_at?: string | null;
@@ -246,7 +246,7 @@ export interface BeeQueueItem {
     job_type?: string;
     warranty_start_date?: string;
     warranty_end_date: string;
-    warranty_started_on?: 'Job Complete' | 'Invoice Sent' | string | null;
+    warranty_started_on?: 'Invoice Sent' | 'Payment Received' | 'Done' | 'Job Complete' | string | null;
     status?: string;
   };
 }
