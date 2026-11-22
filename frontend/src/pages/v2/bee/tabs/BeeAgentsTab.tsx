@@ -51,8 +51,6 @@ import {
   Branch,
   Outcome,
   VARIABLES,
-  GUARDRAIL_TEXT,
-  GuardrailId,
   validateFlow,
   compilePrompt,
 } from '@/lib/bee/agentFlow';
@@ -83,32 +81,6 @@ import {
 } from '@/components/ui/select';
 import { cn, formatPhone, formatPhoneInput } from '@/lib/utils';
 
-const GUARDRAIL_CONFIG: Record<GuardrailId, { title: string; desc: string }> = {
-  short_replies: {
-    title: 'Keep replies short',
-    desc: 'One or two sentences at a time, then let the customer talk.',
-  },
-  only_linked_prices: {
-    title: 'Only quote linked plans',
-    desc: 'Never invent prices, discounts or dates that aren’t in the data.',
-  },
-  honor_stop: {
-    title: 'Honor stop requests',
-    desc: 'Stop immediately and add the number to Do Not Call.',
-  },
-  disclose_ai: {
-    title: 'Say it’s an AI if asked',
-    desc: 'Answer honestly when the customer asks who they are talking to.',
-  },
-  handoff_upset: {
-    title: 'Hand off upset customers',
-    desc: 'Offer a callback from the office instead of continuing.',
-  },
-  hide_internal: {
-    title: 'Hide internal numbers',
-    desc: 'Never mention internal costs or margins.',
-  },
-};
 
 export interface JobContextFieldDefinition {
   key: string;
@@ -527,7 +499,7 @@ export const BeeAgentsTab: React.FC = () => {
 
   // ── Call Flow Builder State (Step 2) ──
   const [agentFlow, setAgentFlow] = useState<AgentFlow>(DEFAULT_AGENT_FLOW);
-  const [flowTab, setFlowTab] = useState<'steps' | 'objections' | 'guardrails'>('steps');
+  const [flowTab, setFlowTab] = useState<'steps' | 'objections'>('steps');
   const [expandedStepId, setExpandedStepId] = useState<string>(DEFAULT_AGENT_FLOW.steps[0]?.id ?? '');
   const [previewMode, setPreviewMode] = useState<'sounds' | 'prompt'>('sounds');
   const [previewCustomerIdx, setPreviewCustomerIdx] = useState<number>(0);
@@ -717,12 +689,6 @@ export const BeeAgentsTab: React.FC = () => {
     setAgentFlow((prev) => ({
       ...prev,
       objections: prev.objections.filter((o) => o.id !== id),
-    }));
-  };
-  const toggleGuardrail = (key: GuardrailId) => {
-    setAgentFlow((prev) => ({
-      ...prev,
-      guardrails: { ...prev.guardrails, [key]: !prev.guardrails[key] },
     }));
   };
 
@@ -1646,18 +1612,13 @@ export const BeeAgentsTab: React.FC = () => {
           {/* Step 2: Call Flow Builder */}
           {activeWizardStep === 'conversation_flow' && (
             <div className="flex flex-col lg:flex-row gap-0 -mx-6 -my-5 min-h-[620px] bg-white">
-              {/* Left Panel: Call Steps / Objections / Guardrails */}
+              {/* Left Panel: Call Steps / Objections */}
               <div className="flex-[999_1_620px] min-w-0 p-6 lg:p-8 lg:pb-10 overflow-y-auto border-r border-[#E2E8F0] flex flex-col gap-5">
-                {/* Tab Bar: Call steps, Objections, Guardrails */}
+                {/* Tab Bar: Call steps, Objections */}
                 <div role="tablist" aria-label="Flow sections" className="flex items-center gap-1.5 p-1 bg-[#F1F5F9] rounded-[12px] w-fit">
                   {([
                     { id: 'steps', label: 'Call steps', count: agentFlow.steps.length },
                     { id: 'objections', label: 'Objections', count: agentFlow.objections.length },
-                    {
-                      id: 'guardrails',
-                      label: 'Guardrails',
-                      count: Object.values(agentFlow.guardrails).filter(Boolean).length,
-                    },
                   ] as const).map((tab) => (
                     <button
                       key={tab.id}
@@ -1912,73 +1873,6 @@ export const BeeAgentsTab: React.FC = () => {
                         <Plus className="h-4 w-4" />
                         <span>Add objection</span>
                       </button>
-                    </div>
-                  </div>
-                )}
-
-                {/* Guardrails Tab */}
-                {flowTab === 'guardrails' && (
-                  <div className="flex flex-col gap-2.5">
-                    <p className="m-0 mb-1 text-[14px] text-[#475569] leading-relaxed">
-                      Rules Bee follows on every call, no matter which step it&apos;s on.
-                    </p>
-
-                    <div className="flex flex-col gap-2.5">
-                      {(Object.entries(GUARDRAIL_TEXT) as [GuardrailId, string][]).map(
-                        ([key, text]) => {
-                          const isChecked = Boolean(agentFlow.guardrails[key]);
-                          const cfg = GUARDRAIL_CONFIG[key];
-                          return (
-                            <div
-                              key={key}
-                              className="border border-[#E2E8F0] rounded-[12px] p-3 px-4 flex items-center justify-between gap-4 bg-white shadow-2xs"
-                            >
-                              <div className="flex flex-col gap-0.5">
-                                <span className="text-[14px] font-bold text-[#0F172A]">
-                                  {cfg?.title || key.replace(/_/g, ' ')}
-                                </span>
-                                <span className="text-[13px] text-[#475569]">
-                                  {cfg?.desc || text}
-                                </span>
-                              </div>
-
-                              <button
-                                type="button"
-                                role="switch"
-                                aria-checked={isChecked}
-                                aria-label={cfg?.title || key}
-                                onClick={() => toggleGuardrail(key)}
-                                className={cn(
-                                  'shrink-0 w-[46px] h-[28px] rounded-full p-[3px] flex items-center transition-colors cursor-pointer border-none',
-                                  isChecked ? 'bg-[#0F172A] justify-end' : 'bg-[#CBD5E1] justify-start'
-                                )}
-                              >
-                                <span className="w-[22px] h-[22px] rounded-full bg-white block shadow-xs" />
-                              </button>
-                            </div>
-                          );
-                        }
-                      )}
-
-                      {/* Custom Rules */}
-                      <div className="flex flex-col gap-1.5 mt-2">
-                        <Label htmlFor="custom-rules" className="text-[13px] font-bold text-[#0F172A] block">
-                          Your own rules
-                        </Label>
-                        <Textarea
-                          id="custom-rules"
-                          value={agentFlow.customRules.join('\n')}
-                          onChange={(e) =>
-                            setAgentFlow((prev) => ({
-                              ...prev,
-                              customRules: e.target.value.split('\n'),
-                            }))
-                          }
-                          rows={3}
-                          placeholder="Never call before 9am or after 7pm customer time."
-                          className="border border-[#CBD5E1] rounded-[10px] p-2.5 px-3 text-[14px] leading-relaxed resize-y focus:border-[#0F172A] font-sans"
-                        />
-                      </div>
                     </div>
                   </div>
                 )}
