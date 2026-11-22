@@ -10,7 +10,7 @@ export type FeatureKey =
   // Pro — declared but not built (documented, never gated)
   | 'quickbooks' | 'marketing_campaigns' | 'ai_agents_foundation'
   // Scale — built
-  | 'inventory' | 'spider'
+  | 'inventory' | 'spider' | 'bee'
   // Scale — not built
   | 'ai_agents_advanced' | 'custom_reports' | 'api_access'
   // Enterprise
@@ -71,6 +71,7 @@ export const FEATURE_CATALOG: CatalogEntry[] = [
   // requires a demo company (requireSpider / the Spider sweep); opening it to Scale customers
   // means removing that one demo check, not changing this row.
   { key: 'spider',               label: 'Spider Lead Watcher',    minPlan: 'SCALE',      built: true  },
+  { key: 'bee',                  label: 'Bee Voice Agent',        minPlan: 'SCALE',      built: true  },
   // Scale — not built
   { key: 'ai_agents_advanced',   label: 'AI Agents (Advanced)',   minPlan: 'SCALE',      built: false },
   { key: 'custom_reports',       label: 'Custom Reports',         minPlan: 'SCALE',      built: false },
