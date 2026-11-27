@@ -579,7 +579,7 @@ export class BeeService {
     });
 
     return {
-      isActive: settings?.is_active ?? true,
+      isActive: settings?.is_active ?? false,
       callWindow: {
         start: settings?.call_window_start ?? '10:00',
         end: settings?.call_window_end ?? '19:00',
@@ -3756,8 +3756,8 @@ export class BeeService {
         where: { organization_id: orgId },
       });
 
-      // If Bee is disabled for org, skip
-      if (settings && !settings.is_active) {
+      // Fail closed: if Bee has no settings row or is inactive, skip
+      if (!settings || !settings.is_active) {
         continue;
       }
 
@@ -3831,6 +3831,16 @@ export class BeeService {
         where: { organization_id: orgId, is_active: true },
         orderBy: { price: 'asc' },
       });
+
+      // Re-check is_active immediately before dialing so a concurrent deactivation places no new call
+      const freshSetting = await prisma.beeSetting.findUnique({
+        where: { organization_id: orgId },
+        select: { is_active: true },
+      });
+      if (!freshSetting?.is_active) {
+        logger.info(`[BeeService] Skipping dial for queue item ${item.id} because Bee was deactivated`);
+        continue;
+      }
 
       const callResult = await BeeVoiceAdapter.initiateCall(orgId, {
         to: item.customer_phone,
@@ -3984,6 +3994,141 @@ export class BeeService {
       logger.info(`[BeeService] Recovered ${stale.length} stale in_progress queue items`);
     }
     return { recovered: stale.length };
+  }
+
+  /**
+   * Computes whether Bee has the minimum configuration required to be activated:
+   * at least 1 active voice agent, 1 outbound phone number, and 1 active job-type warranty rule.
+   */
+  static async isBeeSetUp(orgId: string, existingSetting?: any): Promise<boolean> {
+    const [setting, activeAgentCount, availableNumbers] = await Promise.all([
+      existingSetting !== undefined
+        ? Promise.resolve(existingSetting)
+        : prisma.beeSetting.findUnique({ where: { organization_id: orgId } }),
+      prisma.beeVoiceAgent.count({ where: { organization_id: orgId, is_active: true } }),
+      this.getAvailablePhoneNumbers(orgId),
+    ]);
+
+    if (!setting) return false;
+    if (activeAgentCount <= 0) return false;
+    if (!availableNumbers || availableNumbers.length === 0) return false;
+    const rules = Array.isArray(setting.job_type_warranties) ? (setting.job_type_warranties as any[]) : [];
+    const hasActiveRule = rules.some((r) => r && r.is_active !== false);
+    if (!hasActiveRule) return false;
+    return true;
+  }
+
+  /**
+   * Computes fresh activation-review numbers for an organization (Admin only).
+   */
+  static async getActivationPreview(orgId: string): Promise<{
+    eligibleCustomers: number;
+    excludedCustomers: number;
+    backlogCustomers: number;
+    activeNumbers: number;
+    firstCallAt: string | null;
+  }> {
+    const now = new Date();
+    await this.syncWarrantyRecordsAndQueue(orgId);
+
+    const [setting, availableNumbers, queueItems, dncCount] = await Promise.all([
+      prisma.beeSetting.findUnique({ where: { organization_id: orgId } }),
+      this.getAvailablePhoneNumbers(orgId),
+      prisma.beeQueueItem.findMany({
+        where: { organization_id: orgId },
+        select: { status: true, scheduled_for: true },
+      }),
+      prisma.beeDncEntry.count({ where: { organization_id: orgId } }),
+    ]);
+
+    const activeNumbers = availableNumbers.length;
+    const eligibleItems = queueItems.filter(
+      (q) => q.status === 'scheduled' || q.status === 'queued' || q.status === 'cancelled'
+    );
+    const excludedItems = queueItems.filter((q) => q.status === 'skipped');
+    const backlogItems = eligibleItems.filter((q) => new Date(q.scheduled_for).getTime() <= now.getTime());
+
+    let firstCallAt: string | null = null;
+    if (eligibleItems.length > 0 && activeNumbers > 0) {
+      const cfg = (setting?.setup_config as Record<string, any> | null) || {};
+      const scheduledStartRaw =
+        cfg.launchMode === 'Schedule a start date' && typeof cfg.scheduledStartDateTime === 'string' && cfg.scheduledStartDateTime
+          ? new Date(cfg.scheduledStartDateTime)
+          : null;
+      const earliestQueue = eligibleItems.reduce<Date>(
+        (min, item) => (new Date(item.scheduled_for) < min ? new Date(item.scheduled_for) : min),
+        new Date(eligibleItems[0]!.scheduled_for)
+      );
+      const base =
+        scheduledStartRaw && !Number.isNaN(scheduledStartRaw.getTime()) && scheduledStartRaw > now
+          ? scheduledStartRaw
+          : earliestQueue > now
+            ? earliestQueue
+            : now;
+      firstCallAt = base.toISOString();
+    }
+
+    return {
+      eligibleCustomers: eligibleItems.length,
+      excludedCustomers: excludedItems.length + dncCount,
+      backlogCustomers: backlogItems.length,
+      activeNumbers,
+      firstCallAt,
+    };
+  }
+
+  /**
+   * Applies backlog choice on activation:
+   * - 'call': restores any previously cancelled items to 'scheduled' so they are called in the next open window
+   * - 'skip': marks items already due (scheduled_for <= now) as 'skipped' so only newly eligible customers are called
+   */
+  static async applyBacklogOnActivate(orgId: string, backlog: 'call' | 'skip', now: Date): Promise<void> {
+    await this.syncWarrantyRecordsAndQueue(orgId);
+
+    if (backlog === 'skip') {
+      await prisma.beeQueueItem.updateMany({
+        where: {
+          organization_id: orgId,
+          status: { in: ['scheduled', 'queued', 'cancelled'] },
+          scheduled_for: { lte: now },
+        },
+        data: {
+          status: 'skipped',
+          skip_reason: 'Skipped existing backlog on activation',
+        },
+      });
+      return;
+    }
+
+    // backlog === 'call': restore cancelled items to scheduled
+    await prisma.beeQueueItem.updateMany({
+      where: {
+        organization_id: orgId,
+        status: { in: ['cancelled', 'queued'] },
+      },
+      data: {
+        status: 'scheduled',
+        skip_reason: null,
+      },
+    });
+  }
+
+  /**
+   * Cancels scheduled/queued calls on deactivation without deleting them or wiping setup.
+   * In-progress calls are left alone to finish naturally.
+   */
+  static async cancelScheduledOnDeactivate(orgId: string): Promise<number> {
+    const res = await prisma.beeQueueItem.updateMany({
+      where: {
+        organization_id: orgId,
+        status: { in: ['scheduled', 'queued'] },
+      },
+      data: {
+        status: 'cancelled',
+        skip_reason: 'Bee deactivated',
+      },
+    });
+    return res.count;
   }
 
   /**
@@ -4390,7 +4535,10 @@ export class BeeService {
       select: { name: true },
     });
     const companyName = orgRecord?.name || 'ServWave';
-    const primaryJobType = orgJobTypes[0] || 'HVAC Service';
+    const primaryJobType = 'HVAC Service';
+    if (!orgJobTypes.some((jt) => jt.toLowerCase() === primaryJobType.toLowerCase())) {
+      orgJobTypes = [primaryJobType, ...orgJobTypes];
+    }
 
     // 2. Build prebuilt conversation flow (AgentFlow) matching the primary job type
     const prebuiltFlow: AgentFlow = {
@@ -4421,7 +4569,7 @@ export class BeeService {
           line: 'Before anything else, is everything from our visit on {{job.completed_date}} still working well for you?',
           branches: [
             { id: 'b1', when: 'Says all good', outcome: { type: 'next' } },
-            { id: 'b2', when: 'Reports a problem', outcome: { type: 'transfer' } },
+            { id: 'b2', when: 'Reports a problem', outcome: { type: 'callback' } },
           ],
         },
         {
@@ -4552,13 +4700,14 @@ export class BeeService {
       },
     });
 
-    // 4. Warranty Plans
+    // 4. Sample Warranty Plan (1 default plan)
     const existingPlan = await prisma.beeWarrantyPlan.findFirst({
       where: { organization_id: orgId },
     });
     if (!existingPlan) {
-      const plans = [
-        {
+      await prisma.beeWarrantyPlan.create({
+        data: {
+          organization_id: orgId,
           name: 'Silver Protection',
           duration_months: 12,
           price: 149.0,
@@ -4574,32 +4723,7 @@ export class BeeService {
           eligible_job_types: ['All job types'],
           is_active: true,
         },
-        {
-          name: 'Gold Protection',
-          duration_months: 12,
-          price: 349.0,
-          billing_interval: 'one_time',
-          description: 'Labor extension + 1 preventive maintenance tune-up visit',
-          inclusions: {
-            per: 'job',
-            len: '12 months',
-            covered: 'Labor extension + 1 preventive maintenance tune-up visit',
-            files: [],
-            for: primaryJobType,
-          },
-          eligible_job_types: ['All job types'],
-          is_active: true,
-        },
-      ];
-
-      for (const plan of plans) {
-        await prisma.beeWarrantyPlan.create({
-          data: {
-            organization_id: orgId,
-            ...plan,
-          },
-        });
-      }
+      });
     }
 
     // 5. Settings and Job Type Warranty Rules mapped to the prebuilt agent
@@ -4620,7 +4744,7 @@ export class BeeService {
       defaultAgentId: prebuiltAgent.id,
       warrantyStartsOn: 'Invoice Sent',
       businessName: companyName,
-      setupDone: [1, 1, 1, 0, 0, 0, 0],
+      setupDone: [0, 0, 0, 0, 0, 0, 0],
     };
 
     const existingSetting = await prisma.beeSetting.findUnique({
@@ -4631,7 +4755,7 @@ export class BeeService {
       await prisma.beeSetting.create({
         data: {
           organization_id: orgId,
-          is_active: true,
+          is_active: false,
           call_window_start: '10:00',
           call_window_end: '19:00',
           timezone: 'America/New_York',

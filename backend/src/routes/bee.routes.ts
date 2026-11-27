@@ -1,6 +1,6 @@
 import express, { Router, Request, Response, NextFunction } from 'express';
 import { authenticate } from '../middleware/authenticate';
-import { requireDemoOrg } from '../middleware/requireDemoOrg';
+import { requireBee, requireBeeAdmin } from '../middleware/requireBee';
 import { beeWebhookAuth } from '../middleware/beeWebhookAuth';
 import { validate } from '../middleware/validate';
 import * as ctrl from '../controllers/bee.controller';
@@ -50,59 +50,62 @@ router.post(
   ctrl.receiveVoiceEngineWebhook
 );
 
-// All other Bee endpoints require authenticated user session and demo org or feature entitlement
+// All other Bee endpoints require authenticated user session and Bee access
 router.use(authenticate);
-router.use(requireDemoOrg('bee'));
+router.use(requireBee);
 
-// 1. Home / Metrics
+// 1. Home / Status / Metrics
+router.get('/status', ctrl.getBeeStatus);
+router.get('/activation-preview', requireBeeAdmin, ctrl.getBeeActivationPreview);
+router.put('/status', requireBeeAdmin, validate(ctrl.setBeeActiveSchema), ctrl.setBeeActive);
 router.get('/metrics', ctrl.getBeeMetrics);
-router.post('/toggle-status', validate(ctrl.toggleStatusSchema), ctrl.toggleBeeStatus);
+router.post('/toggle-status', requireBeeAdmin, validate(ctrl.toggleStatusSchema), ctrl.toggleBeeStatus);
 
 // 2. Call Logs
 router.get('/calls', ctrl.getBeeCallLogs);
-router.post('/calls/sync', ctrl.syncBeeCallLogs);
+router.post('/calls/sync', requireBeeAdmin, ctrl.syncBeeCallLogs);
 router.get('/calls/:id', ctrl.getBeeCallDetail);
-router.patch('/calls/:id', ctrl.updateBeeCallOutcome);
-router.post('/calls/:id/classify', ctrl.classifyBeeCallStageTwo);
-router.patch('/calls/:id/task', ctrl.linkBeeCallTask);
+router.patch('/calls/:id', requireBeeAdmin, ctrl.updateBeeCallOutcome);
+router.post('/calls/:id/classify', requireBeeAdmin, ctrl.classifyBeeCallStageTwo);
+router.patch('/calls/:id/task', requireBeeAdmin, ctrl.linkBeeCallTask);
 
 // 3. Queue
 router.get('/queue', ctrl.getBeeQueue);
-router.post('/queue/call-now', ctrl.triggerCallNow);
-router.post('/queue/skip', ctrl.skipQueueItem);
-router.patch('/queue/:id/reschedule', ctrl.rescheduleBeeQueueItem);
-router.post('/queue/reschedule', ctrl.rescheduleBeeQueueItem);
+router.post('/queue/call-now', requireBeeAdmin, ctrl.triggerCallNow);
+router.post('/queue/skip', requireBeeAdmin, ctrl.skipQueueItem);
+router.patch('/queue/:id/reschedule', requireBeeAdmin, ctrl.rescheduleBeeQueueItem);
+router.post('/queue/reschedule', requireBeeAdmin, ctrl.rescheduleBeeQueueItem);
 
 // 4. Agents
 router.get('/agents', ctrl.getBeeAgents);
 router.get('/sample-jobs', ctrl.getBeeSampleJobs);
-router.post('/agents', validate(ctrl.createBeeAgentSchema), ctrl.createBeeAgent);
-router.put('/agents/:id', ctrl.updateBeeAgent);
-router.delete('/agents/:id', ctrl.deleteBeeAgent);
-router.post('/agents/test-call', ctrl.triggerTestCall);
+router.post('/agents', requireBeeAdmin, validate(ctrl.createBeeAgentSchema), ctrl.createBeeAgent);
+router.put('/agents/:id', requireBeeAdmin, ctrl.updateBeeAgent);
+router.delete('/agents/:id', requireBeeAdmin, ctrl.deleteBeeAgent);
+router.post('/agents/test-call', requireBeeAdmin, ctrl.triggerTestCall);
 
 // 5. Warranty Plans
 router.get('/plans', ctrl.getBeePlans);
-router.post('/plans', validate(ctrl.createBeePlanSchema), ctrl.createBeePlan);
-router.put('/plans/:id', ctrl.updateBeePlan);
-router.delete('/plans/:id', ctrl.deleteBeePlan);
+router.post('/plans', requireBeeAdmin, validate(ctrl.createBeePlanSchema), ctrl.createBeePlan);
+router.put('/plans/:id', requireBeeAdmin, ctrl.updateBeePlan);
+router.delete('/plans/:id', requireBeeAdmin, ctrl.deleteBeePlan);
 router.get('/job-type-warranties', ctrl.getJobTypeWarranties);
-router.put('/job-type-warranties', ctrl.updateJobTypeWarranties);
-router.post('/warranties/sync', ctrl.syncBeeWarranties);
+router.put('/job-type-warranties', requireBeeAdmin, ctrl.updateJobTypeWarranties);
+router.post('/warranties/sync', requireBeeAdmin, ctrl.syncBeeWarranties);
 
 // 6. Do Not Call (DNC)
 router.get('/dnc', ctrl.getBeeDnc);
-router.post('/dnc', validate(ctrl.createBeeDncSchema), ctrl.createBeeDnc);
-router.delete('/dnc/:id', ctrl.deleteBeeDnc);
+router.post('/dnc', requireBeeAdmin, validate(ctrl.createBeeDncSchema), ctrl.createBeeDnc);
+router.delete('/dnc/:id', requireBeeAdmin, ctrl.deleteBeeDnc);
 
 // 7. Setup & Settings
-router.get('/settings', ctrl.getBeeSettings);
-router.put('/settings', ctrl.updateBeeSettings);
+router.get('/settings', requireBeeAdmin, ctrl.getBeeSettings);
+router.put('/settings', requireBeeAdmin, ctrl.updateBeeSettings);
 
 // 8. Bee Phone System (Dedicated Telephony)
 router.get('/phone-numbers', ctrl.getBeePhoneNumbers);
-router.post('/phone-numbers/buy', ctrl.buyBeePhoneNumber);
-router.delete('/phone-numbers/:id', ctrl.releaseBeePhoneNumber);
+router.post('/phone-numbers/buy', requireBeeAdmin, ctrl.buyBeePhoneNumber);
+router.delete('/phone-numbers/:id', requireBeeAdmin, ctrl.releaseBeePhoneNumber);
 
 export default router;
 

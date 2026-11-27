@@ -151,6 +151,7 @@ const envSchema = z.object({
   // value on every backend service that shares this database, or a pilot's alerts get cleared by a server
   // without the list. Each server logs the count at boot ("Spider pilot list: N companies").
   SPIDER_PILOT_ORG_IDS: z.string().trim().optional(),
+  BEE_ALLOWED_ORG_IDS: z.string().trim().optional(),
   // JOBS_PAUSED (#3109): background jobs to pause, comma-separated names or `all`. Optional, no default (unset = every
   // job runs). The names and the parsing live in lib/jobsPaused.ts; documented in .env.example.
   JOBS_PAUSED: z.string().optional(),

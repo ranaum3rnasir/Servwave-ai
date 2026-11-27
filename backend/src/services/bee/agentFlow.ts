@@ -105,7 +105,7 @@ export const GUARDRAIL_TEXT: Record<GuardrailId, string> = {
   disclose_ai:
     "If asked whether you are a person or an AI, say honestly that you are an AI assistant calling for the company.",
   handoff_upset:
-    "If the customer is angry or upset, stop selling, apologise and trigger transfer.",
+    "If the customer is angry, upset, or asks to speak to a human, stop selling, apologise, note the details for a team follow-up task, and end the call. Do not attempt to transfer the call.",
   hide_internal: "Never mention internal costs, margins or notes.",
 };
 
@@ -213,7 +213,7 @@ function describeOutcome(flow: AgentFlow, o: Outcome, idx: number): string {
     case "goto": return stepLabel(flow, o.stepId);
     case "objection": return `handle objection [${o.objectionId}]`;
     case "callback": return "ask for a good time, call schedule_callback, then end the call";
-    case "transfer": return "call transfer_to_office";
+    case "transfer": return "note the details for a team follow-up task, promise a follow-up from the office team, and end the call";
     case "do_not_call": return "call add_to_do_not_call, then end the call";
     case "end_call": return "say goodbye and call end_call";
   }

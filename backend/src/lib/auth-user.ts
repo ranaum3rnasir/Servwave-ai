@@ -2,6 +2,7 @@ import { Role } from '@prisma/client';
 import { prisma } from './prisma';
 import { orgFeatures, effectivePlan } from './entitlements/resolve';
 import { isSpiderPilotOrg } from '../services/spider/gate';
+import { isBeeAllowedOrg } from '../services/bee/gate';
 
 export interface AppUser {
   id: string;
@@ -25,6 +26,8 @@ export interface AppUser {
   org_is_demo: boolean;
   // Is on the Spider pilot list (SPIDER_PILOT_ORG_IDS, SPEC-5); the Spider gate also needs the feature.
   org_is_spider_pilot: boolean;
+  // Is on the Bee allowed list (BEE_ALLOWED_ORG_IDS); Bee gate also accepts is_demo or 'bee' feature.
+  org_is_bee_allowed: boolean;
   // Effective plan (trial-aware) + resolved feature keys. Same query, no extra
   // round trip — the precedent org_is_demo set.
   org_plan: string;
@@ -61,7 +64,7 @@ const SELECT = {
   },
 } as const;
 
-type UserRow = Omit<AppUser, 'org_is_demo' | 'org_is_spider_pilot' | 'org_plan' | 'org_features' | 'org_owner_user_id'> & {
+type UserRow = Omit<AppUser, 'org_is_demo' | 'org_is_spider_pilot' | 'org_is_bee_allowed' | 'org_plan' | 'org_features' | 'org_owner_user_id'> & {
   organization: {
     is_demo: boolean;
     plan: string;
@@ -85,6 +88,7 @@ function toAppUser(row: UserRow): AppUser {
     ...rest,
     org_is_demo: organization?.is_demo ?? false,
     org_is_spider_pilot: organization ? isSpiderPilotOrg(rest.organization_id) : false,
+    org_is_bee_allowed: organization ? isBeeAllowedOrg(rest.organization_id) : false,
     org_plan: effectivePlan(source),
     org_features: orgFeatures(source),
     org_owner_user_id: organization?.owner_user_id ?? null,

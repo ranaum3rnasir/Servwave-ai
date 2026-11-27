@@ -56,6 +56,7 @@ function userPayload(user: {
   organization_id: string;
   org_is_demo: boolean;
   org_is_spider_pilot: boolean;
+  org_is_bee_allowed?: boolean;
   org_plan: string;
   org_features: string[];
   org_owner_user_id: string | null;
@@ -76,6 +77,7 @@ function userPayload(user: {
     org_is_demo: user.org_is_demo,
     // On the Spider pilot list (SPEC-5): the browser's Spider gate reads it next to org_is_demo.
     org_is_spider_pilot: user.org_is_spider_pilot,
+    org_is_bee_allowed: user.org_is_bee_allowed ?? false,
     org_plan: user.org_plan,
     org_features: user.org_features,
     // Who the company's Owner is (AL-16): the Users page marks them and keeps their remove actions off. Null when it has none.
@@ -1224,6 +1226,7 @@ export async function googleFinalize(req: Request, res: Response) {
       organization_id: appUser.organization_id,
       org_is_demo: appUser.org_is_demo,
       org_is_spider_pilot: appUser.org_is_spider_pilot,
+      org_is_bee_allowed: appUser.org_is_bee_allowed,
       org_plan: appUser.org_plan,
       org_features: appUser.org_features,
       // An Admin's alone (N18), as on every sign-in answer.

@@ -29,14 +29,7 @@ export function requireDemoOrg(feature: string) {
       res.status(401).json({ error: 'Not authenticated' });
       return;
     }
-    const isAllowed =
-      req.user.org_is_demo === true ||
-      req.user.org_features?.includes(feature) ||
-      (feature === 'bee' && (
-        Boolean(process.env.BEE_ALLOWED_ORG_IDS?.toLowerCase().includes(req.user.organization_id.toLowerCase()))
-      ));
-
-    if (isAllowed) {
+    if (req.user.org_is_demo === true) {
       next();
       return;
     }

@@ -23,65 +23,153 @@ export async function getBeeMetrics(req: Request, res: Response) {
   }
 }
 
+export async function getBeeStatus(req: Request, res: Response) {
+  const user = req.user!;
+  try {
+    const setting = await prisma.beeSetting.findUnique({
+      where: { organization_id: user.organization_id },
+    });
+    const isSetUp = await BeeService.isBeeSetUp(user.organization_id, setting);
+    res.json({ isActive: setting?.is_active === true, isSetUp });
+  } catch (err: any) {
+    logger.error('Failed to get Bee status:', err);
+    res.status(500).json({ error: 'Could not load Bee status' });
+  }
+}
+
+export async function getBeeActivationPreview(req: Request, res: Response) {
+  const user = req.user!;
+  try {
+    const preview = await BeeService.getActivationPreview(user.organization_id);
+    res.json(preview);
+  } catch (err: any) {
+    logger.error('Failed to get Bee activation preview:', err);
+    res.status(500).json({ error: 'Could not load the Bee activation review' });
+  }
+}
+
+export const setBeeActiveSchema = z.union([
+  z.object({
+    isActive: z.literal(false),
+  }),
+  z.object({
+    isActive: z.literal(true),
+    backlog: z.enum(['call', 'skip']).default('call'),
+    settingsVersion: z.string().optional(),
+  }),
+]);
+
+export async function setBeeActive(req: Request, res: Response) {
+  const user = req.user!;
+  const orgId = user.organization_id;
+  const body = req.body as z.infer<typeof setBeeActiveSchema>;
+
+  try {
+    const existing = await prisma.beeSetting.findUnique({
+      where: { organization_id: orgId },
+    });
+
+    if (!body.isActive) {
+      if (!existing || existing.is_active === false) {
+        await BeeService.cancelScheduledOnDeactivate(orgId);
+        const isSetUp = await BeeService.isBeeSetUp(orgId, existing);
+        return res.json({ isActive: false, isSetUp });
+      }
+
+      const existingCfg = ((existing.setup_config as Record<string, any> | null) || {});
+      const nextCfg: Record<string, any> = {
+        ...existingCfg,
+        ...(existingCfg.launchMode === 'Schedule a start date'
+          ? { launchMode: 'Start now', scheduledStartDateTime: '' }
+          : {}),
+        lastDeactivatedAt: new Date().toISOString(),
+        lastDeactivatedBy: user.id,
+      };
+
+      const { count } = await prisma.beeSetting.updateMany({
+        where: { organization_id: orgId, is_active: true },
+        data: { is_active: false, setup_config: nextCfg },
+      });
+
+      const cancelledCount = await BeeService.cancelScheduledOnDeactivate(orgId);
+      if (count === 1) {
+        logger.info(`[BeeController] Bee deactivated for org ${orgId} by ${user.id}; cancelled ${cancelledCount} scheduled calls`);
+      }
+
+      const isSetUp = await BeeService.isBeeSetUp(orgId, existing);
+      return res.json({ isActive: false, isSetUp });
+    }
+
+    // Activate (isActive === true)
+    const isSetUp = await BeeService.isBeeSetUp(orgId, existing);
+    if (!existing || !isSetUp) {
+      return res.status(409).json({
+        error: 'Complete Bee setup (active agent, outbound phone number, and warranty terms) before activating.',
+      });
+    }
+
+    if (body.settingsVersion && existing.updated_at.toISOString() !== body.settingsVersion) {
+      return res.status(409).json({
+        error: 'Settings changed since the review opened. Please review the updated numbers and try again.',
+      });
+    }
+
+    if (existing.is_active === true) {
+      return res.json({ isActive: true, isSetUp: true });
+    }
+
+    const now = new Date();
+    const existingCfg = ((existing.setup_config as Record<string, any> | null) || {});
+    const { count } = await prisma.beeSetting.updateMany({
+      where: {
+        organization_id: orgId,
+        is_active: false,
+        updated_at: existing.updated_at,
+      },
+      data: {
+        is_active: true,
+        setup_config: {
+          ...existingCfg,
+          activatedAt: now.toISOString(),
+          activatedBy: user.id,
+          backlogMode: body.backlog,
+        },
+      },
+    });
+
+    if (count === 0) {
+      const after = await prisma.beeSetting.findUnique({ where: { organization_id: orgId } });
+      if (after?.is_active === true) {
+        return res.json({ isActive: true, isSetUp: await BeeService.isBeeSetUp(orgId, after) });
+      }
+      return res.status(409).json({
+        error: 'Bee settings changed while activating. Please review and try again.',
+      });
+    }
+
+    await BeeService.applyBacklogOnActivate(orgId, body.backlog, now);
+    logger.info(`[BeeController] Bee activated for org ${orgId} by ${user.id} (backlog=${body.backlog})`);
+    return res.json({ isActive: true, isSetUp: true });
+  } catch (err: any) {
+    logger.error('Failed to set Bee status:', err);
+    return res.status(500).json({
+      error: body.isActive
+        ? 'Could not activate Bee. Try again later.'
+        : 'Could not deactivate Bee. Try again later.',
+    });
+  }
+}
+
 export const toggleStatusSchema = z.object({
   isActive: z.boolean(),
 });
 
+/** Legacy endpoint kept only until all callers use PUT /status. */
 export async function toggleBeeStatus(req: Request, res: Response) {
-  const user = req.user!;
-  const { isActive } = req.body;
-
-  try {
-    const resetSetupConfig = {
-      setupDone: [0, 0, 0, 0, 0, 0, 0],
-      testPassed: false,
-    };
-
-    const updated = await prisma.beeSetting.upsert({
-      where: { organization_id: user.organization_id },
-      create: {
-        organization_id: user.organization_id,
-        is_active: isActive,
-        ...(isActive === false
-          ? {
-              call_window_start: '10:00',
-              call_window_end: '19:00',
-              timezone: 'America/New_York',
-              max_retries: 3,
-              retry_interval_hours: 48,
-              default_lead_owner_id: null,
-              alert_email: null,
-              alert_phone: null,
-              job_type_warranties: [],
-              setup_config: resetSetupConfig,
-            }
-          : {}),
-      } as any,
-      update:
-        isActive === false
-          ? ({
-              is_active: false,
-              call_window_start: '10:00',
-              call_window_end: '19:00',
-              timezone: 'America/New_York',
-              max_retries: 3,
-              retry_interval_hours: 48,
-              default_lead_owner_id: null,
-              alert_email: null,
-              alert_phone: null,
-              job_type_warranties: [],
-              setup_config: resetSetupConfig,
-            } as any)
-          : ({
-              is_active: true,
-            } as any),
-    });
-
-    res.json({ ok: true, isActive: updated.is_active, settings: updated });
-  } catch (err: any) {
-    logger.error('Failed to toggle Bee status:', err);
-    res.status(500).json({ error: 'Failed to toggle Bee active state' });
-  }
+  req.body = req.body.isActive
+    ? { isActive: true, backlog: 'call' }
+    : { isActive: false };
+  return setBeeActive(req, res);
 }
 
 // ─── 2. Call Logs ─────────────────────────────────────────────────────────────
@@ -1112,7 +1200,7 @@ export async function getBeeAgents(req: Request, res: Response) {
       BeeService.getSampleJobsForAgentContext(user.organization_id, 10),
       prisma.organization.findUnique({
         where: { id: user.organization_id },
-        select: { name: true },
+        select: { name: true, bee_agent_limit: true },
       }),
       prisma.beeCallLog.groupBy({
         by: ['agent_id'],
@@ -1148,6 +1236,7 @@ export async function getBeeAgents(req: Request, res: Response) {
       availableNumbers,
       sampleJobs: sampleJobsRes.jobs,
       companyName: org?.name || 'Our Service Team',
+      agentLimit: org?.bee_agent_limit ?? DEFAULT_BEE_AGENT_LIMIT,
       masterPromptTemplate: BEE_MASTER_PROMPT_TEMPLATE,
     });
   } catch (err: any) {
@@ -1185,11 +1274,33 @@ export const createBeeAgentSchema = z.object({
   is_active: z.boolean().default(true),
 });
 
+export const DEFAULT_BEE_AGENT_LIMIT = 5;
+
 export async function createBeeAgent(req: Request, res: Response) {
   const user = req.user!;
   const body = req.body;
 
   try {
+    const [existingCount, org] = await Promise.all([
+      prisma.beeVoiceAgent.count({
+        where: { organization_id: user.organization_id },
+      }),
+      prisma.organization.findUnique({
+        where: { id: user.organization_id },
+        select: { bee_agent_limit: true },
+      }),
+    ]);
+    const agentLimit = org?.bee_agent_limit ?? DEFAULT_BEE_AGENT_LIMIT;
+    if (existingCount >= agentLimit) {
+      res.status(403).json({
+        ok: false,
+        code: 'BEE_AGENT_LIMIT_EXCEEDED',
+        limit: agentLimit,
+        error: `Agent limit exceeded. Your organization can create up to ${agentLimit} Bee agents. Please contact support to add more agents.`,
+      });
+      return;
+    }
+
     const packed = BeeService.packAgentMetadata(body);
 
     let created = await prisma.beeVoiceAgent.create({
@@ -1342,17 +1453,51 @@ export async function deleteBeeAgent(req: Request, res: Response) {
       normalizedExisting?.voice_engine
     );
 
-    // Clear agent reference from scheduled queue items
+    // Reassign any queued calls from the deleted agent to the organization's default agent
+    const [beeSetting, remainingAgents] = await Promise.all([
+      prisma.beeSetting.findUnique({
+        where: { organization_id: user.organization_id },
+        select: { setup_config: true },
+      }),
+      prisma.beeVoiceAgent.findMany({
+        where: { organization_id: user.organization_id, id: { not: id } },
+        select: { id: true },
+        orderBy: [{ is_active: 'desc' }, { created_at: 'asc' }],
+      }),
+    ]);
+
+    const setupCfg = (beeSetting?.setup_config as Record<string, any> | null) || null;
+    const configuredDefaultId =
+      typeof setupCfg?.defaultAgentId === 'string' ? setupCfg.defaultAgentId : null;
+    const fallbackAgentId =
+      (configuredDefaultId &&
+      configuredDefaultId !== id &&
+      remainingAgents.some((a) => a.id === configuredDefaultId)
+        ? configuredDefaultId
+        : remainingAgents[0]?.id) ?? null;
+
     await prisma.beeQueueItem.updateMany({
       where: { organization_id: user.organization_id, agent_id: id },
-      data: { agent_id: null },
+      data: { agent_id: fallbackAgentId },
     });
+
+    if (beeSetting && configuredDefaultId === id) {
+      await prisma.beeSetting.update({
+        where: { organization_id: user.organization_id },
+        data: {
+          setup_config: {
+            ...setupCfg,
+            defaultAgentId: fallbackAgentId,
+          },
+        },
+      });
+    }
 
     await prisma.beeVoiceAgent.delete({
       where: { id, organization_id: user.organization_id },
     });
 
-    res.json({ ok: true, deletedId: id, engineDelete });
+    res.json({ ok: true, deletedId: id, reassignedToAgentId: fallbackAgentId, engineDelete });
   } catch (err: any) {
     logger.error('Failed to delete Bee agent:', err);
     res.status(500).json({ error: 'Failed to delete agent persona' });
@@ -1848,7 +1993,7 @@ export async function getBeeSettings(req: Request, res: Response) {
       settings = await prisma.beeSetting.create({
         data: {
           organization_id: user.organization_id,
-          is_active: true,
+          is_active: false,
           call_window_start: '10:00',
           call_window_end: '19:00',
           timezone: 'America/New_York',
@@ -1880,7 +2025,7 @@ export async function updateBeeSettings(req: Request, res: Response) {
       where: { organization_id: user.organization_id },
       create: {
         organization_id: user.organization_id,
-        is_active: body.is_active ?? true,
+        is_active: false,
         call_window_start: body.call_window_start || '10:00',
         call_window_end: body.call_window_end || '19:00',
         timezone: body.timezone || 'America/New_York',
@@ -1895,7 +2040,6 @@ export async function updateBeeSettings(req: Request, res: Response) {
         setup_config: body.setup_config || {},
       } as any,
       update: {
-        ...(body.is_active !== undefined ? { is_active: body.is_active } : {}),
         ...(body.call_window_start !== undefined ? { call_window_start: body.call_window_start } : {}),
         ...(body.call_window_end !== undefined ? { call_window_end: body.call_window_end } : {}),
         ...(body.timezone !== undefined ? { timezone: body.timezone } : {}),

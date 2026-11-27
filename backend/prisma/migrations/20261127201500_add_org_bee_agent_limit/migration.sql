@@ -1,0 +1,1 @@
+ALTER TABLE "organizations" ADD COLUMN IF NOT EXISTS "bee_agent_limit" INTEGER NOT NULL DEFAULT 5;

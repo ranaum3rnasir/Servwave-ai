@@ -2890,6 +2890,7 @@ model Organization {
   // orgs (false) only ever see DB-backed reports — never fabricated data.
   // Surfaced on the /api/auth/me + login payloads as user.org_is_demo.
   is_demo                  Boolean   @default(false)
+  bee_agent_limit          Int       @default(5)
   // Roles & Permissions AL-16 (M11, H5): the company's one Owner, the person no one can remove. Unique, so a person owns at
   // most one company, and the reference is the pair (this company, the person), so the Owner is always one of this
   // company's own people. Null only for a company that has none yet: nothing treats anyone else as the Owner then.

@@ -27,6 +27,7 @@ interface CachedAuth {
     organization_id: string;
     org_is_demo: boolean;
     org_is_spider_pilot: boolean;
+    org_is_bee_allowed?: boolean;
     org_plan: string;
     org_features: string[];
     department_id?: string | null;
@@ -173,6 +174,7 @@ async function verifyToken(token: string): Promise<AuthOutcome> {
       organization_id: user.organization_id,
       org_is_demo: user.org_is_demo,
       org_is_spider_pilot: user.org_is_spider_pilot,
+      org_is_bee_allowed: user.org_is_bee_allowed,
       org_plan: user.org_plan,
       org_features: user.org_features,
       department_id: user.department_id,
